@@ -1,7 +1,7 @@
 /**
- * Vibe mode worker-session runtime.
+ * Delegate mode worker-session runtime.
  *
- * Owns the persistent, addressable worker sessions ("CLIs") the vibe director
+ * Owns the persistent, addressable worker sessions ("CLIs") the delegate director
  * drives. Each worker is a real task-executor subagent with full tool access:
  * spawned once through {@link runSubprocess} (keep-alive), continued
  * turn-by-turn through {@link runSubagentFollowUpTurn}. Between turns the
@@ -11,7 +11,7 @@
  *
  * Every turn runs as an AsyncJobManager job, so a completed turn self-delivers
  * into the director's conversation exactly like an async `task` result, and
- * `vibe_wait` can block on the first settling turn with `job`-poll semantics.
+ * `delegate_wait` can block on the first settling turn with `job`-poll semantics.
  */
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -22,7 +22,7 @@ import { resolveAgentModelPatterns } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
-import vibeTurnResultTemplate from "../prompts/tools/vibe-turn-result.md" with { type: "text" };
+import delegateTurnResultTemplate from "../prompts/tools/delegate-turn-result.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { getBundledAgent } from "../task/agents";
@@ -35,7 +35,7 @@ import { formatDuration } from "../tools/render-utils";
 import { ToolError } from "../tools/tool-errors";
 
 /** The two worker CLI flavors the director drives. */
-export type VibeCli = "fast" | "good";
+export type DelegateCli = "fast" | "good";
 
 /**
  * CLI flavor → bundled agent type. This IS the model-tier mapping: `sonic`
@@ -44,16 +44,16 @@ export type VibeCli = "fast" | "good";
  * Resolution goes through {@link resolveAgentModelPatterns} exactly like a
  * `task` spawn, so `task.agentModelOverrides` and model-role settings apply.
  */
-export const VIBE_CLI_AGENT: Record<VibeCli, string> = {
+export const DELEGATE_CLI_AGENT: Record<DelegateCli, string> = {
 	fast: "sonic",
 	good: "task",
 };
 
 /** Worker session lifecycle as shown to the director. */
-export type VibeSessionState = "starting" | "running" | "idle" | "dead";
+export type DelegateSessionState = "starting" | "running" | "idle" | "dead";
 
 /** One completed tool call in the per-turn activity trace. */
-interface VibeTraceEntry {
+interface DelegateTraceEntry {
 	tool: string;
 	args: string;
 	endMs: number;
@@ -63,35 +63,35 @@ interface VibeTraceEntry {
 const TURN_TRACE_CAP = 40;
 /** Cap on a single rendered trace line. */
 const TRACE_LINE_MAX = 120;
-/** Default `vibe_wait` window when no timeout was given (ms). */
+/** Default `delegate_wait` window when no timeout was given (ms). */
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 /** Response text cap inside a delivered turn result; full output stays at agent://<id>. */
 const RESPONSE_PREVIEW_MAX = 6000;
 
-interface VibeTurn {
+interface DelegateTurn {
 	jobId: string;
 	message: string;
 	startedAt: number;
 	/** Trace of tool calls completed during this turn, oldest first. */
-	trace: VibeTraceEntry[];
+	trace: DelegateTraceEntry[];
 	/** Total completed tool calls (trace may be narrower than this). */
 	toolCount: number;
 }
 
-interface VibeRecord {
+interface DelegateRecord {
 	id: string;
-	cli: VibeCli;
+	cli: DelegateCli;
 	ownerId: string;
 	agent: AgentDefinition;
 	modelOverride?: string | string[];
-	state: VibeSessionState;
+	state: DelegateSessionState;
 	createdAt: number;
 	lastActivityAt: number;
 	/** One-line gist of the latest activity (intent, tool, or result preview). */
 	lastActivity?: string;
 	/** Resolved model display string once known. */
 	resolvedModel?: string;
-	turn?: VibeTurn;
+	turn?: DelegateTurn;
 	/** Live view of the in-flight turn (current tool, intent, streamed text tail). */
 	live?: {
 		currentTool?: string;
@@ -113,10 +113,10 @@ interface VibeRecord {
  * now (tool trace, current tool, streamed text tail) plus roster metadata.
  * Every string is already one-line sanitized.
  */
-export interface VibeScreenSnapshot {
+export interface DelegateScreenSnapshot {
 	id: string;
-	cli: VibeCli;
-	state: VibeSessionState;
+	cli: DelegateCli;
+	state: DelegateSessionState;
 	model?: string;
 	turns: number;
 	queued: number;
@@ -135,12 +135,12 @@ export interface VibeScreenSnapshot {
 	lastActivityAt: number;
 }
 
-export interface VibeSpawnOutcome {
+export interface DelegateSpawnOutcome {
 	id: string;
 	jobId: string;
 }
 
-export interface VibeSendOutcome {
+export interface DelegateSendOutcome {
 	id: string;
 	/**
 	 * - `turn`: a new background turn was started (`jobId` set).
@@ -151,13 +151,13 @@ export interface VibeSendOutcome {
 	jobId?: string;
 }
 
-export interface VibeKillOutcome {
+export interface DelegateKillOutcome {
 	id: string;
 	/** True when an in-flight turn job was cancelled along the way. */
 	cancelledTurn: boolean;
 }
 
-export interface VibeWaitOutcome {
+export interface DelegateWaitOutcome {
 	/** Watched sessions whose snapshotted turn settled during (or before) the wait.
 	 * May overlap `stillRunning` when a queued follow-up turn already started. */
 	settled: Array<{ id: string; jobId: string; status: "completed" | "failed" | "cancelled"; resultText: string }>;
@@ -172,7 +172,7 @@ function firstLine(text: string, max = 100): string {
 }
 
 /** Merge the monitor's rolling `recentTools` window (newest first) into the per-turn trace (oldest first). */
-function mergeTrace(turn: VibeTurn, progress: AgentProgress): void {
+function mergeTrace(turn: DelegateTurn, progress: AgentProgress): void {
 	turn.toolCount = progress.toolCount;
 	for (let i = progress.recentTools.length - 1; i >= 0; i--) {
 		const entry = progress.recentTools[i];
@@ -185,44 +185,44 @@ function mergeTrace(turn: VibeTurn, progress: AgentProgress): void {
 }
 
 /** Thrown from a turn job body so the job manager marks the job failed while carrying the formatted result. */
-export class VibeTurnError extends Error {}
+export class DelegateTurnError extends Error {}
 
 /**
- * Process-global registry of vibe worker sessions, scoped per owner agent id
+ * Process-global registry of delegate worker sessions, scoped per owner agent id
  * (same convention as AsyncJobManager owner filters). The interactive mode
- * kills an owner's sessions on vibe-mode exit via {@link killAll}.
+ * kills an owner's sessions on delegate-mode exit via {@link killAll}.
  */
-export class VibeSessionRegistry {
-	static #global: VibeSessionRegistry | undefined;
+export class DelegateSessionRegistry {
+	static #global: DelegateSessionRegistry | undefined;
 
-	static global(): VibeSessionRegistry {
-		if (!VibeSessionRegistry.#global) {
-			VibeSessionRegistry.#global = new VibeSessionRegistry();
+	static global(): DelegateSessionRegistry {
+		if (!DelegateSessionRegistry.#global) {
+			DelegateSessionRegistry.#global = new DelegateSessionRegistry();
 		}
-		return VibeSessionRegistry.#global;
+		return DelegateSessionRegistry.#global;
 	}
 
 	/** Reset the global registry. Test-only. */
 	static resetGlobalForTests(): void {
-		VibeSessionRegistry.#global = undefined;
+		DelegateSessionRegistry.#global = undefined;
 	}
 
-	readonly #records = new Map<string, VibeRecord>();
+	readonly #records = new Map<string, DelegateRecord>();
 
 	#manager(session: ToolSession): AsyncJobManager {
 		const manager = session.asyncJobManager;
 		if (!manager) {
-			throw new ToolError("Vibe sessions require async execution (no background job manager is available).");
+			throw new ToolError("Delegate sessions require async execution (no background job manager is available).");
 		}
 		return manager;
 	}
 
-	#record(owner: string, id: string): VibeRecord {
+	#record(owner: string, id: string): DelegateRecord {
 		const record = this.#records.get(id.trim());
 		if (!record || record.ownerId !== owner) {
 			const roster = this.listIds(owner);
 			throw new ToolError(
-				`Unknown vibe session "${id}".${roster.length > 0 ? ` Active sessions: ${roster.join(", ")}` : " No sessions — spawn one with vibe_spawn."}`,
+				`Unknown delegate session "${id}".${roster.length > 0 ? ` Active sessions: ${roster.join(", ")}` : " No sessions — spawn one with delegate_spawn."}`,
 			);
 		}
 		return record;
@@ -242,9 +242,9 @@ export class VibeSessionRegistry {
 	 * tool, and streamed text tail. All strings are one-line sanitized here so
 	 * renderers can print them verbatim.
 	 */
-	screens(owner: string, ids?: string[]): VibeScreenSnapshot[] {
+	screens(owner: string, ids?: string[]): DelegateScreenSnapshot[] {
 		const wanted = ids?.length ? new Set(ids.map(id => id.trim())) : undefined;
-		const records: VibeRecord[] = [];
+		const records: DelegateRecord[] = [];
 		for (const record of this.#records.values()) {
 			if (record.ownerId !== owner) continue;
 			if (wanted && !wanted.has(record.id)) continue;
@@ -276,13 +276,16 @@ export class VibeSessionRegistry {
 	}
 
 	/** Spawn a persistent worker session and start its first turn in the background. */
-	async spawn(session: ToolSession, args: { cli: VibeCli; name?: string; prompt: string }): Promise<VibeSpawnOutcome> {
+	async spawn(
+		session: ToolSession,
+		args: { cli: DelegateCli; name?: string; prompt: string },
+	): Promise<DelegateSpawnOutcome> {
 		const owner = session.getAgentId?.() ?? MAIN_AGENT_ID;
 		const manager = this.#manager(session);
-		const agentName = VIBE_CLI_AGENT[args.cli];
+		const agentName = DELEGATE_CLI_AGENT[args.cli];
 		const agent = getBundledAgent(agentName);
 		if (!agent) {
-			throw new ToolError(`Bundled agent "${agentName}" for vibe cli "${args.cli}" is unavailable.`);
+			throw new ToolError(`Bundled agent "${agentName}" for delegate cli "${args.cli}" is unavailable.`);
 		}
 
 		const agentModelOverrides = session.settings.get("task.agentModelOverrides");
@@ -300,7 +303,7 @@ export class VibeSessionRegistry {
 		const requestedName = args.name?.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 48);
 		const id = await session.agentOutputManager.allocate(requestedName || generateTaskName());
 
-		const record: VibeRecord = {
+		const record: DelegateRecord = {
 			id,
 			cli: args.cli,
 			ownerId: owner,
@@ -329,11 +332,11 @@ export class VibeSessionRegistry {
 	 * otherwise → queued for the next turn; idle/parked → starts a new
 	 * background turn immediately.
 	 */
-	async send(session: ToolSession, args: { session: string; message: string }): Promise<VibeSendOutcome> {
+	async send(session: ToolSession, args: { session: string; message: string }): Promise<DelegateSendOutcome> {
 		const owner = session.getAgentId?.() ?? MAIN_AGENT_ID;
 		const record = this.#record(owner, args.session);
 		if (record.state === "dead") {
-			throw new ToolError(`Vibe session "${record.id}" is dead. Spawn a new one with vibe_spawn.`);
+			throw new ToolError(`Delegate session "${record.id}" is dead. Spawn a new one with delegate_spawn.`);
 		}
 		const message = args.message.trim();
 		if (!message) throw new ToolError("Message must not be empty.");
@@ -364,7 +367,7 @@ export class VibeSessionRegistry {
 	async wait(
 		session: ToolSession,
 		args: { sessions?: string[]; timeoutMs?: number; signal?: AbortSignal },
-	): Promise<VibeWaitOutcome> {
+	): Promise<DelegateWaitOutcome> {
 		const owner = session.getAgentId?.() ?? MAIN_AGENT_ID;
 		const manager = this.#manager(session);
 		// Named sessions are watched regardless of state (a just-settled turn is
@@ -379,14 +382,14 @@ export class VibeSessionRegistry {
 		// job's promise resolves), so re-reading record.turn after the race
 		// would inspect the *next* running job and silently drop the settled
 		// result — whose async delivery watchJobs is suppressing on our behalf.
-		const snapshots: Array<{ record: VibeRecord; jobId: string }> = [];
+		const snapshots: Array<{ record: DelegateRecord; jobId: string }> = [];
 		for (const record of watched) {
 			const jobId = record.turn?.jobId ?? record.lastJobId;
 			if (jobId) snapshots.push({ record, jobId });
 		}
 
-		const collectSettled = (): VibeWaitOutcome["settled"] => {
-			const settled: VibeWaitOutcome["settled"] = [];
+		const collectSettled = (): DelegateWaitOutcome["settled"] => {
+			const settled: DelegateWaitOutcome["settled"] = [];
 			for (const { record, jobId } of snapshots) {
 				const job = manager.getJob(jobId);
 				if (!job || job.status === "running") continue;
@@ -441,13 +444,13 @@ export class VibeSessionRegistry {
 	}
 
 	/** Terminate a worker: cancel its in-flight turn and dispose + unregister its session. */
-	async kill(session: ToolSession, id: string): Promise<VibeKillOutcome> {
+	async kill(session: ToolSession, id: string): Promise<DelegateKillOutcome> {
 		const owner = session.getAgentId?.() ?? MAIN_AGENT_ID;
 		const record = this.#record(owner, id);
 		return this.#killRecord(record, session.asyncJobManager);
 	}
 
-	/** Kill every session belonging to `owner` (vibe-mode exit / teardown). Returns the number killed. */
+	/** Kill every session belonging to `owner` (delegate-mode exit / teardown). Returns the number killed. */
 	async killAll(owner: string, manager?: AsyncJobManager): Promise<number> {
 		let killed = 0;
 		for (const record of this.#records.values()) {
@@ -458,7 +461,7 @@ export class VibeSessionRegistry {
 		return killed;
 	}
 
-	async #killRecord(record: VibeRecord, manager: AsyncJobManager | undefined): Promise<VibeKillOutcome> {
+	async #killRecord(record: DelegateRecord, manager: AsyncJobManager | undefined): Promise<DelegateKillOutcome> {
 		record.killed = true;
 		record.queue.length = 0;
 		let cancelledTurn = false;
@@ -471,7 +474,7 @@ export class VibeSessionRegistry {
 		try {
 			await AgentLifecycleManager.global().release(record.id);
 		} catch (error) {
-			logger.warn("vibe: failed to release worker session", {
+			logger.warn("delegate: failed to release worker session", {
 				id: record.id,
 				error: error instanceof Error ? error.message : String(error),
 			});
@@ -482,14 +485,14 @@ export class VibeSessionRegistry {
 	/** Build the ExecutorOptions for a first spawn, mirroring the `task`/eval-bridge plumbing. */
 	async #buildSpawnOptions(
 		session: ToolSession,
-		record: VibeRecord,
+		record: DelegateRecord,
 		message: string,
 		signal: AbortSignal,
 		onProgress: (progress: AgentProgress) => void,
 	): Promise<ExecutorOptions> {
 		const sessionFile = session.getSessionFile();
 		const sessionArtifactsDir = sessionFile ? sessionFile.slice(0, -6) : null;
-		const artifactsDir = sessionArtifactsDir ?? path.join(os.tmpdir(), `omp-vibe-${Snowflake.next()}`);
+		const artifactsDir = sessionArtifactsDir ?? path.join(os.tmpdir(), `pi-delegate-${Snowflake.next()}`);
 		await fs.mkdir(artifactsDir, { recursive: true });
 		if (!sessionArtifactsDir) registerArtifactsDir(artifactsDir);
 		const localProtocolOptions: LocalProtocolOptions = session.localProtocolOptions ?? {
@@ -501,7 +504,7 @@ export class VibeSessionRegistry {
 			agent: record.agent,
 			task: message,
 			assignment: message,
-			description: `vibe ${record.cli} session`,
+			description: `delegate ${record.cli} session`,
 			index: 0,
 			id: record.id,
 			taskDepth: session.taskDepth ?? 0,
@@ -543,12 +546,12 @@ export class VibeSessionRegistry {
 	#registerTurnJob(
 		session: ToolSession,
 		manager: AsyncJobManager,
-		record: VibeRecord,
+		record: DelegateRecord,
 		message: string,
 		options: { first: boolean },
 	): string {
 		const turnIndex = record.turnCount + 1;
-		const turn: VibeTurn = {
+		const turn: DelegateTurn = {
 			jobId: "",
 			message,
 			startedAt: Date.now(),
@@ -574,7 +577,7 @@ export class VibeSessionRegistry {
 
 		const jobId = manager.register(
 			"task",
-			`vibe ${record.cli} ${record.id}: ${firstLine(message, 60)}`,
+			`delegate ${record.cli} ${record.id}: ${firstLine(message, 60)}`,
 			async ({ jobId: ownJobId, signal }) => {
 				record.state = "running";
 				record.turnCount = turnIndex;
@@ -586,7 +589,7 @@ export class VibeSessionRegistry {
 								id: record.id,
 								agent: record.agent,
 								message,
-								description: `vibe ${record.cli} session`,
+								description: `delegate ${record.cli} session`,
 								signal,
 								onProgress,
 								eventBus: session.eventBus,
@@ -594,12 +597,12 @@ export class VibeSessionRegistry {
 							});
 					return this.#settleTurn(session, manager, record, turn, ownJobId, turnIndex, result);
 				} catch (error) {
-					if (error instanceof VibeTurnError) throw error;
+					if (error instanceof DelegateTurnError) throw error;
 					this.#finishTurn(session, manager, record, ownJobId);
 					const reason = error instanceof Error ? error.message : String(error);
 					record.lastActivity = firstLine(`turn failed: ${reason}`);
-					throw new VibeTurnError(
-						`[vibe:${record.id} cli=${record.cli} turn=${turnIndex}] turn failed: ${reason}`,
+					throw new DelegateTurnError(
+						`[delegate:${record.id} cli=${record.cli} turn=${turnIndex}] turn failed: ${reason}`,
 					);
 				}
 			},
@@ -611,7 +614,7 @@ export class VibeSessionRegistry {
 	}
 
 	/** Post-turn bookkeeping shared by success and failure paths: clear the in-flight turn, flush the queue. */
-	#finishTurn(session: ToolSession, manager: AsyncJobManager, record: VibeRecord, settledJobId: string): void {
+	#finishTurn(session: ToolSession, manager: AsyncJobManager, record: DelegateRecord, settledJobId: string): void {
 		record.lastJobId = settledJobId;
 		record.turn = undefined;
 		record.live = undefined;
@@ -628,9 +631,9 @@ export class VibeSessionRegistry {
 		try {
 			this.#registerTurnJob(session, manager, record, nextMessage, { first: false });
 		} catch (error) {
-			// Leave the messages recoverable: a later vibe_send flushes again.
+			// Leave the messages recoverable: a later delegate_send flushes again.
 			record.queue.unshift(nextMessage);
-			logger.warn("vibe: failed to start queued follow-up turn", {
+			logger.warn("delegate: failed to start queued follow-up turn", {
 				id: record.id,
 				error: error instanceof Error ? error.message : String(error),
 			});
@@ -641,8 +644,8 @@ export class VibeSessionRegistry {
 	#settleTurn(
 		session: ToolSession,
 		manager: AsyncJobManager,
-		record: VibeRecord,
-		turn: VibeTurn,
+		record: DelegateRecord,
+		turn: DelegateTurn,
 		settledJobId: string,
 		turnIndex: number,
 		result: SingleResult,
@@ -671,7 +674,7 @@ export class VibeSessionRegistry {
 		let text: string;
 		try {
 			text = prompt
-				.render(vibeTurnResultTemplate, {
+				.render(delegateTurnResultTemplate, {
 					id: record.id,
 					cli: record.cli,
 					turn: turnIndex,
@@ -691,12 +694,12 @@ export class VibeSessionRegistry {
 		} catch (error) {
 			// A formatting bug must never turn a finished worker turn into a false
 			// failure — the work is done; degrade to a plain-text assembly.
-			logger.warn("vibe: turn-result template render failed; using plain fallback", {
+			logger.warn("delegate: turn-result template render failed; using plain fallback", {
 				id: record.id,
 				error: error instanceof Error ? error.message : String(error),
 			});
 			text = [
-				`[vibe:${record.id} cli=${record.cli} turn=${turnIndex} status=${status}]`,
+				`[delegate:${record.id} cli=${record.cli} turn=${turnIndex} status=${status}]`,
 				`Activity (${turn.toolCount} tool calls, ${result.requests} requests):`,
 				...traceLines.map(line => `- ${line}`),
 				"",
@@ -704,7 +707,7 @@ export class VibeSessionRegistry {
 				response,
 			].join("\n");
 		}
-		if (failed) throw new VibeTurnError(text);
+		if (failed) throw new DelegateTurnError(text);
 		return text;
 	}
 }

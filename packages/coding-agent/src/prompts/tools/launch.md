@@ -1,4 +1,4 @@
-Launches and controls project-scoped long-running processes shared by every omp instance in the same directory.
+Launches and controls project-scoped long-running processes shared by every Pi instance in the same directory.
 
 <instruction>
 - Long-running service, watcher, debugger, REPL, or process needing later input? MUST use `launch`, not `bash`.
@@ -13,8 +13,8 @@ Launches and controls project-scoped long-running processes shared by every omp 
 - `send.signal` supports SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGKILL. PTY input is serialized; many clients MAY observe, but writes share one input stream.
 - `stop` performs graceful process-tree termination before hard-kill. `restart` reuses the retained launch spec.
 - `restart` policy defaults `no`; `on-failure` and `always` use bounded backoff.
-- `persist: true` opts out of last-omp teardown. Otherwise the broker stops every non-persistent supervised process after the last omp in this directory exits.
-- `detached: true` survives broker shutdown and all omp exits. It implies `persist` and disables PTY/stdin.
+- `persist: true` opts out of last-Pi teardown. Otherwise the broker stops every non-persistent supervised process after the last Pi instance in this directory exits.
+- `detached: true` survives broker shutdown and all Pi exits. It implies `persist` and disables PTY/stdin.
 </instruction>
 
 <critical>

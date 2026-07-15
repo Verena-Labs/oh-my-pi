@@ -170,6 +170,7 @@ function installSubagentRetryFallbackChain(args: {
 	model: Model<Api> | undefined;
 	authFallbackUsed: boolean;
 }): string | undefined {
+	if (!piAllowsModelFallback()) return undefined;
 	const { settings, id, candidates, model, authFallbackUsed } = args;
 	if (!model || authFallbackUsed || candidates.length <= 1) return undefined;
 
@@ -202,6 +203,10 @@ function installSubagentRetryFallbackChain(args: {
 	}
 	settings.override("retry.fallbackChains", fallbackChains);
 	return role;
+}
+
+function piAllowsModelFallback(): boolean {
+	return false;
 }
 
 function renderIrcPeerRoster(selfId: string): string {
@@ -356,7 +361,7 @@ export interface ExecutorOptions {
 	preloadedExtensionPaths?: string[];
 	/**
 	 * Parent's discovered custom-tool source paths. Forwarded to skip the
-	 * `.omp/tools/` FS scan in the subagent; the subagent then re-binds each
+	 * `.pi/tools/` FS scan in the subagent; the subagent then re-binds each
 	 * tool against its own `CustomToolAPI` (cwd, exec, pushPendingAction, UI).
 	 */
 	preloadedCustomToolPaths?: ToolPathWithSource[];
@@ -1975,7 +1980,7 @@ export async function finalizeSubagentLifecycle(args: {
 	}
 
 	if (args.isolated) {
-		// Isolated run: the worktree is merged + cleaned after the run, so
+		// Isolated run: the temporary worktree is torn down after its changes are captured, so
 		// the session is not resumable. Park the ref WITHOUT adopting — the
 		// transcript stays reachable (history://), but ensureLive will throw.
 		// Status must flip to "parked" before dispose so the sdk dispose
@@ -2312,6 +2317,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					"options.authStorage and options.modelRegistry.authStorage must be the same instance when both are provided",
 				);
 			}
+			authStorage.enforceSingleCredentialPolicy();
 			checkAbort();
 			if (!registryFromParent) {
 				await awaitAbortable(modelRegistry.refresh());
@@ -2328,7 +2334,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			} = await awaitAbortable(
 				resolveModelOverrideWithAuthFallback(
 					modelPatterns,
-					options.parentActiveModelPattern,
+					piAllowsModelFallback() ? options.parentActiveModelPattern : undefined,
 					modelRegistry,
 					settings,
 				),
@@ -2434,9 +2440,13 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				model,
 				modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
 				modelPatternAuthFallback:
-					model || modelOverride === undefined ? undefined : options.parentActiveModelPattern,
+					piAllowsModelFallback() && !model && modelOverride !== undefined
+						? options.parentActiveModelPattern
+						: undefined,
 				modelPatternFallbackRole:
-					model || modelOverride === undefined ? undefined : `${SUBAGENT_RETRY_FALLBACK_ROLE_PREFIX}${id}`,
+					piAllowsModelFallback() && !model && modelOverride !== undefined
+						? `${SUBAGENT_RETRY_FALLBACK_ROLE_PREFIX}${id}`
+						: undefined,
 				thinkingLevel: effectiveThinkingLevel,
 				toolNames,
 				outputSchema,
@@ -2506,7 +2516,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				// Lifecycle reviver: park closed the JSONL writer, so reopening takes
 				// the single-writer lock cleanly and restores the full message history
 				// (createAgentSession → agent.replaceMessages). Isolated runs are not
-				// resumable (worktree is merged + cleaned) and never get a reviver.
+				// resumable (its temporary worktree is torn down after capture) and never get a reviver.
 				reviveSession = async () => {
 					const reopened = await SessionManager.open(sessionFile, undefined, undefined, {
 						suppressBreadcrumb: true,

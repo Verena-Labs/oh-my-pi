@@ -169,7 +169,7 @@
 
 ### Added
 
-- Added /vibe mode, allowing the model to act as a director driving persistent background worker sessions (fast and good tiers) with dedicated session tools (vibe_spawn, vibe_send, vibe_wait, vibe_kill, vibe_list) and a live TUI "TV wall" showing active worker activity, tool traces, and streamed output.
+- Added /delegate mode, allowing the model to act as a director driving persistent background worker sessions (fast and good tiers) with dedicated session tools (delegate_spawn, delegate_send, delegate_wait, delegate_kill, delegate_list) and a live TUI "TV wall" showing active worker activity, tool traces, and streamed output.
 - Added multiple credential-free web search providers (Google, Bing, Yahoo, Startpage, Ecosia, Mojeek) with stealth-browser escalation, bot challenge detection, and recency filters, alongside a parallel public ("Public Web") provider that aggregates and deduplicates results across all engines.
 - Added PCRE2 fallback support for grep lookaround and backreferences when the default Rust regex engine rejects a pattern.
 - Added a helpful stderr hint when launching omp acp from an interactive terminal to clarify that the command communicates via JSON-RPC over stdout.

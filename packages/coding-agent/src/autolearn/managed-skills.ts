@@ -89,6 +89,20 @@ export interface WriteManagedSkillInput {
 }
 
 /**
+ * OMP's managed-skill implementation remains vendored for upstream parity,
+ * but Pi does not expose agent-managed skill mutation.
+ */
+export function piAllowsManagedSkillMutation(): boolean {
+	return false;
+}
+
+function assertManagedSkillMutationAvailable(): void {
+	if (!piAllowsManagedSkillMutation()) {
+		throw new Error("Agent-managed skill mutation is unavailable in Pi.");
+	}
+}
+
+/**
  * Serialize create/update/delete on the same skill name. Both tools are
  * non-exclusive, so a parallel tool batch in one turn can run two mutations on
  * the same skill at once (e.g. an update observing the file mid-delete). This
@@ -150,6 +164,7 @@ async function openManagedSkillFileForUpdate(name: string, file: string) {
 
 /** Create or update a managed `SKILL.md`. Returns the resolved file path. */
 export async function writeManagedSkill(input: WriteManagedSkillInput): Promise<{ path: string }> {
+	assertManagedSkillMutationAvailable();
 	const name = sanitizeSkillName(input.name);
 	const description = sanitizeManagedDescription(input.description);
 	const body = input.body.trim();
@@ -231,6 +246,7 @@ export async function writeManagedSkill(input: WriteManagedSkillInput): Promise<
 
 /** Delete a managed skill directory. Throws when it does not exist. */
 export async function deleteManagedSkill(name: string): Promise<void> {
+	assertManagedSkillMutationAvailable();
 	const safe = sanitizeSkillName(name);
 	await serializeSkillMutation(safe, async () => {
 		await assertManagedRootSafe();

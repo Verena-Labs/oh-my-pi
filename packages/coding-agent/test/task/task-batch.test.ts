@@ -154,6 +154,7 @@ describe("task.batch validation", () => {
 				{ "task.batch": batch },
 			);
 			expect(text).toContain("does not accept `schema`");
+			expect(text).not.toMatch(/\beval\b/i);
 		}
 	});
 

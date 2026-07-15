@@ -8,6 +8,7 @@
 - Key collaborators:
   - `packages/coding-agent/src/tools/browser/tab-supervisor.ts` — global tab registry; worker lifecycle; run/close coordination.
   - `packages/coding-agent/src/tools/browser/tab-worker.ts` — executes `run` code; implements the `tab` helper API.
+  - `packages/coding-agent/src/tools/browser/runtime.ts` — constructs the browser-only `JsRuntime` profile shared by worker and cmux tabs.
   - `packages/coding-agent/src/tools/browser/tab-worker-entry.ts` — worker-thread transport bootstrap.
   - `packages/coding-agent/src/tools/browser/registry.ts` — browser-handle registry keyed by browser kind.
   - `packages/coding-agent/src/tools/browser/launch.ts` — Puppeteer loading, Chromium resolution/download, headless launch, stealth injection.
@@ -20,7 +21,9 @@
   - `packages/coding-agent/src/tools/browser/cmux/rpc.ts` — cmux browser-kind resolution plus snapshot/eval/wait-state helpers for the cmux backend.
   - `packages/coding-agent/src/tools/browser/cmux/socket-client.ts` — `CmuxSocketClient`: JSON-RPC over the cmux unix socket.
   - `packages/coding-agent/src/tools/browser/cmux/cmux-tab.ts` — `CmuxTab` surface helper API and `runCmuxCode()` execution path.
-  - `packages/coding-agent/src/eval/js/shared/runtime.ts` — shared `JsRuntime` that executes `run` code (same engine as the `eval` JS tool); both the worker and cmux backends delegate to it.
+  - `packages/coding-agent/src/eval/js/shared/runtime.ts` — shared `JsRuntime` engine with a browser-only profile; both the worker and cmux backends delegate to that restricted profile rather than the full `eval` prelude.
+  - `packages/coding-agent/src/eval/js/shared/browser-realm.ts` — dedicated code-generation-disabled VM realm and recursive capability membrane for page/tab/browser objects.
+  - `packages/coding-agent/src/eval/js/shared/browser-prelude.txt` — minimal browser prelude (`console`, `print`, and `display`) with no eval tool/helper bridges.
   - `packages/coding-agent/src/tools/browser/render.ts` — TUI rendering for `open`/`close` status lines and `run` JS cells.
   - `packages/coding-agent/src/tools/puppeteer/00_stealth_tampering.txt` — mask patched functions/descriptors as native.
   - `packages/coding-agent/src/tools/puppeteer/01_stealth_activity.txt` — synthesize visibility/focus/scroll activity.
@@ -68,7 +71,7 @@
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `code` | `string` | Yes | Async-function body executed by the shared `JsRuntime` (`src/eval/js/shared/runtime.ts`, the same engine as the `eval` JS tool). In scope: browser-specific `page`, `browser`, `tab`, `assert(cond, msg?)`, and `wait(ms)`, plus the runtime prelude helpers (`display`, `print`, `read`, `write`, `append`, `tree`, `env`, `tool`, `completion`, `agent`, `parallel`, `pipeline`, `log`, `phase`, `budget`, ...) and ambient Bun globals (`console`, timers, `URL`, `TextEncoder`/`TextDecoder`, `Buffer`). |
+| `code` | `string` | Yes | Async-function body executed by the shared `JsRuntime`'s browser-only profile. In scope: browser-specific `page`, `browser`, `tab`, `assert(cond, msg?)`, and `wait(ms)`, plus `display`, `print`, `console`, and ordinary JavaScript data/utility globals. Eval-only tool, completion, agent, workflow, filesystem, and environment helpers are absent. Host `Bun`, `process`, `require`, `module`, `fs`, `createRequire`, `fetch`, worker/socket constructors, `Function`, `eval`, static/dynamic imports, and constructor escape paths are unavailable; use `page`/`tab` Puppeteer APIs for browser-page work. |
 
 ## Outputs
 The tool returns one result per call; no streaming partial output is emitted from the browser implementation itself.
@@ -76,13 +79,12 @@ The tool returns one result per call; no streaming partial output is emitted fro
 - `open`: text content with `Opened` or `Reused`, browser description, URL, and optional title. `details` includes `action`, `name`, `browser`, `url`, `viewport`, and the same text in `details.result`.
 - `close`: text content with either `Closed ...` or `No tab named ...`. `details` includes `action`, `name`, and `details.result`.
 - `run`: ordered `content` array built as:
-  1. every structured display output in execution order (object/image `display(value)` calls plus helper status events),
+  1. every structured `display(value)` output in execution order,
   2. final return value, JSON-stringified unless already a string,
   3. or `Ran code on tab "..."` if nothing else was produced.
 - `display(value)` is handled by the shared runtime's `displayValue()` (`src/eval/js/shared/runtime.ts`), then mapped to content by `WorkerCore.#pushDisplay()` (`packages/coding-agent/src/tools/browser/tab-worker.ts`):
   - `{ type: "image", data, mimeType }` with decodable base64 becomes image content; an unrecognized `data` shape is dropped with a debug note.
   - any other object/array becomes pretty JSON text (`JSON.stringify(value, null, 2)`); a value that is not structured-cloneable is dropped with a debug note.
-  - helper side effects (`read`/`write`/`tree`/...) emit `status` events that surface as compact JSON text.
   - primitive `display(value)` (string/number/...) and `console.*` flow to the text channel, which the worker forwards as debug logs rather than tool content; `undefined` is ignored.
 - `tab.screenshot()` also appends text plus an image content item unless `silent: true`; `details.screenshots` records persisted screenshot metadata `{ dest, mimeType, bytes, width, height }`.
 - `run` `details` includes `action`, `name`, current `browser`/`url` when the tab exists, optional `screenshots`, and `details.result` containing only the concatenated text outputs. Combined run text is capped at the inline byte limit via `enforceInlineByteCap()`; over-cap text is saved as a session artifact (`saveBrowserOutputArtifact()`) and the capped text replaces it in content and `details.result`.
@@ -114,7 +116,7 @@ The tool returns one result per call; no streaming partial output is emitted fro
 9. On success the worker sends `ready` with `{ url, title, viewport, targetId }`; the supervisor stores a `TabSession`, increments browser-handle refcount with `holdBrowser()`, and keeps the tab in a process-global `Map<string, TabSession>`.
 10. `run` requires non-empty `code`, looks up the tab with `getTab()`, then delegates to `runInTab()`.
 11. `runInTabWithSnapshot()` rejects dead tabs and concurrent runs (`Tab ... is busy`), captures session cwd plus optional `browser.screenshotDir`, registers an abort hook, sends a `run` message to the worker, and races the result against `timeoutMs + 750` ms. Timeouts force-kill the tab worker and, for headless tabs, close the orphaned page target.
-12. `WorkerCore.#run()` builds the `tab` API, lazily creates a shared `JsRuntime` via `#ensureRuntime()`, injects `page`/`browser`/`tab`/`assert`/`wait` with `runtime.setRunScope()`, and executes the user code through `runtime.run(code, ...)` raced against a cancel/timeout rejection. Cmux tabs take a parallel path through `runCmuxCode()`, which drives the same `JsRuntime`.
+12. `WorkerCore.#run()` builds the `tab` API, lazily creates the shared browser-only `JsRuntime` via `#ensureRuntime()`, injects `page`/`browser`/`tab`/`assert`/`wait` with `runtime.setRunScope()`, and executes the user code through `runtime.run(code, ...)` raced against a cancel/timeout rejection. The browser profile runs in a distinct VM realm with string/wasm code generation disabled; a recursive membrane wraps every host capability, callback, result, promise fulfillment, and error while denying constructor/prototype access. Cmux tabs take a parallel path through `runCmuxCode()` and the same browser-only runtime factory.
 13. The `tab` helper API implemented in `#createTabApi()` is:
    - `tab.name: string`
    - `tab.page: Page`

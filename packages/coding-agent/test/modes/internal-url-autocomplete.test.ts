@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as capability from "@oh-my-pi/pi-coding-agent/capability";
-import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
-import { resetActiveRulesForTests, setActiveRules } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
 import type { CapabilityResult } from "@oh-my-pi/pi-coding-agent/capability/types";
 import type { Skill } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
@@ -19,25 +17,13 @@ function skill(name: string, description = ""): Skill {
 	return { name, description, filePath: `/skills/${name}/SKILL.md`, baseDir: `/skills/${name}`, source: "test" };
 }
 
-function rule(name: string, description?: string): Rule {
-	return {
-		name,
-		path: `/rules/${name}.md`,
-		content: `# ${name}`,
-		...(description ? { description } : {}),
-		_source: { provider: "test", providerName: "Test", path: `/rules/${name}.md`, level: "project" },
-	};
-}
-
 describe("internal-url-autocomplete", () => {
 	beforeEach(() => {
 		setActiveSkills([skill("humanizer", "Remove AI tells"), skill("react", "React UI"), skill("tla", "TLA+ specs")]);
-		setActiveRules([rule("python", "robomp rules"), rule("style")]);
 	});
 
 	afterEach(() => {
 		resetActiveSkillsForTests();
-		resetActiveRulesForTests();
 		vi.restoreAllMocks();
 	});
 
@@ -99,8 +85,8 @@ describe("internal-url-autocomplete", () => {
 		});
 
 		it("carries the candidate description through", async () => {
-			const result = await getInternalUrlSuggestions("rule://python");
-			expect(result!.items[0]).toMatchObject({ value: "rule://python", description: "robomp rules" });
+			const result = await getInternalUrlSuggestions("skill://humanizer");
+			expect(result!.items[0]).toMatchObject({ value: "skill://humanizer", description: "Remove AI tells" });
 		});
 
 		it("returns null when no candidate matches", async () => {
@@ -153,13 +139,18 @@ describe("internal-url-autocomplete", () => {
 
 	describe("router.complete dispatch", () => {
 		it("returns candidates for a completion-capable scheme", async () => {
-			const candidates = await InternalUrlRouter.instance().complete("rule", "");
-			expect(candidates?.map(c => c.value).sort()).toEqual(["python", "style"]);
+			const candidates = await InternalUrlRouter.instance().complete("skill", "");
+			expect(candidates?.map(c => c.value).sort()).toEqual(["humanizer", "react", "tla"]);
 		});
 
 		it("returns null for a known scheme that opted out of completion", async () => {
+			expect(await InternalUrlRouter.instance().complete("mcp", "")).toBeNull();
+		});
+
+		it("returns null for disabled schemes", async () => {
 			expect(await InternalUrlRouter.instance().complete("issue", "")).toBeNull();
 			expect(await InternalUrlRouter.instance().complete("pr", "")).toBeNull();
+			expect(await InternalUrlRouter.instance().complete("rule", "")).toBeNull();
 		});
 
 		it("returns null for an unknown scheme", async () => {
@@ -168,7 +159,7 @@ describe("internal-url-autocomplete", () => {
 
 		it("exposes the completion-capable schemes", () => {
 			const schemes = InternalUrlRouter.instance().completionSchemes().sort();
-			expect(schemes).toEqual(["agent", "artifact", "history", "local", "memory", "omp", "rule", "skill", "ssh"]);
+			expect(schemes).toEqual(["agent", "artifact", "history", "local", "memory", "pi", "skill", "ssh"]);
 		});
 	});
 

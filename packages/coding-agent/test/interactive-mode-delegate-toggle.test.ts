@@ -1,9 +1,9 @@
 /**
- * Contracts: /vibe mode toggle on InteractiveMode.
+ * Contracts: /delegate mode toggle on InteractiveMode.
  *
- * 1. Vibe tools do not exist in the session registry before the mode is entered.
- * 2. Entering registers and activates exactly `read` plus the vibe tools.
- * 3. Exiting unregisters the vibe tools and restores the pre-vibe active toolset
+ * 1. Delegate tools do not exist in the session registry before the mode is entered.
+ * 2. Entering registers and activates exactly `read` plus the delegate tools.
+ * 3. Exiting unregisters the delegate tools and restores the pre-delegate active toolset
  *    exactly, including the legitimate empty set.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
@@ -16,7 +16,8 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { VIBE_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/vibe";
+import { BUILTIN_SLASH_COMMAND_DEFS } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
+import { DELEGATE_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/delegate";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
@@ -34,7 +35,7 @@ function stubTool(name: string): AgentTool {
 	};
 }
 
-describe("InteractiveMode vibe mode toggle", () => {
+describe("InteractiveMode delegate mode toggle", () => {
 	let tempDir: TempDir;
 	let authStorage: AuthStorage;
 	let session: AgentSession;
@@ -46,7 +47,7 @@ describe("InteractiveMode vibe mode toggle", () => {
 
 	beforeEach(async () => {
 		resetSettingsForTest();
-		tempDir = TempDir.createSync("@pi-vibe-toggle-");
+		tempDir = TempDir.createSync("@pi-delegate-toggle-");
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 		const modelRegistry = new ModelRegistry(authStorage);
@@ -68,7 +69,7 @@ describe("InteractiveMode vibe mode toggle", () => {
 			settings: Settings.isolated({}),
 			modelRegistry,
 			toolRegistry: new Map(registryTools.map(tool => [tool.name, tool])),
-			createVibeTools: () => VIBE_TOOL_NAMES.map(stubTool),
+			createDelegateTools: () => DELEGATE_TOOL_NAMES.map(stubTool),
 		});
 		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, undefined, new EventBus());
 	});
@@ -82,24 +83,42 @@ describe("InteractiveMode vibe mode toggle", () => {
 		resetSettingsForTest();
 	});
 
-	it("restores the exact pre-vibe toolset on exit, including an empty one", async () => {
+	it("advertises only the public /delegate command name", () => {
+		const commands = BUILTIN_SLASH_COMMAND_DEFS.map(command => command.name);
+		expect(commands).toContain("delegate");
+		expect(commands).not.toContain("vibe");
+	});
+
+	it("resumes a legacy vibe marker as Delegate and persists only the new marker", async () => {
+		session.sessionManager.appendModeChange("vibe");
+
+		await mode.init({ suppressWelcomeIntro: true });
+
+		expect(mode.delegateModeEnabled).toBe(true);
+		const modeEntries = session.sessionManager.getEntries().filter(entry => entry.type === "mode_change");
+		expect(modeEntries.at(-1)).toMatchObject({ type: "mode_change", mode: "delegate" });
+		expect(session.getAllToolNames().filter(name => name.startsWith("vibe_"))).toEqual([]);
+	});
+
+	it("restores the exact pre-delegate toolset on exit, including an empty one", async () => {
 		expect(session.getAllToolNames()).toEqual(["read"]);
 		expect(session.getActiveToolNames()).toEqual([]);
 
-		await mode.handleVibeModeCommand();
-		expect(mode.vibeModeEnabled).toBe(true);
+		await mode.handleDelegateModeCommand();
+		expect(mode.delegateModeEnabled).toBe(true);
 		const inMode = session.getActiveToolNames();
 		expect(inMode).toContain("read");
-		for (const name of VIBE_TOOL_NAMES) {
+		for (const name of DELEGATE_TOOL_NAMES) {
 			expect(inMode).toContain(name);
 		}
-		expect(inMode.toSorted()).toEqual(["read", ...VIBE_TOOL_NAMES].toSorted());
-		expect(session.getAllToolNames().toSorted()).toEqual(["read", ...VIBE_TOOL_NAMES].toSorted());
+		expect(inMode.toSorted()).toEqual(["read", ...DELEGATE_TOOL_NAMES].toSorted());
+		expect(session.getAllToolNames().toSorted()).toEqual(["read", ...DELEGATE_TOOL_NAMES].toSorted());
+		expect(session.getAllToolNames().filter(name => name.startsWith("vibe_"))).toEqual([]);
 
-		// Toggle off: the empty previous toolset must come back — vibe tools
+		// Toggle off: the empty previous toolset must come back — delegate tools
 		// must not leak past the mode.
-		await mode.handleVibeModeCommand();
-		expect(mode.vibeModeEnabled).toBe(false);
+		await mode.handleDelegateModeCommand();
+		expect(mode.delegateModeEnabled).toBe(false);
 		expect(session.getActiveToolNames()).toEqual([]);
 		expect(session.getAllToolNames()).toEqual(["read"]);
 	});

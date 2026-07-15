@@ -526,13 +526,8 @@ export class RpcClient {
 		sessionFile?: string;
 		fromByte?: number;
 	}): Promise<RpcSubagentMessagesResult> {
-		const response = await this.#send({
-			type: "get_subagent_messages",
-			subagentId: selector.subagentId,
-			sessionFile: selector.sessionFile,
-			fromByte: selector.fromByte,
-		});
-		return this.#getData<RpcSubagentMessagesResult>(response);
+		void selector;
+		throw new Error("Expanded subagent transcripts are unavailable in Pi");
 	}
 
 	/**

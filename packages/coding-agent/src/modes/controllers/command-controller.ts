@@ -14,7 +14,6 @@ import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi
 import { formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-share";
-import { shareSession } from "../../export/share";
 import type { CompactOptions } from "../../extensibility/extensions/types";
 import {
 	diffMentalModelContent,
@@ -44,6 +43,7 @@ import type { CompactMode } from "../../session/compact-modes";
 import type { NewSessionOptions } from "../../session/session-entries";
 import { formatShakeSummary, type ShakeMode, type ShakeResult } from "../../session/shake-types";
 import { limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
+import { isPiDisabledSlashCommandName } from "../../slash-commands/pi-policy";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
 import { replaceTabs, truncateToWidth } from "../../tools/render-utils";
@@ -219,29 +219,8 @@ export class CommandController {
 			return;
 		}
 
-		// Default: encrypted snapshot to a secret gist (preferred) or the share
-		// server; the key rides in the link fragment and never leaves the client.
-		try {
-			const result = await shareSession(this.ctx.session.sessionManager, {
-				serverUrl: this.ctx.settings.get("share.serverUrl"),
-				store: this.ctx.settings.get("share.store"),
-				state: this.ctx.session.state,
-				obfuscator: this.ctx.settings.get("share.redactSecrets") ? this.ctx.session.obfuscator : undefined,
-			});
-			if (loader.signal.aborted) return;
-			restoreEditor();
-
-			const lines = [`Share URL: ${result.url}`];
-			if (result.gistUrl) lines.push(`Gist: ${result.gistUrl}`);
-			if (result.truncated) lines.push("Note: large content was trimmed to fit the share size limit.");
-			this.ctx.showStatus(lines.join("\n"));
-			this.openInBrowser(result.url);
-		} catch (error: unknown) {
-			if (!loader.signal.aborted) {
-				restoreEditor();
-				this.ctx.showError(`Failed to share session: ${error instanceof Error ? error.message : "Unknown error"}`);
-			}
-		}
+		restoreEditor();
+		this.ctx.showError("No custom share handler is configured. Use /export for a local HTML artifact.");
 	}
 
 	async handleSessionCommand(): Promise<void> {
@@ -887,6 +866,7 @@ export class CommandController {
 	}
 
 	async handleDropCommand(): Promise<void> {
+		if (isPiDisabledSlashCommandName("drop")) return;
 		if (!this.ctx.sessionManager.getSessionFile()) {
 			this.ctx.showError("Nothing to drop (in-memory session)");
 			return;
@@ -932,6 +912,7 @@ export class CommandController {
 	 * directory's session bucket so `/resume` from that directory can find it.
 	 */
 	async handleMoveCommand(targetPath?: string): Promise<void> {
+		if (isPiDisabledSlashCommandName("move")) return;
 		if (this.ctx.session.isStreaming) {
 			this.ctx.showWarning("Wait for the current response to finish or abort it before moving.");
 			return;

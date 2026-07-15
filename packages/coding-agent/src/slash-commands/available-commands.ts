@@ -6,6 +6,7 @@ import { getSkillSlashCommandName, type Skill } from "../extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands } from "../extensibility/slash-commands";
 import { ACP_BUILTIN_RESERVED_NAMES, isAcpBuiltinShadowedName } from "./acp-builtins";
 import { BUILTIN_SLASH_COMMANDS_INTERNAL } from "./builtin-registry";
+import { isPiDisabledSlashCommandName } from "./pi-policy";
 
 export type AvailableSlashCommandSource = "builtin" | "skill" | "extension" | "custom" | "mcp_prompt" | "file";
 
@@ -35,6 +36,7 @@ export async function buildAvailableSlashCommands(
 	const commands: InternalAvailableSlashCommand[] = [];
 	const seenNames = new Set<string>();
 	const appendCommand = (command: InternalAvailableSlashCommand): void => {
+		if (isPiDisabledSlashCommandName(command.name)) return;
 		if (seenNames.has(command.name)) return;
 		seenNames.add(command.name);
 		commands.push(command);
@@ -87,7 +89,9 @@ export async function buildAvailableSlashCommands(
 		});
 	}
 
-	const fileCommands = await loadFileCommands(session.sessionManager.getCwd());
+	const fileCommands = (await loadFileCommands(session.sessionManager.getCwd())).filter(
+		command => !isPiDisabledSlashCommandName(command.name),
+	);
 	session.setSlashCommands(fileCommands);
 	for (const command of fileCommands) {
 		appendCommand({ name: command.name, description: command.description, source: "file" });

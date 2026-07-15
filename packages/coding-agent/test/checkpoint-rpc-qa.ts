@@ -3,11 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentEvent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { RpcClient } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client";
-import type {
-	BranchSummaryEntry,
-	CustomMessageEntry,
-	SessionMessageEntry,
-} from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import type { CustomMessageEntry, SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { parseSessionEntries } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 
 function extractText(message: AgentMessage): string {
@@ -34,7 +30,7 @@ function getLastAssistant(messages: AgentMessage[]): Extract<AgentMessage, { rol
 }
 
 async function main() {
-	const sessionDir = path.join(os.tmpdir(), `omp-checkpoint-rpc-qa-${Date.now()}`);
+	const sessionDir = path.join(os.tmpdir(), `pi-checkpoint-rpc-qa-${Date.now()}`);
 	const projectRoot = path.join(import.meta.dir, "..");
 	const client = new RpcClient({
 		cliPath: path.join(projectRoot, "src/cli.ts"),
@@ -115,7 +111,6 @@ async function main() {
 		const entries = parseSessionEntries(sessionContent);
 
 		const sessionMessages = entries.filter((entry): entry is SessionMessageEntry => entry.type === "message");
-		const branchSummaries = entries.filter((entry): entry is BranchSummaryEntry => entry.type === "branch_summary");
 		const customMessages = entries.filter((entry): entry is CustomMessageEntry => entry.type === "custom_message");
 
 		const hasCheckpoint = toolSequence.includes("checkpoint");
@@ -136,10 +131,7 @@ async function main() {
 		const activeHasReadResult = activeToolResults.includes("read");
 
 		const rewindReportEntries = customMessages.filter(entry => entry.customType === "rewind-report");
-		const rewindReportTexts = rewindReportEntries
-			.map(entry => (typeof entry.content === "string" ? entry.content : ""))
-			.filter(text => text.length > 0);
-		const branchSummaryHasReport = branchSummaries.some(summary => rewindReportTexts.includes(summary.summary));
+		const branchSummaryEntries = entries.filter(entry => entry.type === "branch_summary");
 		const lastAssistant = getLastAssistant(messages);
 		const lastAssistantText = lastAssistant ? extractText(lastAssistant) : "";
 		const lastAssistantStopReason = lastAssistant?.stopReason ?? "(none)";
@@ -151,7 +143,7 @@ async function main() {
 		console.log(`Tool sequence: ${toolSequence.join(" -> ") || "(none)"}`);
 		console.log(`Active message count: ${messages.length}`);
 		console.log(`Session message entries: ${sessionMessages.length}`);
-		console.log(`Branch summary entries: ${branchSummaries.length}`);
+		console.log(`Branch summary entries: ${branchSummaryEntries.length}`);
 		console.log(`Rewind report custom entries: ${rewindReportEntries.length}`);
 		console.log(`Last assistant stopReason: ${lastAssistantStopReason}`);
 		console.log(`Last assistant text: ${lastAssistantText}`);
@@ -178,8 +170,8 @@ async function main() {
 		if (rewindReportEntries.length === 0) {
 			throw new Error("Session entries missing persisted rewind-report custom_message entry.");
 		}
-		if (!branchSummaryHasReport) {
-			throw new Error("Session branch_summary does not contain rewind report content.");
+		if (branchSummaryEntries.length > 0) {
+			throw new Error("Checkpoint rewind unexpectedly created a generic branch_summary entry.");
 		}
 		if (lastAssistantText !== "DONE") {
 			throw new Error(`Final assistant response mismatch; expected DONE, got: ${lastAssistantText}`);

@@ -1,7 +1,11 @@
 /**
  * Setup CLI command handler.
  *
- * Handles `omp setup` for onboarding and `omp setup <component>` for optional dependencies.
+ * Dormant upstream optional-dependency setup helpers.
+ *
+ * Pi exposes only the interactive `pi setup` onboarding command. Keeping the
+ * implementation here makes upstream rebases straightforward, while the empty
+ * component policy below prevents direct/legacy CLI routing from reaching it.
  */
 import * as path from "node:path";
 import { $which, APP_NAME, getProjectDir, getPythonEnvDir } from "@oh-my-pi/pi-utils";
@@ -14,6 +18,7 @@ import { isSttModelKey, STT_MODEL_OPTIONS } from "../stt/models";
 import { detectRecorder, ensureRecorder } from "../stt/recorder";
 import { downloadTtsModel, isTtsLocalModelKey, isTtsModelCached, TTS_LOCAL_MODEL_OPTIONS } from "../tts";
 import { selectSetupModel } from "./setup-model-picker";
+import { PI_SETUP_COMPONENTS } from "./setup-policy";
 
 export type SetupComponent = "python" | "speech";
 
@@ -25,7 +30,7 @@ export interface SetupCommandArgs {
 	};
 }
 
-const VALID_COMPONENTS: SetupComponent[] = ["python", "speech"];
+const VALID_COMPONENTS: readonly SetupComponent[] = PI_SETUP_COMPONENTS;
 
 const MANAGED_PYTHON_ENV = getPythonEnvDir();
 
@@ -107,25 +112,17 @@ async function checkPythonSetup(): Promise<PythonCheckResult> {
 /**
  * Install Python packages using uv (preferred) or pip.
  */
-// Python installation helper removed: the subprocess runner has no Python
-// package dependencies beyond a working interpreter. `omp setup python --check`
-// remains as a probe; users install optional libs (pandas, matplotlib, ...)
-// directly via pip or the in-process `%pip` magic.
+// Python installation helper removed: the dormant upstream subprocess runner
+// has no package dependencies beyond a working interpreter.
 
 /**
  * Run the setup command.
  */
 export async function runSetupCommand(cmd: SetupCommandArgs): Promise<void> {
-	switch (cmd.component) {
-		case "python":
-			await handlePythonSetup(cmd.flags);
-			break;
-		case "speech":
-			await handleSpeechSetup(cmd.flags);
-			break;
-	}
+	throw new Error(`Optional component setup (${cmd.component}) is unavailable in Pi.`);
 }
 
+// biome-ignore lint/correctness/noUnusedVariables: dormant upstream implementation retained behind Pi's setup boundary
 async function handlePythonSetup(flags: { json?: boolean; check?: boolean }): Promise<void> {
 	const check = await checkPythonSetup();
 
@@ -237,11 +234,10 @@ function buildSpeechComponents(): SpeechComponent[] {
 }
 
 /**
- * Unified `omp setup speech` flow. Drives every {@link SpeechComponent} through
- * one path: report (`--json`/`--check`) or install (interactive pick + ensure
- * with single-line progress; non-TTY skips pickers and installs configured
- * values).
+ * Dormant upstream speech setup flow. Drives every {@link SpeechComponent}
+ * through one path: report or install with normalized progress.
  */
+// biome-ignore lint/correctness/noUnusedVariables: dormant upstream implementation retained behind Pi's setup boundary
 async function handleSpeechSetup(flags: { json?: boolean; check?: boolean }): Promise<void> {
 	await Settings.init({ cwd: getProjectDir() });
 	const components = buildSpeechComponents();
@@ -308,25 +304,12 @@ async function handleSpeechSetup(flags: { json?: boolean; check?: boolean }): Pr
  * Print setup command help.
  */
 export function printSetupHelp(): void {
-	console.log(`${chalk.bold(`${APP_NAME} setup`)} - Run onboarding or install dependencies for optional features
+	console.log(`${chalk.bold(`${APP_NAME} setup`)} - Run interactive onboarding
 
 ${chalk.bold("Usage:")}
   ${APP_NAME} setup                     Run the onboarding wizard
-  ${APP_NAME} setup <component> [options]
-
-${chalk.bold("Components:")}
-  python    Verify a Python 3 interpreter is reachable for code execution
-  speech    Pick + download the speech-to-text and text-to-speech models and an audio recorder
-
-${chalk.bold("Options:")}
-  -c, --check   Check if dependencies are installed without installing
-  --json        Output status as JSON
 
 ${chalk.bold("Examples:")}
   ${APP_NAME} setup                  Run the onboarding wizard
-  ${APP_NAME} setup python           Check Python execution dependencies
-  ${APP_NAME} setup speech           Set up speech (pick STT + TTS models, install a recorder)
-  ${APP_NAME} setup speech --check   Check if speech dependencies are available
-  ${APP_NAME} setup python --check   Check if Python execution is available
 `);
 }

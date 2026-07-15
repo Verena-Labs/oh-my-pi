@@ -21,6 +21,10 @@ import { shortenPath } from "../../tools/render-utils";
 import { DynamicBorder } from "./dynamic-border";
 import { HookSelectorComponent } from "./hook-selector";
 
+function piAllowsRichSessionSelector(): boolean {
+	return false;
+}
+
 /**
  * Themed glyph + colored label for a session's lifecycle status, or `undefined`
  * when there is nothing useful to show (`unknown`/unset) so the metadata line
@@ -314,8 +318,8 @@ class SessionList implements Component {
 	) {
 		this.#getTerminalRows = getTerminalRows;
 		this.#allSessions = sessions;
-		this.#showCwd = showCwd;
-		this.#historyMatcher = historyMatcher;
+		this.#showCwd = piAllowsRichSessionSelector() && showCwd;
+		this.#historyMatcher = piAllowsRichSessionSelector() ? historyMatcher : undefined;
 		this.#filteredSessions = sessions;
 		this.#searchInput = new Input();
 
@@ -340,8 +344,8 @@ class SessionList implements Component {
 	 * entry has a title. The reserve covers below-editor hook widgets / cursor.
 	 */
 	#visibleCount(): number {
-		const CHROME = 12;
-		const PER_SESSION = 4;
+		const CHROME = piAllowsRichSessionSelector() ? 12 : 9;
+		const PER_SESSION = piAllowsRichSessionSelector() ? 4 : 3;
 		const RESERVE = 1;
 		const budget = this.#getTerminalRows() - CHROME - RESERVE;
 		return Math.max(2, Math.floor(budget / PER_SESSION));
@@ -349,6 +353,7 @@ class SessionList implements Component {
 
 	/** Replace the visible dataset, e.g. when toggling folder/all-projects scope. */
 	setSessions(sessions: SessionInfo[], showCwd: boolean): void {
+		if (!piAllowsRichSessionSelector()) return;
 		this.#allSessions = sessions;
 		this.#showCwd = showCwd;
 		this.#selectedIndex = 0;
@@ -483,6 +488,7 @@ class SessionList implements Component {
 	}
 
 	removeSession(sessionPath: string): void {
+		if (!piAllowsRichSessionSelector()) return;
 		const index = this.#allSessions.findIndex(s => s.path === sessionPath);
 		if (index === -1) return;
 		this.#allSessions.splice(index, 1);
@@ -522,12 +528,17 @@ class SessionList implements Component {
 		const lines: string[] = [];
 		this.#hitRows = [];
 
-		// Render search input
-		lines.push(...this.#searchInput.render(width));
-		lines.push(""); // Blank line after search
+		if (piAllowsRichSessionSelector()) {
+			// OMP's richer picker keeps a fuzzy-search input. Pi deliberately exposes
+			// only a plain current-project list.
+			lines.push(...this.#searchInput.render(width));
+			lines.push("");
+		}
 
 		if (this.#filteredSessions.length === 0) {
-			if (this.#showCwd) {
+			if (!piAllowsRichSessionSelector()) {
+				lines.push(truncateToWidth(theme.fg("muted", "  No sessions found in this project"), width));
+			} else if (this.#showCwd) {
 				// "All" scope - no sessions anywhere that match filter
 				lines.push(truncateToWidth(theme.fg("muted", "  No sessions found"), width));
 			} else {
@@ -585,6 +596,16 @@ class SessionList implements Component {
 			const cursorWidth = visibleWidth(cursorSymbol);
 			const cursor = isSelected ? theme.fg("accent", cursorSymbol) : padding(cursorWidth);
 			const maxWidth = rowWidth - cursorWidth; // Account for cursor width
+
+			if (!piAllowsRichSessionSelector()) {
+				const displayName = session.title?.trim() || normalizedMessage || "Untitled session";
+				const truncatedName = truncateToWidth(displayName, maxWidth);
+				sessionLines.push(cursor + (isSelected ? theme.bold(truncatedName) : truncatedName));
+				sessionLines.push(`  ${theme.fg("dim", formatDate(session.modified))}`);
+				sessionLines.push("");
+				for (let k = blockStart; k < sessionLines.length; k++) sessionRowIndex[k] = i;
+				continue;
+			}
 
 			if (session.title) {
 				// Has title: show title on first line, dimmed first message on second line
@@ -653,8 +674,9 @@ class SessionList implements Component {
 		// session"; with a typed query it stays bound to the search Input so users
 		// can still edit their filter text.
 		if (
-			matchesKey(keyData, "delete") ||
-			(matchesKey(keyData, "backspace") && this.#searchInput.getValue().length === 0)
+			piAllowsRichSessionSelector() &&
+			(matchesKey(keyData, "delete") ||
+				(matchesKey(keyData, "backspace") && this.#searchInput.getValue().length === 0))
 		) {
 			const selected = this.#filteredSessions[this.#selectedIndex];
 			if (selected && this.onDeleteRequest) {
@@ -707,13 +729,16 @@ class SessionList implements Component {
 			return;
 		}
 		// Tab - toggle folder / all-projects scope
-		if (matchesKey(keyData, "tab")) {
+		if (piAllowsRichSessionSelector() && matchesKey(keyData, "tab")) {
 			this.onToggleScope?.();
 			return;
 		}
-		// Pass everything else to search input
-		this.#searchInput.handleInput(keyData);
-		this.#filterSessions(this.#searchInput.getValue());
+		if (piAllowsRichSessionSelector()) {
+			// Pass everything else to OMP's search input. Pi ignores printable input
+			// here so it cannot reactivate hidden fuzzy/history filtering.
+			this.#searchInput.handleInput(keyData);
+			this.#filterSessions(this.#searchInput.getValue());
+		}
 	}
 }
 
@@ -783,10 +808,10 @@ export class SessionSelectorComponent extends Container {
 		super();
 
 		this.#messageContainer = new Container();
-		this.#onDelete = options.onDelete;
-		this.#loadAllSessions = options.loadAllSessions;
+		this.#onDelete = piAllowsRichSessionSelector() ? options.onDelete : undefined;
+		this.#loadAllSessions = piAllowsRichSessionSelector() ? options.loadAllSessions : undefined;
 		this.#folderSessions = sessions;
-		this.#globalSessions = options.allSessions ?? null;
+		this.#globalSessions = piAllowsRichSessionSelector() ? (options.allSessions ?? null) : null;
 		this.#getTerminalRows = options.getTerminalRows ?? (() => 24);
 		this.#fillHeight = options.fillHeight ?? false;
 		// Add header
@@ -800,7 +825,12 @@ export class SessionSelectorComponent extends Container {
 		// Create session list in folder scope; the empty-state hint invites the
 		// user to Tab into all-projects rather than silently surfacing other
 		// projects' history (issue #3099).
-		this.#sessionList = new SessionList(sessions, false, options.historyMatcher, options.getTerminalRows);
+		this.#sessionList = new SessionList(
+			sessions,
+			false,
+			piAllowsRichSessionSelector() ? options.historyMatcher : undefined,
+			options.getTerminalRows,
+		);
 		// Every exit path cancels the list's pending history merge, so a stale
 		// debounce timer can never run its SQLite lookup after the picker closed.
 		this.#sessionList.onSelect = session => {
@@ -816,10 +846,12 @@ export class SessionSelectorComponent extends Container {
 			onExit();
 		};
 		this.#sessionList.onRequestRender = () => this.#onRequestRender?.();
-		this.#sessionList.onDeleteRequest = (session: SessionInfo) => {
-			this.#showDeleteConfirmation(session);
-		};
-		if (this.#loadAllSessions || this.#globalSessions) {
+		if (piAllowsRichSessionSelector()) {
+			this.#sessionList.onDeleteRequest = (session: SessionInfo) => {
+				this.#showDeleteConfirmation(session);
+			};
+		}
+		if (piAllowsRichSessionSelector() && (this.#loadAllSessions || this.#globalSessions)) {
 			this.#sessionList.onToggleScope = () => {
 				void this.#toggleScope();
 			};
@@ -830,6 +862,7 @@ export class SessionSelectorComponent extends Container {
 	}
 
 	#headerLabel(): string {
+		if (!piAllowsRichSessionSelector()) return theme.bold("Resume Session");
 		const scopeLabel = this.#scope === "all" ? "all projects" : "current folder";
 		return `${theme.bold("Resume Session")} ${theme.fg("muted", `(${scopeLabel})`)}`;
 	}
@@ -840,6 +873,7 @@ export class SessionSelectorComponent extends Container {
 	 * never pays for the cross-project scan.
 	 */
 	async #toggleScope(): Promise<void> {
+		if (!piAllowsRichSessionSelector()) return;
 		if (this.#toggling || this.#confirmationDialog) return;
 		if (this.#scope === "folder") {
 			let global = this.#globalSessions;
@@ -896,6 +930,7 @@ export class SessionSelectorComponent extends Container {
 	}
 
 	#showDeleteConfirmation(session: SessionInfo): void {
+		if (!piAllowsRichSessionSelector()) return;
 		const displayName = session.title || session.firstMessage.slice(0, 40) || session.id;
 		const closeDialog = () => {
 			this.#confirmationDialog = null;
@@ -966,6 +1001,10 @@ export class SessionSelectorComponent extends Container {
 
 	/** Blank · keybinding hint · bottom border. Rendered by {@link render}. */
 	#footerLines(width: number): string[] {
+		if (!piAllowsRichSessionSelector()) {
+			const hint = theme.fg("muted", "  [Enter select · Esc cancel]");
+			return ["", hint, "", ...this.#bottomBorder.render(width)];
+		}
 		const scopeHint = this.#scope === "all" ? "current folder" : "all projects";
 		const hint = theme.fg("muted", `  [Del/⌫ delete · Enter select · Tab ${scopeHint} · Esc cancel]`);
 		return ["", hint, "", ...this.#bottomBorder.render(width)];

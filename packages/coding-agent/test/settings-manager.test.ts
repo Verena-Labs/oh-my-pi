@@ -72,6 +72,18 @@ describe("Settings", () => {
 	});
 
 	describe("main config file selection", () => {
+		it("reloads persisted layers in place while preserving runtime overrides", async () => {
+			await writeSettings({ temperature: 0.2, topP: 0.1 });
+			const settings = await Settings.loadIsolated({ cwd: projectDir, agentDir });
+			settings.override("topP", 0.7);
+
+			await writeSettings({ temperature: 0.8, topP: 0.3 });
+			await settings.reload();
+
+			expect(settings.get("temperature")).toBe(0.8);
+			expect(settings.get("topP")).toBe(0.7);
+		});
+
 		it("loads and updates an existing config.yaml without creating config.yml", async () => {
 			const yamlConfigPath = path.join(agentDir, "config.yaml");
 			await Bun.write(yamlConfigPath, YAML.stringify({ setupVersion: 1 }, null, 2));
@@ -189,7 +201,7 @@ describe("Settings", () => {
 			expect(isolated.get("display.showTokenUsage")).toBe(true);
 		});
 
-		it("re-resolves path-scoped arrays when cwd changes", async () => {
+		it("ignores path-scoped model and provider arrays when cwd changes", async () => {
 			const otherDir = path.join(tempDir.toString(), "other-project");
 			fs.mkdirSync(otherDir, { recursive: true });
 
@@ -211,17 +223,17 @@ describe("Settings", () => {
 				},
 			});
 
-			expect(settings.get("enabledModels")).toEqual(["always-model", "project-model"]);
-			expect(settings.get("disabledProviders")).toEqual(["always-provider", "project-provider"]);
+			expect(settings.get("enabledModels")).toEqual(["always-model"]);
+			expect(settings.get("disabledProviders")).toEqual(["always-provider"]);
 
 			await settings.reloadForCwd(otherDir);
 
-			expect(settings.get("enabledModels")).toEqual(["always-model", "other-model"]);
-			expect(settings.get("disabledProviders")).toEqual(["always-provider", "other-provider"]);
+			expect(settings.get("enabledModels")).toEqual(["always-model"]);
+			expect(settings.get("disabledProviders")).toEqual(["always-provider"]);
 		});
 
-		it("migrates legacy snapcompact system prompt booleans to scoped modes", () => {
-			expect(Settings.isolated({ "snapcompact.systemPrompt": true }).get("snapcompact.systemPrompt")).toBe("all");
+		it("keeps legacy snapcompact system prompt booleans disabled", () => {
+			expect(Settings.isolated({ "snapcompact.systemPrompt": true }).get("snapcompact.systemPrompt")).toBe("none");
 			const nestedLegacy = { snapcompact: { systemPrompt: false } } as Partial<Record<SettingPath, unknown>>;
 			expect(Settings.isolated(nestedLegacy).get("snapcompact.systemPrompt")).toBe("none");
 		});
@@ -328,7 +340,7 @@ describe("Settings", () => {
 			expect(savedSettings.terminal).toEqual({ showProgress: true });
 		});
 
-		it("filters model allow-list and disabled providers by current path prefix", async () => {
+		it("ignores path-scoped model allow-list and disabled-provider entries", async () => {
 			const workDir = path.join(projectDir, "work", "service");
 			const privateDir = path.join(projectDir, "private", "app");
 			fs.mkdirSync(workDir, { recursive: true });
@@ -348,13 +360,13 @@ describe("Settings", () => {
 			});
 
 			const workSettings = await Settings.init({ cwd: workDir, agentDir });
-			expect(workSettings.get("enabledModels")).toEqual(["claude-sonnet-4-5", "anthropic/claude-opus-4-5"]);
-			expect(workSettings.get("disabledProviders")).toEqual(["ollama", "openai"]);
+			expect(workSettings.get("enabledModels")).toEqual(["claude-sonnet-4-5"]);
+			expect(workSettings.get("disabledProviders")).toEqual(["ollama"]);
 
 			resetSettingsForTest();
 			const privateSettings = await Settings.init({ cwd: privateDir, agentDir });
-			expect(privateSettings.get("enabledModels")).toEqual(["claude-sonnet-4-5", "openai/gpt-5.2-codex"]);
-			expect(privateSettings.get("disabledProviders")).toEqual(["ollama", "anthropic"]);
+			expect(privateSettings.get("enabledModels")).toEqual(["claude-sonnet-4-5"]);
+			expect(privateSettings.get("disabledProviders")).toEqual(["ollama"]);
 		});
 
 		it("should preserve custom settings when changing theme", async () => {
@@ -518,6 +530,39 @@ describe("Settings", () => {
 	});
 
 	describe("migrations", () => {
+		it("migrates the legacy default provider and model into modelRoles.default", async () => {
+			const jsonPath = path.join(agentDir, "settings.json");
+			await Bun.write(
+				jsonPath,
+				JSON.stringify({
+					defaultProvider: "openai-codex",
+					defaultModel: "gpt-5.6-sol",
+					defaultThinkingLevel: "medium",
+				}),
+			);
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.getModelRole("default")).toBe("openai-codex/gpt-5.6-sol");
+			const migrated = await readSettings();
+			expect((migrated.modelRoles as Record<string, unknown>).default).toBe("openai-codex/gpt-5.6-sol");
+			expect("defaultProvider" in migrated).toBe(false);
+			expect("defaultModel" in migrated).toBe(false);
+			expect(migrated.defaultThinkingLevel).toBe("medium");
+		});
+
+		it("preserves an explicit modelRoles.default over the legacy default model fields", async () => {
+			await writeSettings({
+				defaultProvider: "openai-codex",
+				defaultModel: "gpt-5.6-sol",
+				modelRoles: { default: "anthropic/claude-opus-4-6" },
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.getModelRole("default")).toBe("anthropic/claude-opus-4-6");
+		});
+
 		it("maps removed atom edit mode settings to hashline", async () => {
 			await writeSettings({
 				edit: {

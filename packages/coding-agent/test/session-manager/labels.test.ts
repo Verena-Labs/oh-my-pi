@@ -2,7 +2,8 @@ import { describe, expect, it } from "bun:test";
 import type { LabelEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 
-describe("SessionManager labels", () => {
+// Retained for OMP parity; Pi centrally rejects label writes.
+describe.skip("OMP SessionManager labels (unavailable in Pi)", () => {
 	it("sets and gets labels", () => {
 		const session = SessionManager.inMemory();
 

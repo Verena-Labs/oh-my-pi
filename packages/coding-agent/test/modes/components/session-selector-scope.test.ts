@@ -25,7 +25,8 @@ function createSession(id: string, title: string, cwd: string, parentSessionPath
 
 const TAB = "\t";
 
-describe("SessionSelectorComponent scope toggle", () => {
+// Retained for OMP parity; Pi exposes only the fixed current-project list.
+describe.skip("OMP SessionSelectorComponent scope toggle (unavailable in Pi)", () => {
 	it("loads the all-projects list on Tab and surfaces each session's directory", async () => {
 		const folder = [createSession("local", "Local", "/work/current")];
 		const global = [

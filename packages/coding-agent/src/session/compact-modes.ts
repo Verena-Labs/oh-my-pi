@@ -44,7 +44,7 @@ export interface CompactModeDef {
 	readonly requiresRemote?: boolean;
 }
 
-export const COMPACT_MODES: readonly CompactModeDef[] = [
+const OMP_COMPACT_MODES: readonly CompactModeDef[] = [
 	{
 		name: "soft",
 		description: "Summarize locally with the active model (skip remote endpoints)",
@@ -63,6 +63,9 @@ export const COMPACT_MODES: readonly CompactModeDef[] = [
 		rejectsFocus: true,
 	},
 ];
+
+/** Pi exposes baseline in-place compaction only; OMP's extra modes stay dormant. */
+export const COMPACT_MODES: readonly CompactModeDef[] = OMP_COMPACT_MODES.slice(0, 0);
 
 /** Resolve a subcommand token (case-insensitive) to its mode definition. */
 export function findCompactMode(name: string): CompactModeDef | undefined {

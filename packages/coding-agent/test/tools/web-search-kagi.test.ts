@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, setSystemTime, vi } from "bun:test";
 import type { AuthStorage, FetchImpl } from "@oh-my-pi/pi-ai";
-import { type KagiSearchRequest, searchWithKagi } from "@oh-my-pi/pi-coding-agent/web/kagi";
-import { KagiProvider, searchKagi } from "@oh-my-pi/pi-coding-agent/web/search/providers/kagi";
 import { SearchProviderError } from "@oh-my-pi/pi-coding-agent/web/search/types";
+import { type KagiSearchRequest, searchWithKagi } from "../../src/web/kagi";
+import { KagiProvider, searchKagi } from "../../src/web/search/providers/kagi";
 
 const fakeAuthStorage = {
 	async getApiKey() {

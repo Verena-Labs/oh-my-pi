@@ -17,9 +17,11 @@ import type { HookCommandContext } from "../../../../extensibility/hooks/types";
 import reviewCustomRequestTemplate from "../../../../prompts/review-custom-request.md" with { type: "text" };
 import reviewHeadlessRequestTemplate from "../../../../prompts/review-headless-request.md" with { type: "text" };
 import reviewRequestTemplate from "../../../../prompts/review-request.md" with { type: "text" };
-import * as gh from "../../../../tools/gh";
 import * as git from "../../../../utils/git";
 import * as jj from "../../../../utils/jj";
+
+/** Pi preserves local multi-agent review but not OMP's GitHub/PR filesystem path. */
+const PI_REMOTE_PR_REVIEW_ENABLED = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -399,6 +401,19 @@ async function buildPrReviewPrompt(
 	ref: ReviewPrRef,
 	extraInstructions: string,
 ): Promise<string | undefined> {
+	if (!PI_REMOTE_PR_REVIEW_ENABLED) {
+		const message =
+			"Remote pull-request review is unavailable in Pi; check out the branch locally and review it against a local base branch.";
+		if (ctx.hasUI) {
+			ctx.ui.notify(message, "warning");
+			return undefined;
+		}
+		return message;
+	}
+
+	// Keep the upstream implementation dormant for replay, but do not resolve
+	// or initialize GitHub code unless the distribution policy changes first.
+	const gh = await import("../../../../tools/gh");
 	let diffText: string;
 	try {
 		const lookup = await gh.getOrFetchPrDiff({ cwd: api.cwd, repo: ref.repo, number: ref.number });
@@ -490,10 +505,12 @@ export class ReviewCommand implements CustomCommand {
 		}
 
 		const choices: Array<{ label: string; value: ReviewMenuChoice }> = [
-			...findRecentPrRefs(ctx, REVIEW_CONTEXT_PR_LIMIT).map(ref => ({
-				label: `Review PR ${ref.repo}#${ref.number} from conversation`,
-				value: { kind: "detected-pr" as const, ref },
-			})),
+			...(PI_REMOTE_PR_REVIEW_ENABLED
+				? findRecentPrRefs(ctx, REVIEW_CONTEXT_PR_LIMIT).map(ref => ({
+						label: `Review PR ${ref.repo}#${ref.number} from conversation`,
+						value: { kind: "detected-pr" as const, ref },
+					}))
+				: []),
 			{
 				label: "1. Review against a base branch (PR Style)",
 				value: { kind: "base-branch" },

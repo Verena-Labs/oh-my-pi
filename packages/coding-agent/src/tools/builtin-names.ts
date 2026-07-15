@@ -6,10 +6,6 @@ export const BUILTIN_TOOL_NAMES = [
 	"ast_grep",
 	"ast_edit",
 	"ask",
-	"debug",
-	"eval",
-	"ssh",
-	"github",
 	"glob",
 	"grep",
 	"lsp",
@@ -29,10 +25,33 @@ export const BUILTIN_TOOL_NAMES = [
 	"recall",
 	"reflect",
 	"learn",
-	"manage_skill",
 ] as const;
 
 export type BuiltinToolName = (typeof BUILTIN_TOOL_NAMES)[number];
+
+/** Upstream tool IDs that Pi reserves so extensions cannot reactivate disabled built-ins. */
+export const PI_DISABLED_TOOL_NAMES: ReadonlySet<string> = new Set([
+	"debug",
+	"eval",
+	"github",
+	"manage_skill",
+	"ssh",
+	"tts",
+]);
+
+export function isPiDisabledToolName(name: string): boolean {
+	return PI_DISABLED_TOOL_NAMES.has(name.toLowerCase());
+}
+
+/**
+ * Retained Pi built-ins whose narrowed semantics must not be replaced by an
+ * extension, SDK custom tool, MCP tool, or plugin reload.
+ */
+export const PI_PROTECTED_BUILTIN_TOOL_NAMES: ReadonlySet<string> = new Set(["learn"]);
+
+export function isPiProtectedBuiltinToolName(name: string): boolean {
+	return PI_PROTECTED_BUILTIN_TOOL_NAMES.has(name.toLowerCase());
+}
 
 const LEGACY_BUILTIN_TOOL_NAME_ALIASES: ReadonlyMap<string, BuiltinToolName> = new Map([
 	["search", "grep"],

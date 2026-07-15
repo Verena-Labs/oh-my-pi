@@ -12,6 +12,7 @@ import {
 	getEnumValues,
 	getType,
 	getUi,
+	isPiLockedSetting,
 	type SettingPath,
 	Settings,
 	type SettingValue,
@@ -53,6 +54,7 @@ const ALL_SETTING_PATHS = Object.keys(SETTINGS_SCHEMA) as SettingPath[];
 function findSettingDef(path: string): CliSettingDef | undefined {
 	if (!(path in SETTINGS_SCHEMA)) return undefined;
 	const key = path as SettingPath;
+	if (isPiLockedSetting(key)) return undefined;
 	const ui = getUi(key);
 	return {
 		path: key,
@@ -309,14 +311,14 @@ function handleGet(key: string | undefined, flags: { json?: boolean }): void {
 	if (!key) {
 		console.error(chalk.red(`Usage: ${APP_NAME} config get <key>`));
 		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
-		process.exit(1);
+		return process.exit(1);
 	}
 
 	const def = findSettingDef(key);
 	if (!def) {
 		console.error(chalk.red(`Unknown setting: ${key}`));
 		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
-		process.exit(1);
+		return process.exit(1);
 	}
 
 	const value = settings.get(def.path);
@@ -333,21 +335,21 @@ async function handleSet(key: string | undefined, value: string | undefined, fla
 	if (!key || value === undefined) {
 		console.error(chalk.red(`Usage: ${APP_NAME} config set <key> <value>`));
 		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
-		process.exit(1);
+		return process.exit(1);
 	}
 
 	const def = findSettingDef(key);
 	if (!def) {
 		console.error(chalk.red(`Unknown setting: ${key}`));
 		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
-		process.exit(1);
+		return process.exit(1);
 	}
 
 	try {
 		parseAndSetValue(def.path, value);
 	} catch (err) {
 		console.error(chalk.red(String(err)));
-		process.exit(1);
+		return process.exit(1);
 	}
 
 	const newValue = settings.get(def.path);
@@ -363,14 +365,14 @@ async function handleReset(key: string | undefined, flags: { json?: boolean }): 
 	if (!key) {
 		console.error(chalk.red(`Usage: ${APP_NAME} config reset <key>`));
 		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
-		process.exit(1);
+		return process.exit(1);
 	}
 
 	const def = findSettingDef(key);
 	if (!def) {
 		console.error(chalk.red(`Unknown setting: ${key}`));
 		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
-		process.exit(1);
+		return process.exit(1);
 	}
 
 	const path = def.path as SettingPath;

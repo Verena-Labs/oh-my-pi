@@ -16,6 +16,7 @@
  */
 import type { SkillsSettings } from "../../config/settings";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES } from "../../slash-commands/builtin-registry";
+import { isPiDisabledSlashCommandName } from "../../slash-commands/pi-policy";
 import type { CustomCommandSource, LoadedCustomCommand } from "../custom-commands";
 import { getSkillSlashCommandName, type Skill } from "../skills";
 import type { SlashCommandInfo, SlashCommandLocation } from "../slash-commands";
@@ -34,6 +35,7 @@ export function getSessionSlashCommands(session: CommandsCapableSession): SlashC
 	const runner = session.extensionRunner;
 	if (runner) {
 		for (const cmd of runner.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES)) {
+			if (isPiDisabledSlashCommandName(cmd.name)) continue;
 			out.push({
 				name: cmd.name,
 				description: cmd.description,
@@ -43,6 +45,7 @@ export function getSessionSlashCommands(session: CommandsCapableSession): SlashC
 	}
 
 	for (const cmd of session.customCommands) {
+		if (isPiDisabledSlashCommandName(cmd.command.name)) continue;
 		out.push({
 			name: cmd.command.name,
 			description: cmd.command.description,

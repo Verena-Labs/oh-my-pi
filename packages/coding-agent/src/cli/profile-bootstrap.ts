@@ -44,7 +44,7 @@ import {
 } from "./flag-tables";
 
 function isProfileBootstrapSubcommand(arg: string): boolean {
-	return arg === "launch" || arg === "acp";
+	return arg === "launch";
 }
 
 function needsBoundaryAfterGlobalStrip(stripped: readonly string[]): boolean {
@@ -72,9 +72,9 @@ export interface ProfileBootstrapResult {
  * registered command that owns its own flags (e.g. `grep`): everything from
  * that token onward is forwarded verbatim so a subcommand's own flags and
  * positionals are never stolen (`omp grep --profile <path>` greps for
- * `--profile`; it does not select a profile). `launch` and `acp` are explicit
- * spellings of launch-shaped commands, so `omp launch --profile work` and
- * `omp acp --profile work` still select profile `work`.
+ * `--profile`; it does not select a profile). `launch` is the explicit
+ * spelling of the launch-shaped command, so `pi launch --profile work` still
+ * selects profile `work`.
  *
  * Throws when either flag is supplied without a value.
  */

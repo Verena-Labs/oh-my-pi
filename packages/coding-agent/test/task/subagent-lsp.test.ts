@@ -13,10 +13,10 @@ import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/p
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import type { AgentDefinition, TaskParams } from "@oh-my-pi/pi-coding-agent/task/types";
-import type { IsolationHandle, WorktreeBaseline } from "@oh-my-pi/pi-coding-agent/task/worktree";
-import * as worktreeModule from "@oh-my-pi/pi-coding-agent/task/worktree";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import type { IsolationHandle, WorktreeBaseline } from "../../src/task/worktree";
+import * as worktreeModule from "../../src/task/worktree";
 import "@oh-my-pi/pi-coding-agent/tools/yield";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 
@@ -97,7 +97,7 @@ function createSession(
 	} = {},
 ): ToolSession {
 	const modelRegistry = {
-		authStorage: undefined,
+		authStorage: { enforceSingleCredentialPolicy: () => {} },
 		refresh: async () => {},
 		getAvailable: () => [],
 		getApiKey: async () => null,

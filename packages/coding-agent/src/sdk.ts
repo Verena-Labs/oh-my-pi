@@ -1,3 +1,4 @@
+import * as os from "node:os";
 import {
 	Agent,
 	type AgentEvent,
@@ -16,7 +17,17 @@ import {
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { FALLBACK_DIALECT, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import type { Component } from "@oh-my-pi/pi-tui";
-import { $env, $flag, getAgentDir, getProjectDir, logger, postmortem, prompt, Snowflake } from "@oh-my-pi/pi-utils";
+import {
+	$env,
+	$flag,
+	getAgentDir,
+	getProjectDir,
+	logger,
+	normalizePathForComparison,
+	postmortem,
+	prompt,
+	Snowflake,
+} from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import {
 	discoverAdvisorConfigs,
@@ -25,10 +36,8 @@ import {
 	formatAdvisorContextPrompt,
 } from "./advisor";
 import { type AsyncJob, AsyncJobManager } from "./async";
-import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
-import { loadCapability } from "./capability";
-import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
-import { bucketRules } from "./capability/rule-buckets";
+import { runWithCapabilitySettings } from "./capability";
+import { type Rule, setActiveRules } from "./capability/rule";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
 import { isAuthenticated, kNoAuth, ModelRegistry } from "./config/model-registry";
@@ -45,14 +54,21 @@ import {
 	resolveModelRoleValue,
 } from "./config/model-resolver";
 import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate } from "./config/prompt-templates";
+import { applyProviderGlobalsFromSettings } from "./config/provider-globals";
 import { buildServiceTierByFamily } from "./config/service-tier";
-import { Settings, type SkillsSettings } from "./config/settings";
+import { Settings, type SkillsSettings, validateProviderMaxInFlightRequests } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
-import { initializeWithSettings } from "./discovery";
-import { disposeAllJuliaKernelSessions, disposeJuliaKernelSessionsByOwner } from "./eval/jl/executor";
-import { disposeAllKernelSessions, disposeKernelSessionsByOwner } from "./eval/py/executor";
-import { disposeAllRubyKernelSessions, disposeRubyKernelSessionsByOwner } from "./eval/rb/executor";
+import { initializeWithSettings, reset as resetCapabilities } from "./discovery";
+import {
+	adoptPreloadedPluginRoots,
+	invalidatePluginRootsAndCaches,
+	preparePluginRoots,
+	resolveActiveProjectRegistryPath,
+} from "./discovery/helpers";
+import { disposeJuliaKernelSessionsByOwner } from "./eval/jl/executor";
+import { disposeKernelSessionsByOwner } from "./eval/py/executor";
+import { disposeRubyKernelSessionsByOwner } from "./eval/rb/executor";
 import { defaultEvalSessionId } from "./eval/session-id";
 import {
 	type CustomCommandsLoadResult,
@@ -75,6 +91,7 @@ import {
 	type ToolDefinition,
 	wrapRegisteredTools,
 } from "./extensibility/extensions";
+import type { HookUIContext } from "./extensibility/hooks/types";
 import {
 	loadSkills as loadSkillsInternal,
 	type Skill,
@@ -101,13 +118,11 @@ import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
 import {
-	collectEnvSecrets,
 	deobfuscateSessionContext,
 	deobfuscateToolArguments,
-	loadSecrets,
 	obfuscateMessages,
 	obfuscateProviderContext,
-	SecretObfuscator,
+	type SecretObfuscator,
 } from "./secrets";
 import { AgentSession, type PlanYolo, type Prewalk } from "./session/agent-session";
 import { discoverAuthStorage as discoverAuthStorageFromConfig } from "./session/auth-broker-config";
@@ -125,8 +140,7 @@ import { SessionManager } from "./session/session-manager";
 import { createSettingsAwareStreamFn } from "./session/settings-stream-fn";
 import { SnapcompactInlineTransformer } from "./session/snapcompact-inline";
 import { createSnapcompactSavingsRecorder } from "./session/snapcompact-savings-journal";
-import { closeAllConnections } from "./ssh/connection-manager";
-import { unmountAll } from "./ssh/sshfs-mount";
+import { isPiDisabledSlashCommandName } from "./slash-commands/pi-policy";
 import {
 	type BuildSystemPromptResult,
 	buildSystemPrompt as buildSystemPromptInternal,
@@ -160,12 +174,11 @@ import {
 	BashTool,
 	BUILTIN_TOOLS,
 	computeEssentialBuiltinNames,
+	createDelegateTools,
 	createTools,
-	createVibeTools,
 	type DeferredDiagnosticsEntry,
 	discoverStartupLspServers,
 	EditTool,
-	EvalTool,
 	filterInitialToolsForDiscoveryAll,
 	GlobTool,
 	GrepTool,
@@ -175,9 +188,9 @@ import {
 	isSearchProviderId,
 	isSearchProviderPreference,
 	type LspStartupServerInfo,
-	loadSshTool,
 	ReadTool,
 	ResolveTool,
+	reloadLspRuntime,
 	renderSearchToolBm25Description,
 	SearchToolBm25Tool,
 	setExcludedSearchProviders,
@@ -189,13 +202,17 @@ import {
 	WriteTool,
 	warmupLspServers,
 } from "./tools";
-import { normalizeToolName, normalizeToolNames } from "./tools/builtin-names";
+import {
+	isPiDisabledToolName,
+	isPiProtectedBuiltinToolName,
+	normalizeToolName,
+	normalizeToolNames,
+} from "./tools/builtin-names";
 import { ToolContextStore } from "./tools/context";
 import { getImageGenTools } from "./tools/image-gen";
 import { isIrcEnabled } from "./tools/irc";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { queueResolveHandler } from "./tools/resolve";
-import { ttsTool } from "./tools/tts";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
 import { buildNamedToolChoice } from "./utils/tool-choice";
@@ -384,7 +401,7 @@ function applyMCPEnvironment(result: { exaApiKeys: string[] }): void {
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: getProjectDir() */
 	cwd?: string;
-	/** Global config directory. Default: ~/.omp/agent */
+	/** Test-isolation override. Normal Pi SDK processes are pinned to ~/.pi/agent. */
 	agentDir?: string;
 	/** Spawns to allow. Default: "*" */
 	spawns?: string;
@@ -393,6 +410,8 @@ export interface CreateAgentSessionOptions {
 	authStorage?: AuthStorage;
 	/** Model registry. Default: discoverModels(authStorage, agentDir) */
 	modelRegistry?: ModelRegistry;
+	/** Legacy SDK compatibility only. Pi never adopts automatic secret obfuscation. */
+	obfuscator?: SecretObfuscator;
 
 	/** Model to use. Default: from settings, else first available */
 	model?: Model;
@@ -635,11 +654,9 @@ export {
 	BUILTIN_TOOLS,
 	createTools,
 	EditTool,
-	EvalTool,
 	GlobTool,
 	GrepTool,
 	HIDDEN_TOOLS,
-	loadSshTool,
 	ReadTool,
 	ResolveTool,
 	type ToolSession,
@@ -650,6 +667,23 @@ export {
 // Helper Functions
 
 // Discovery Functions
+
+function isBunTestFileProcess(): boolean {
+	return process.env.NODE_ENV === "test" && process.argv.some(arg => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(arg));
+}
+
+/**
+ * Enforce Pi's one permanent SDK environment while retaining OMP's temporary
+ * Bun-test isolation seam for the vendored regression suite.
+ */
+function resolvePiSdkAgentDir(agentDir: string | undefined): string {
+	const expected = getAgentDir();
+	if (agentDir === undefined || normalizePathForComparison(agentDir) === normalizePathForComparison(expected)) {
+		return expected;
+	}
+	if (isBunTestFileProcess()) return agentDir;
+	throw new Error(`Pi SDK uses one agent directory at ${expected}; alternate agent directories are unavailable.`);
+}
 
 /**
  * Create an AuthStorage instance.
@@ -666,7 +700,7 @@ export {
  * generator share the same credential-discovery logic.
  */
 export async function discoverAuthStorage(agentDir: string = getAgentDir()): Promise<AuthStorage> {
-	return discoverAuthStorageFromConfig(agentDir);
+	return discoverAuthStorageFromConfig(resolvePiSdkAgentDir(agentDir));
 }
 
 /**
@@ -785,7 +819,7 @@ export async function discoverContextFiles(
 export async function discoverPromptTemplates(cwd?: string, agentDir?: string): Promise<PromptTemplate[]> {
 	return await loadPromptTemplatesInternal({
 		cwd: cwd ?? getProjectDir(),
-		agentDir: agentDir ?? getAgentDir(),
+		agentDir: resolvePiSdkAgentDir(agentDir),
 	});
 }
 
@@ -801,7 +835,7 @@ export async function discoverSlashCommands(cwd?: string): Promise<FileSlashComm
  */
 export async function discoverCustomTSCommands(cwd?: string, agentDir?: string): Promise<CustomCommandsLoadResult> {
 	const resolvedCwd = cwd ?? getProjectDir();
-	const resolvedAgentDir = agentDir ?? getAgentDir();
+	const resolvedAgentDir = resolvePiSdkAgentDir(agentDir);
 
 	return loadCustomCommandsInternal({
 		cwd: resolvedCwd,
@@ -882,31 +916,15 @@ const TOOL_DEFINITION_MARKER = Symbol("__isToolDefinition");
 /** Matches the truncation applied to per-server instructions inside `rebuildSystemPrompt`. */
 const MAX_MCP_INSTRUCTIONS_LENGTH = 4000;
 
-let sshCleanupRegistered = false;
-
-async function cleanupSshResources(): Promise<void> {
-	const results = await Promise.allSettled([closeAllConnections(), unmountAll()]);
-	for (const result of results) {
-		if (result.status === "rejected") {
-			logger.warn("SSH cleanup failed", { error: String(result.reason) });
-		}
-	}
+/** Pi keeps OMP's downstream transform hooks dormant without scanning for secrets. */
+function disabledPiSecretObfuscator(): SecretObfuscator | undefined {
+	return undefined;
 }
 
-function registerSshCleanup(): void {
-	if (sshCleanupRegistered) return;
-	sshCleanupRegistered = true;
-	postmortem.register("ssh-cleanup", cleanupSshResources);
-}
-
-let evalCleanupRegistered = false;
-
-function registerEvalCleanup(): void {
-	if (evalCleanupRegistered) return;
-	evalCleanupRegistered = true;
-	postmortem.register("python-cleanup", disposeAllKernelSessions);
-	postmortem.register("ruby-cleanup", disposeAllRubyKernelSessions);
-	postmortem.register("julia-cleanup", disposeAllJuliaKernelSessions);
+/** Pi never silently changes the user's selected model or installs an OMP
+ * retry-role fallback behind an explicit model selector. */
+function piAllowsModelFallback(): boolean {
+	return false;
 }
 
 function customToolToDefinition(tool: CustomTool): ToolDefinition {
@@ -1030,6 +1048,27 @@ function createCustomToolsExtension(tools: CustomTool[]): ExtensionFactory {
 	};
 }
 
+/** Adapt the extension UI surface to the deliberately narrower custom-tool
+ * hook surface. In particular, extension custom components receive the live
+ * keybinding manager while custom tools retain their legacy three-argument
+ * component factory contract. */
+function createCustomToolUIContext(ui: ExtensionUIContext): HookUIContext {
+	return {
+		select: (title, options) => ui.select(title, options),
+		confirm: (title, message) => ui.confirm(title, message),
+		input: (title, placeholder) => ui.input(title, placeholder),
+		notify: (message, type) => ui.notify(message, type),
+		setStatus: (key, text) => ui.setStatus(key, text),
+		custom: factory => ui.custom((tui, theme, _keybindings, done) => factory(tui, theme, done)),
+		setEditorText: text => ui.setEditorText(text),
+		getEditorText: () => ui.getEditorText(),
+		editor: (title, prefill, options, editorOptions) => ui.editor(title, prefill, options, editorOptions),
+		get theme() {
+			return ui.theme;
+		},
+	};
+}
+
 // Factory
 
 /**
@@ -1043,6 +1082,7 @@ function buildMCPPromptCommands(manager: MCPManager): LoadedCustomCommand[] {
 		if (!prompts?.length) continue;
 		for (const prompt of prompts) {
 			const commandName = `${serverName}:${prompt.name}`;
+			if (isPiDisabledSlashCommandName(commandName)) continue;
 			commands.push({
 				path: `mcp:${commandName}`,
 				resolvedPath: `mcp:${commandName}`,
@@ -1113,11 +1153,31 @@ function buildMCPPromptCommands(manager: MCPManager): LoadedCustomCommand[] {
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
 	const cwd = options.cwd ?? getProjectDir();
-	const agentDir = options.agentDir ?? getAgentDir();
+	const agentDir = resolvePiSdkAgentDir(options.agentDir);
 	const eventBus = options.eventBus ?? new EventBus();
-
-	registerSshCleanup();
-	registerEvalCleanup();
+	const sessionManager =
+		options.sessionManager ??
+		logger.time("sessionManager", () =>
+			SessionManager.create(cwd, SessionManager.getDefaultSessionDir(cwd, agentDir)),
+		);
+	if (options.sessionManager) {
+		const effectiveCwd = normalizePathForComparison(cwd);
+		const managerCwd = normalizePathForComparison(sessionManager.getCwd());
+		const headerCwd = sessionManager.getHeader()?.cwd;
+		const normalizedHeaderCwd = headerCwd ? normalizePathForComparison(headerCwd) : undefined;
+		// A freshly constructed in-memory manager is an empty SDK test/embedder
+		// container and may still carry getProjectDir()'s default header. Once a
+		// manager has a transcript or backing path, its project identity is real
+		// state and must agree with the session being created.
+		const sessionFile = sessionManager.getSessionFile();
+		const isFreshInMemory =
+			(sessionFile === null || sessionFile === undefined) && sessionManager.getEntries().length === 0;
+		if (!isFreshInMemory && (managerCwd !== effectiveCwd || normalizedHeaderCwd !== effectiveCwd)) {
+			throw new Error(
+				`Injected session manager belongs to a different project (expected ${cwd}, received ${sessionManager.getCwd()}).`,
+			);
+		}
+	}
 
 	// Pin authStorage to modelRegistry.authStorage: ModelRegistry.getApiKey() routes refresh
 	// failures through that instance, so any divergent storage handed to the bridge / mcpManager
@@ -1134,6 +1194,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			"options.authStorage and options.modelRegistry.authStorage must be the same instance when both are provided",
 		);
 	}
+	authStorage.enforceSingleCredentialPolicy();
 	// Subscribe before any getApiKey() call so startup model probes can't fire a
 	// credential_disabled event past us. An embedder's constructor handler makes the
 	// listener set non-empty from construction, which defeats AuthStorage's no-listener
@@ -1223,11 +1284,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		setPreferredImageProvider(imageProvider);
 	}
 
-	const sessionManager =
-		options.sessionManager ??
-		logger.time("sessionManager", () =>
-			SessionManager.create(cwd, SessionManager.getDefaultSessionDir(cwd, agentDir)),
-		);
 	const providerSessionId = options.providerSessionId ?? sessionManager.getSessionId();
 	const forkCacheShapeChanged =
 		options.model !== undefined ||
@@ -1258,18 +1314,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// key is resolved lazily per request via ModelRegistry.resolver.
 	const hasModelAuth = (candidate: Model): boolean => modelRegistry.hasConfiguredAuth(candidate);
 
-	// Load and create secret obfuscator early so resumed session state and prompt warnings
-	// reflect actual loaded secrets, not just the setting toggle.
-	let obfuscator: SecretObfuscator | undefined;
-	if (settings.get("secrets.enabled")) {
-		const fileEntries = await logger.time("loadSecrets", loadSecrets, cwd, agentDir);
-		const envEntries = collectEnvSecrets();
-		const allEntries = [...envEntries, ...fileEntries];
-		if (allEntries.length > 0) {
-			obfuscator = new SecretObfuscator(allEntries);
-		}
-	}
-	const secretsEnabled = obfuscator?.hasSecrets() === true;
+	// Automatic outbound secret rewriting is not part of Pi. Keep the downstream
+	// transformation hooks dormant for source compatibility, but never scan the
+	// environment or project/user secret files during session bootstrap.
+	// Intentionally ignore options.obfuscator: embedders cannot reactivate OMP's
+	// secret rewriting through the SDK boundary in Pi.
+	const obfuscator: SecretObfuscator | undefined = disabledPiSecretObfuscator();
+	const secretsEnabled = false;
 
 	// Check if session has existing data to restore
 	const existingSession = logger.time("loadSessionContext", () =>
@@ -1412,27 +1463,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		skillWarnings = discovered.warnings;
 	}
 
-	// Discover rules and bucket them in one pass to avoid repeated scans over large rule sets.
-	const { ttsrManager, rulebookRules, alwaysApplyRules, allRules } = await logger.time(
-		"discoverTtsrRules",
-		async () => {
-			const { TtsrManager } = await import("./export/ttsr");
-			const ttsrSettings = settings.getGroup("ttsr");
-			const ttsrManager = new TtsrManager(ttsrSettings);
-			const rulesResult =
-				options.rules !== undefined
-					? { items: options.rules, warnings: undefined }
-					: await loadCapability<Rule>(ruleCapability.id, { cwd });
-			const { rulebookRules, alwaysApplyRules } = bucketRules(rulesResult.items, ttsrManager, {
-				builtinRules: ttsrSettings.builtinRules,
-				disabledRules: ttsrSettings.disabledRules,
-			});
-			if (existingSession.injectedTtsrRules.length > 0) {
-				ttsrManager.restoreInjected(existingSession.injectedTtsrRules);
-			}
-			return { ttsrManager, rulebookRules, alwaysApplyRules, allRules: rulesResult.items };
-		},
-	);
+	// OMP rulebooks are not part of Pi. Do not initialize even an empty manager:
+	// the remaining arrays only satisfy the shared prompt/tool-session contracts.
+	const ttsrManager = undefined;
+	const rulebookRules: Rule[] = [];
+	const alwaysApplyRules: Rule[] = [];
+	const allRules: Rule[] = [];
 
 	// Resolve contextFiles up-front (it's needed before tool creation). The
 	// workspace tree scan is slow on large repos and we MUST NOT block startup on
@@ -1457,7 +1493,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 		return result;
 	};
-	const [contextFiles, resolvedWorkspaceTree, watchdogFiles, activeRepoContext, discoveredAdvisors] =
+	const [initialContextFiles, resolvedWorkspaceTree, watchdogFiles, activeRepoContext, discoveredAdvisors] =
 		await Promise.all([
 			contextFilesPromise,
 			raceWithDeadline("buildWorkspaceTree", workspaceTreePromise),
@@ -1465,6 +1501,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			activeRepoContextPromise,
 			advisorConfigsPromise,
 		]);
+	let contextFiles = initialContextFiles;
 
 	let agent: Agent;
 	let session!: AgentSession;
@@ -1678,11 +1715,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const getArtifactsDir = () => sessionManager.getArtifactsDir();
 		if (!options.parentTaskPrefix) {
 			setActiveSkills(skills);
-			// Include TTSR rules so `rule://<name>` can resolve them too. They are
-			// registered with the manager and bucketed out before rulebook/always,
-			// so without this a TTSR-only rule (e.g. a triggered builtin) is not
-			// addressable and `rule://` reports "Available: none".
-			setActiveRules([...rulebookRules, ...alwaysApplyRules, ...ttsrManager.getRules()]);
+			// Clear the process-wide snapshot as well as the per-session arrays so a
+			// prior OMP-compatible session cannot leak rule:// resources into Pi.
+			setActiveRules([]);
 			if (asyncJobManager) AsyncJobManager.setInstance(asyncJobManager);
 		}
 		const localProtocolOptions = options.localProtocolOptions ?? {
@@ -1708,6 +1743,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const enableMCP = options.enableMCP ?? true;
 		const deferMCPDiscoveryForUI = enableMCP && !mcpManager && options.hasUI === true;
 		const customTools: CustomTool[] = [];
+		const reloadStableCustomTools: CustomTool[] = [];
 		let startDeferredMCPDiscovery:
 			| ((liveSession: AgentSession, activation: DeferredMCPActivation) => void)
 			| undefined;
@@ -1819,16 +1855,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// Add image tools when the active model or configured image providers can generate images.
 		const imageGenTools = await logger.time("getImageGenTools", () => getImageGenTools(modelRegistry, model));
 		if (imageGenTools.length > 0) {
-			customTools.push(...(imageGenTools as unknown as CustomTool[]));
-		}
-
-		if (settings.get("speechgen.enabled")) {
-			customTools.push(ttsTool as unknown as CustomTool);
+			const tools = imageGenTools as unknown as CustomTool[];
+			customTools.push(...tools);
+			reloadStableCustomTools.push(...tools);
 		}
 
 		// Add web search tools
 		if (options.toolNames?.includes("web_search")) {
-			customTools.push(...getSearchTools());
+			const tools = getSearchTools();
+			customTools.push(...tools);
+			reloadStableCustomTools.push(...tools);
 		}
 
 		// Discover custom tools from `.omp/tools/`, `.claude/tools/`, plugins, etc.
@@ -1845,6 +1881,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const customToolsLoadResult = await logger.time("loadCustomTools", () =>
 			loadCustomTools(customToolPaths, cwd, builtInToolNames, action => queueResolveHandler(toolSession, action)),
 		);
+		let setLoadedCustomToolUIContext = customToolsLoadResult.setUIContext;
+		let activeToolUIContext: ExtensionUIContext | undefined;
+		let activeToolUIHasUI = false;
 		for (const { path, error } of customToolsLoadResult.errors) {
 			logger.error("Custom tool load failed", { path, error });
 		}
@@ -1856,7 +1895,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		toolSession.customToolPaths = customToolPaths;
 
 		const inlineExtensions: ExtensionFactory[] = options.extensions ? [...options.extensions] : [];
-		inlineExtensions.push((await import("./autoresearch")).createAutoresearchExtension);
 		if (customTools.length > 0) {
 			inlineExtensions.push(createCustomToolsExtension(customTools));
 		}
@@ -1922,13 +1960,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// Process provider registrations queued during extension loading.
 		// This must happen before the runner is created so that models registered by
 		// extensions are available for model selection on session resume / fallback.
-		const activeExtensionSources = extensionsResult.extensions.map(extension => extension.path);
-		modelRegistry.syncExtensionSources(activeExtensionSources);
-		for (const sourceId of new Set(activeExtensionSources)) {
+		let activePluginExtensionSources = extensionsResult.extensions.map(extension => extension.path);
+		let activePluginProviderRegistrations = [...extensionsResult.runtime.pendingProviderRegistrations];
+		modelRegistry.syncExtensionSources(activePluginExtensionSources);
+		for (const sourceId of new Set(activePluginExtensionSources)) {
 			modelRegistry.clearSourceRegistrations(sourceId);
 		}
-		if (extensionsResult.runtime.pendingProviderRegistrations.length > 0) {
-			for (const { name, config, sourceId } of extensionsResult.runtime.pendingProviderRegistrations) {
+		if (activePluginProviderRegistrations.length > 0) {
+			for (const { name, config, sourceId } of activePluginProviderRegistrations) {
 				modelRegistry.registerProvider(name, config, sourceId);
 			}
 			extensionsResult.runtime.pendingProviderRegistrations = [];
@@ -2002,7 +2041,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				let selectedThinkingLevel = primary.thinkingLevel;
 				let selectedExplicitThinkingLevel = primary.explicitThinkingLevel;
 				let authFallbackUsed = false;
-				if (options.modelPatternAuthFallback) {
+				if (piAllowsModelFallback() && options.modelPatternAuthFallback) {
 					const primaryKey = await modelRegistry.getApiKey(primary.model);
 					if (primaryKey !== kNoAuth && !isAuthenticated(primaryKey)) {
 						const fallback = parseModelPattern(
@@ -2021,7 +2060,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						}
 					}
 				}
-				if (!authFallbackUsed && options.modelPatternFallbackRole) {
+				if (piAllowsModelFallback() && !authFallbackUsed && options.modelPatternFallbackRole) {
 					const primarySelector = formatModelSelectorValue(
 						formatModelStringWithRouting(primary.model),
 						primary.thinkingLevel,
@@ -2215,18 +2254,29 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 		const registeredTools = extensionRunner.getAllRegisteredTools();
 		const sdkCustomTools = options.customTools?.filter(tool => !isLegacyBuiltinToolDefinition(tool)) ?? [];
-		const allCustomTools = [
-			...registeredTools,
-			...sdkCustomTools.map(tool => {
+		const sdkRegisteredTools = sdkCustomTools
+			.map(tool => {
 				const definition = isCustomTool(tool) ? customToolToDefinition(tool) : tool;
 				return { definition, extensionPath: "<sdk>" };
-			}),
-		];
+			})
+			.filter(
+				tool => !isPiDisabledToolName(tool.definition.name) && !isPiProtectedBuiltinToolName(tool.definition.name),
+			);
+		const sdkCustomToolNames = new Set(sdkRegisteredTools.map(tool => tool.definition.name));
+		const reloadableRegisteredTools = registeredTools.filter(
+			tool =>
+				!isPiDisabledToolName(tool.definition.name) &&
+				!isPiProtectedBuiltinToolName(tool.definition.name) &&
+				!sdkCustomToolNames.has(tool.definition.name),
+		);
 		// `wrapToolWithMetaNotice` runs the centralized large-output → artifact spill.
 		// Built-in tools get it in `createTools`; extension, SDK-custom, image-gen,
 		// TTS, and startup (non-deferred) MCP tools all funnel through here, so apply
 		// it once at this adapter boundary (idempotent — a no-op if already wrapped).
-		const wrappedExtensionTools: Tool[] = wrapRegisteredTools(allCustomTools, extensionRunner).map(
+		const wrappedPluginTools: Tool[] = wrapRegisteredTools(reloadableRegisteredTools, extensionRunner).map(
+			wrapToolWithMetaNotice,
+		);
+		const wrappedSdkTools: Tool[] = wrapRegisteredTools(sdkRegisteredTools, extensionRunner).map(
 			wrapToolWithMetaNotice,
 		);
 
@@ -2244,7 +2294,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				builtInRegistryToolNames.add(goalTool.name);
 			}
 		}
-		for (const tool of wrappedExtensionTools) {
+		const pluginToolFallbacks = new Map<string, Tool>();
+		const pluginToolFallbackBuiltInNames = new Set<string>();
+		for (const tool of wrappedPluginTools) {
+			const fallback = toolRegistry.get(tool.name);
+			if (fallback) {
+				pluginToolFallbacks.set(tool.name, fallback);
+				if (builtInRegistryToolNames.has(tool.name)) pluginToolFallbackBuiltInNames.add(tool.name);
+			}
+			toolRegistry.set(tool.name, tool);
+			builtInRegistryToolNames.delete(tool.name);
+		}
+		for (const tool of wrappedSdkTools) {
 			toolRegistry.set(tool.name, tool);
 			builtInRegistryToolNames.delete(tool.name);
 		}
@@ -2261,6 +2322,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// comment above for the safety invariant this enforces.
 		for (const tool of toolRegistry.values()) {
 			toolRegistry.set(tool.name, new ExtensionToolWrapper(tool, extensionRunner));
+		}
+		for (const [name, fallback] of pluginToolFallbacks) {
+			pluginToolFallbacks.set(name, new ExtensionToolWrapper(fallback, extensionRunner));
 		}
 		if (model?.provider === "cursor") {
 			toolRegistry.delete("edit");
@@ -2331,16 +2395,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			return true;
 		}
 
-		const reloadSshTool = async (): Promise<AgentTool | null> => {
-			if (!requestedToolNameSet.has("ssh")) return null;
-			const sshTool = (await loadSshTool({
-				...toolSession,
-				cwd: sessionManager.getCwd(),
-			})) as unknown as AgentTool | null;
-			if (!sshTool) return null;
-			const wrapped = wrapToolWithMetaNotice(sshTool);
-			return new ExtensionToolWrapper(wrapped, extensionRunner) as AgentTool;
-		};
+		const reloadSshTool = async (): Promise<AgentTool | null> => null;
 
 		let cursorEventEmitter: ((event: AgentEvent) => void) | undefined;
 		const cursorExecHandlers = new CursorExecHandlers({
@@ -2387,26 +2442,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const memoryBackend = await resolveMemoryBackend(settings);
 			const memoryInstructions = await memoryBackend.buildDeveloperInstructions(agentDir, settings, session);
 
-			// Build combined append prompt: memory instructions + auto-learn guidance
-			// + MCP server instructions. For UI sessions MCP discovery is deferred, so
+			// Build combined append prompt from memory and MCP server instructions.
+			// For UI sessions MCP discovery is deferred, so
 			// `getServerInstructions()` is empty until the background connect completes;
 			// the rebuild that `refreshMCPTools` triggers post-discovery then picks up
 			// the now-connected servers' instructions, so they join the prompt for the
 			// rest of the session.
 			const serverInstructions = mcpManager?.getServerInstructions();
-			// Drive guidance off the auto-learn BUILTINS that createTools actually built
-			// (provenance, not just an active name): `builtInToolNames` excludes a
-			// custom/extension tool that merely shares the name, and reflects the
-			// session-start build — so a subagent that filtered them out, a mid-session
-			// enable that never built them, or a same-named custom tool while auto-learn
-			// is off all get no guidance.
-			const autoLearnInstructions = buildAutoLearnInstructions({
-				manageSkill: builtInToolNames.includes("manage_skill"),
-				learn: builtInToolNames.includes("learn"),
-			});
 			const appendParts: string[] = [];
 			if (memoryInstructions) appendParts.push(memoryInstructions);
-			if (autoLearnInstructions) appendParts.push(autoLearnInstructions);
 			let appendPrompt: string | undefined = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 			if (serverInstructions && serverInstructions.size > 0) {
 				const parts: string[] = [];
@@ -2489,16 +2533,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		) {
 			explicitlyRequestedToolNames.push("yield");
 		}
-		// Auto-learn builtins are force-included into the registry by `createTools`
-		// for enabled top-level sessions (tools/index.ts), but — like `yield` above —
-		// an explicit `toolNames` list would otherwise drop them from the ACTIVE set,
-		// leaving the nudge/guidance pointing at tools the model cannot call. Activate
-		// exactly the builtins createTools built (`builtInToolNames` — provenance, so a
-		// same-named custom/extension tool is never force-activated when auto-learn is
-		// off) to keep guidance, controller, and the active set consistent.
 		if (explicitlyRequestedToolNames) {
-			for (const name of ["manage_skill", "learn"]) {
-				if (builtInToolNames.includes(name) && !explicitlyRequestedToolNames.includes(name)) {
+			const memoryBackend = settings.get("memory.backend");
+			const requiredMemoryToolNames =
+				memoryBackend === "local"
+					? ["learn"]
+					: memoryBackend === "hindsight" || memoryBackend === "mnemopi"
+						? ["retain", "recall", "reflect", "learn"]
+						: [];
+			for (const name of requiredMemoryToolNames) {
+				if (toolRegistry.has(name) && !explicitlyRequestedToolNames.includes(name)) {
 					explicitlyRequestedToolNames.push(name);
 				}
 			}
@@ -2533,7 +2577,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (mcpDiscoveryEnabled) {
 			const restoredSelectedMCPToolNames = existingSession.selectedMCPToolNames
 				.map(normalizeRenamedBuiltinToolName)
-				.filter(name => toolRegistry.has(name));
+				.filter(name => !isPiDisabledToolName(name) && toolRegistry.has(name));
 			defaultSelectedMCPToolNames = [
 				...new Set([...discoveryDefaultServerToolNames, ...explicitlyRequestedMCPToolNames]),
 			];
@@ -2554,6 +2598,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			...registeredTools.filter(t => !t.definition.defaultInactive).map(t => t.definition.name),
 		];
 		for (const name of alwaysInclude) {
+			if (isPiDisabledToolName(name)) continue;
 			if (mcpDiscoveryEnabled && name.startsWith("mcp__")) {
 				continue;
 			}
@@ -2692,7 +2737,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		};
 
 		const setToolUIContext = (uiContext: ExtensionUIContext, hasUI: boolean) => {
+			activeToolUIContext = uiContext;
+			activeToolUIHasUI = hasUI;
 			toolContextStore.setUIContext(uiContext, hasUI);
+			setLoadedCustomToolUIContext(createCustomToolUIContext(uiContext), hasUI);
 		};
 
 		const initialTools = initialToolNames
@@ -2859,6 +2907,244 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// Owned only when this session created the manager; subagents receive a
 		// parent's manager via `options.mcpManager` and MUST NOT disconnect it.
 		const ownedMcpManager = options.mcpManager ? undefined : mcpManager;
+		let lspServers: CreateAgentSessionResult["lspServers"];
+		const installPluginProviderSnapshot = async (
+			extensionSources: string[],
+			registrations: typeof activePluginProviderRegistrations,
+		): Promise<void> => {
+			modelRegistry.syncExtensionSources(extensionSources);
+			for (const sourceId of new Set(extensionSources)) {
+				modelRegistry.clearSourceRegistrations(sourceId);
+			}
+			for (const { name, config, sourceId } of registrations) {
+				modelRegistry.registerProvider(name, config, sourceId);
+			}
+			await modelRegistry.refreshRuntimeProviders("offline");
+		};
+		const reloadPlugins = async (): Promise<void> => {
+			const activeCwd = sessionManager.getCwd();
+			const projectRegistryPath = await resolveActiveProjectRegistryPath(activeCwd);
+			invalidatePluginRootsAndCaches(projectRegistryPath ? [projectRegistryPath] : undefined);
+			const pluginHome = os.homedir();
+			const [candidateSettings, candidatePluginRoots] = await Promise.all([
+				settings.prepareReload(),
+				preparePluginRoots(pluginHome, activeCwd),
+			]);
+			validateProviderMaxInFlightRequests(candidateSettings.get("providers.maxInFlightRequests"));
+			resetCapabilities();
+			try {
+				const nextSkillsSettings = candidateSettings.getGroup("skills");
+				const disabledExtensions = candidateSettings.get("disabledExtensions") ?? [];
+				// Only host-owned capability discovery observes candidate policy. Exit
+				// this request-local scope before importing commands, extensions, tools,
+				// or inline factories: arbitrary async work spawned by user modules would
+				// otherwise inherit the candidate view after this reload settles.
+				const candidateCapabilityDiscovery = runWithCapabilitySettings(candidateSettings, () =>
+					Promise.all([
+						discoverSessionExtensionPaths(options, activeCwd, candidateSettings),
+						discoverCustomToolPaths([], activeCwd),
+						options.skills !== undefined
+							? Promise.resolve({ skills: options.skills, warnings: [] })
+							: discoverSkills(activeCwd, agentDir, {
+									...nextSkillsSettings,
+									disabledExtensions,
+								}),
+						options.promptTemplates !== undefined
+							? Promise.resolve(options.promptTemplates)
+							: discoverPromptTemplates(activeCwd, agentDir),
+						options.slashCommands !== undefined
+							? Promise.resolve(options.slashCommands)
+							: discoverSlashCommands(activeCwd),
+						options.contextFiles !== undefined
+							? Promise.resolve(options.contextFiles)
+							: discoverContextFiles(activeCwd, agentDir),
+					]),
+				);
+				const nextCustomCommandsPromise = options.disableExtensionDiscovery
+					? Promise.resolve({ commands: [], errors: [] } satisfies CustomCommandsLoadResult)
+					: loadCustomCommandsInternal({ cwd: activeCwd, agentDir });
+				const [
+					[
+						nextExtensionPaths,
+						nextCustomToolPaths,
+						nextSkills,
+						nextPromptTemplates,
+						nextSlashCommands,
+						nextContextFiles,
+					],
+					nextCustomCommands,
+				] = await Promise.all([candidateCapabilityDiscovery, nextCustomCommandsPromise]);
+
+				const [nextExtensionsResult, nextCustomTools] = await Promise.all([
+					loadExtensions(nextExtensionPaths, activeCwd, eventBus),
+					loadCustomTools(nextCustomToolPaths, activeCwd, builtInToolNames, action =>
+						queueResolveHandler(toolSession, action),
+					),
+				]);
+				const loadErrors = [
+					...nextExtensionsResult.errors.map(({ path, error }) => `extension ${path}: ${error}`),
+					...nextCustomTools.errors.map(({ path, error }) => `tool ${path}: ${error}`),
+					...nextCustomCommands.errors.map(({ path, error }) => `command ${path}: ${error}`),
+				];
+				if (loadErrors.length > 0) {
+					throw new Error(`Plugin reload rejected:\n${loadErrors.join("\n")}`);
+				}
+
+				const nextInlineExtensions: ExtensionFactory[] = options.extensions ? [...options.extensions] : [];
+				const reloadedCustomTools = [
+					...reloadStableCustomTools,
+					...nextCustomTools.tools.map(loaded => loaded.tool),
+				];
+				if (reloadedCustomTools.length > 0) {
+					nextInlineExtensions.push(createCustomToolsExtension(reloadedCustomTools));
+				}
+				for (let i = 0; i < nextInlineExtensions.length; i++) {
+					const loaded = await loadExtensionFromFactory(
+						nextInlineExtensions[i],
+						activeCwd,
+						eventBus,
+						nextExtensionsResult.runtime,
+						`<inline-${i}>`,
+					);
+					nextExtensionsResult.extensions.push(loaded);
+				}
+
+				for (const { name, config } of nextExtensionsResult.runtime.pendingProviderRegistrations) {
+					modelRegistry.validateProviderRegistration(name, config);
+				}
+
+				const nextRegisteredTools = nextExtensionsResult.extensions
+					.flatMap(extension => [...extension.tools.values()])
+					.filter(
+						tool =>
+							!isPiDisabledToolName(tool.definition.name) &&
+							!isPiProtectedBuiltinToolName(tool.definition.name) &&
+							!sdkCustomToolNames.has(tool.definition.name),
+					);
+				const nextWrappedTools = wrapRegisteredTools(nextRegisteredTools, extensionRunner)
+					.map(wrapToolWithMetaNotice)
+					.map(tool => new ExtensionToolWrapper(tool, extensionRunner) as Tool);
+				const nextAutoActivateToolNames = nextRegisteredTools
+					.filter(tool => !tool.definition.defaultInactive)
+					.map(tool => tool.definition.name);
+
+				// Candidate capability discovery is complete and its request-local view
+				// has ended. Clear shared filesystem caches before the synchronous commit.
+				resetCapabilities();
+
+				const nextPluginExtensionSources = nextExtensionsResult.extensions.map(extension => extension.path);
+				const nextPluginProviderRegistrations = [...nextExtensionsResult.runtime.pendingProviderRegistrations];
+
+				await session.adoptPluginRuntime({
+					extensionsResult: nextExtensionsResult,
+					tools: nextWrappedTools,
+					autoActivateToolNames: nextAutoActivateToolNames,
+					promptTemplates: nextPromptTemplates,
+					slashCommands: nextSlashCommands,
+					customCommands: nextCustomCommands.commands,
+					skills: nextSkills.skills,
+					skillWarnings: nextSkills.warnings,
+					skillsSettings: nextSkillsSettings,
+					prepareAdopt: async () => {
+						try {
+							await installPluginProviderSnapshot(nextPluginExtensionSources, nextPluginProviderRegistrations);
+						} catch (error) {
+							await installPluginProviderSnapshot(
+								activePluginExtensionSources,
+								activePluginProviderRegistrations,
+							);
+							throw error;
+						}
+					},
+					rollbackPreparedAdopt: () =>
+						installPluginProviderSnapshot(activePluginExtensionSources, activePluginProviderRegistrations),
+					onAdopt: () => {
+						settings.adoptReload(candidateSettings);
+						initializeWithSettings(settings);
+						applyProviderGlobalsFromSettings(settings);
+						adoptPreloadedPluginRoots(pluginHome, candidatePluginRoots);
+						extensionPaths = nextExtensionPaths;
+						extensionsResult.extensions = nextExtensionsResult.extensions;
+						extensionsResult.errors = nextExtensionsResult.errors;
+						extensionsResult.runtime = nextExtensionsResult.runtime;
+						nextExtensionsResult.runtime.pendingProviderRegistrations = [];
+						activePluginExtensionSources = nextPluginExtensionSources;
+						activePluginProviderRegistrations = nextPluginProviderRegistrations;
+						toolSession.extensionPaths = nextExtensionPaths;
+						toolSession.customToolPaths = nextCustomToolPaths;
+						skills = nextSkills.skills;
+						skillWarnings = nextSkills.warnings;
+						contextFiles = nextContextFiles;
+						toolSession.skills = skills;
+						toolSession.contextFiles = contextFiles;
+						toolSession.promptTemplates = nextPromptTemplates;
+						setLoadedCustomToolUIContext = nextCustomTools.setUIContext;
+						if (activeToolUIContext) {
+							try {
+								setLoadedCustomToolUIContext(createCustomToolUIContext(activeToolUIContext), activeToolUIHasUI);
+							} catch (error) {
+								logger.warn("Custom-tool UI refresh failed after plugin reload commit", {
+									error: error instanceof Error ? error.message : String(error),
+								});
+							}
+						}
+						if (!options.parentTaskPrefix) setActiveSkills(skills);
+					},
+				});
+				void modelRegistry.refreshRuntimeProviders().catch(error => {
+					logger.warn("runtime provider discovery failed after plugin reload", {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				});
+
+				if (mcpManager) {
+					try {
+						if (!options.mcpManager) {
+							mcpManager.setNotificationsEnabled(settings.get("mcp.notifications"));
+							await mcpManager.disconnectAll();
+							const mcpResult = await mcpManager.discoverAndConnect({
+								...mcpDiscoverOptions,
+								enableProjectConfig: settings.get("mcp.enableProjectConfig") ?? true,
+								filterBrowser: settings.get("browser.enabled") ?? false,
+							});
+							applyMCPEnvironment(mcpResult);
+							logMCPLoadErrors(mcpResult.errors);
+							await session.refreshMCPTools(mcpResult.tools);
+						} else {
+							await session.refreshMCPTools(mcpManager.getTools());
+						}
+						session.setMCPPromptCommands(buildMCPPromptCommands(mcpManager));
+					} catch (error) {
+						logger.warn("MCP refresh failed after plugin reload commit", {
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+				}
+
+				if (enableLsp && !options.parentTaskPrefix) {
+					try {
+						const nextLspServers = await reloadLspRuntime(
+							activeCwd,
+							options.hasUI === true && !settings.get("lsp.lazy"),
+						);
+						if (lspServers) {
+							lspServers.splice(0, lspServers.length, ...nextLspServers);
+						} else {
+							lspServers = nextLspServers;
+						}
+					} catch (error) {
+						logger.warn("LSP refresh failed after plugin reload commit", {
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+				}
+			} catch (error) {
+				// The committed capability policy was never replaced; rejection only
+				// needs to discard filesystem cache entries populated by discovery.
+				resetCapabilities();
+				throw error;
+			}
+		};
 		session = new AgentSession({
 			advisorWatchdogPrompt,
 			advisorContextPrompt,
@@ -2884,15 +3170,19 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			promptTemplates,
 			slashCommands,
 			extensionRunner,
+			pluginToolNames: reloadableRegisteredTools.map(tool => tool.definition.name),
+			pluginToolFallbacks,
+			pluginToolFallbackBuiltInNames,
+			reloadPlugins,
 			customCommands: customCommandsResult.commands,
 			skills,
 			skillWarnings,
 			skillsSettings: settings.getGroup("skills"),
 			modelRegistry,
 			toolRegistry,
-			createVibeTools:
+			createDelegateTools:
 				(options.taskDepth ?? 0) === 0 && !options.parentTaskPrefix
-					? () => createVibeTools(toolSession)
+					? () => createDelegateTools(toolSession)
 					: undefined,
 			builtInToolNames: builtInRegistryToolNames,
 			transformContext,
@@ -3019,7 +3309,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// indicator AND typically finish before LSP servers would have stabilized — warming them just spends
 		// CPU parsing big `initialize` responses concurrently with the LLM stream consumer, jittering
 		// perceived latency.
-		let lspServers: CreateAgentSessionResult["lspServers"];
 		if (enableLsp && options.hasUI && settings.get("lsp.lazy")) {
 			lspServers = discoverStartupLspServers(cwd, "available");
 		} else if (enableLsp && options.hasUI) {
@@ -3071,26 +3360,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			});
 		};
 
-		// Auto-learn can immediately trigger a synthetic capture turn after the
-		// first real stop. When a memory backend is selected, install that backend's
-		// per-session state first so the capture turn's `learn` tool observes the
-		// same initialized state as normal memory tools. Other sessions keep memory
-		// startup in the background to preserve the existing startup profile.
-		//
-		// Gated on `autolearn.enabled` to match the tools: `createTools` builds the
-		// `learn`/`manage_skill` registry ONCE at session start and no settings
-		// change rebuilds it, so installing the controller while disabled would let a
-		// mid-session enable fire a nudge pointing at tools the session never built.
-		// Activation is therefore a session-start decision for BOTH the controller
-		// and the tools; the fire-time re-check in `#onAgentEnd` still handles a
-		// mid-session DISABLE. The subscription lives for the session's lifetime; the
-		// reference is intentionally discarded (the listener retains it).
-		if (settings.get("autolearn.enabled") && taskDepth === 0) {
-			await logger.time("startMemoryStartupTask", startMemoryBackend);
-			new AutoLearnController({ session, settings });
-		} else {
-			void logger.time("startMemoryStartupTask", startMemoryBackend);
-		}
+		// Memory remains available independently of OMP's removed auto-learn
+		// controller and managed-skill tools.
+		void logger.time("startMemoryStartupTask", startMemoryBackend);
 
 		// Wire MCP manager callbacks to session for reactive tool updates.
 		// Skip when reusing a parent's manager — the parent owns the callbacks.

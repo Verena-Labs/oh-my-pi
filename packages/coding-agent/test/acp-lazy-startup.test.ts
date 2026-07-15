@@ -13,11 +13,11 @@ import {
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { createAcpConnection } from "@oh-my-pi/pi-coding-agent/modes/acp/acp-mode";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { createAcpConnection } from "../src/modes/acp/acp-mode";
 
 const TEST_MODEL: Model = buildModel({
 	id: "claude-sonnet-4-20250514",
@@ -155,91 +155,44 @@ async function closeTransport(writable: WritableStream<unknown>): Promise<void> 
 	await Promise.allSettled([writable.close()]);
 }
 
-describe("ACP lazy startup", () => {
-	it("applies schema defaults for ACP background jobs and preserves explicit overrides", async () => {
+describe("ACP implementation and disabled public boundary", () => {
+	it("rejects ACP before stateful startup dependencies run", async () => {
 		const { runRootCommand } = await import("@oh-my-pi/pi-coding-agent/main");
-
-		type ObservedBackgroundSettings = {
-			asyncEnabled: boolean;
-			asyncMaxJobs: number;
-			bashAutoBackground: boolean;
-			bashAutoBackgroundThresholdMs: number;
-		};
-
-		const runAcpStartup = async (settings: Settings): Promise<ObservedBackgroundSettings> => {
-			using tempDir = TempDir.createSync("@omp-acp-background-settings-");
-			const cwd = tempDir.path();
-			const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
-			let observed: ObservedBackgroundSettings | undefined;
-			const stopMessage = "stop test ACP mode";
-			try {
-				await runRootCommand(
-					{
-						mode: "acp",
-						messages: [],
-						fileArgs: [],
-						unknownFlags: new Map(),
-						unrecognizedFlags: [],
-						noSkills: true,
-						noRules: true,
-						noTools: true,
-						noLsp: true,
-						sessionDir: cwd,
+		let authCalls = 0;
+		let sessionCalls = 0;
+		let modeCalls = 0;
+		const previousExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			await runRootCommand(
+				{
+					mode: "acp",
+					messages: [],
+					fileArgs: [],
+					unknownFlags: new Map(),
+					unrecognizedFlags: [],
+				},
+				[],
+				{
+					discoverAuthStorage: async () => {
+						authCalls += 1;
+						throw new Error("auth storage must remain cold");
 					},
-					[],
-					{
-						discoverAuthStorage: async () => authStorage,
-						settings,
-						runAcpMode: async () => {
-							observed = {
-								asyncEnabled: settings.get("async.enabled"),
-								asyncMaxJobs: settings.get("async.maxJobs"),
-								bashAutoBackground: settings.get("bash.autoBackground.enabled"),
-								bashAutoBackgroundThresholdMs: settings.get("bash.autoBackground.thresholdMs"),
-							};
-							throw new Error(stopMessage);
-						},
+					createAgentSession: async () => {
+						sessionCalls += 1;
+						throw new Error("agent session must remain cold");
 					},
-				);
-			} catch (error) {
-				if (!(error instanceof Error) || error.message !== stopMessage) {
-					throw error;
-				}
-			} finally {
-				authStorage.close();
-			}
-
-			if (!observed) {
-				throw new Error("Expected ACP mode to start");
-			}
-			return observed;
-		};
-
-		// ACP startup must not clobber background-job settings: an unset config
-		// observes the schema defaults (async on since 844c8dbdfe)…
-		await expect(runAcpStartup(Settings.isolated())).resolves.toEqual({
-			asyncEnabled: true,
-			asyncMaxJobs: 100,
-			bashAutoBackground: false,
-			bashAutoBackgroundThresholdMs: 60000,
-		});
-		// …and explicit overrides survive in both directions (here: async
-		// opted OUT against the default, auto-background opted IN).
-		await expect(
-			runAcpStartup(
-				Settings.isolated({
-					"async.enabled": false,
-					"async.maxJobs": 7,
-					"bash.autoBackground.enabled": true,
-					"bash.autoBackground.thresholdMs": 1234,
-				}),
-			),
-		).resolves.toEqual({
-			asyncEnabled: false,
-			asyncMaxJobs: 7,
-			bashAutoBackground: true,
-			bashAutoBackgroundThresholdMs: 1234,
-		});
+					runAcpMode: async () => {
+						modeCalls += 1;
+						throw new Error("ACP mode must remain cold");
+					},
+				},
+			);
+			expect(Number(process.exitCode)).toBe(2);
+			expect({ authCalls, sessionCalls, modeCalls }).toEqual({ authCalls: 0, sessionCalls: 0, modeCalls: 0 });
+		} finally {
+			process.exitCode = previousExitCode ?? 0;
+		}
 	});
 
 	it("honors explicit host-defaulted settings for protocol hosts", async () => {
@@ -279,7 +232,7 @@ describe("ACP lazy startup", () => {
 		];
 		type ObservedSettings = Record<string, unknown>;
 
-		const runProtocolStartup = async (mode: "rpc" | "rpc-ui" | "acp"): Promise<ObservedSettings> => {
+		const runProtocolStartup = async (mode: "rpc" | "rpc-ui"): Promise<ObservedSettings> => {
 			using tempDir = TempDir.createSync("@omp-protocol-host-defaulted-");
 			const cwd = tempDir.path();
 			const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
@@ -331,7 +284,7 @@ describe("ACP lazy startup", () => {
 			return observed;
 		};
 
-		for (const mode of ["rpc", "rpc-ui", "acp"] as const) {
+		for (const mode of ["rpc", "rpc-ui"] as const) {
 			await expect(runProtocolStartup(mode)).resolves.toEqual({ ...explicit, ...rpcOnlyExplicit });
 		}
 	});
@@ -345,7 +298,7 @@ describe("ACP lazy startup", () => {
 			eager: "default" | "preferred" | "always";
 		};
 
-		const runProtocolStartup = async (mode: "rpc" | "rpc-ui" | "acp"): Promise<ObservedTodoSettings> => {
+		const runProtocolStartup = async (mode: "rpc" | "rpc-ui"): Promise<ObservedTodoSettings> => {
 			using tempDir = TempDir.createSync("@omp-protocol-todo-settings-");
 			const cwd = tempDir.path();
 			const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
@@ -402,7 +355,7 @@ describe("ACP lazy startup", () => {
 			return observed;
 		};
 
-		for (const mode of ["rpc", "rpc-ui", "acp"] as const) {
+		for (const mode of ["rpc", "rpc-ui"] as const) {
 			await expect(runProtocolStartup(mode)).resolves.toEqual({
 				enabled: false,
 				reminders: false,
@@ -461,7 +414,7 @@ describe("ACP lazy startup", () => {
 		}
 	});
 
-	it("applies CLI runtime API keys after ACP lazy session creation resolves extension models", async () => {
+	it("does not resolve extension models or API keys through the disabled ACP entry", async () => {
 		using tempDir = TempDir.createSync("@omp-acp-lazy-api-key-");
 		const cwd = tempDir.path();
 
@@ -487,13 +440,17 @@ describe("ACP lazy startup", () => {
 		);
 
 		const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
+		const previousExitCode = process.exitCode;
+		process.exitCode = undefined;
 		try {
 			const settings = Settings.isolated({ "marketplace.autoUpdate": "off" });
 			const { runRootCommand } = await import("@oh-my-pi/pi-coding-agent/main");
 			const { createAgentSession } = await import("@oh-my-pi/pi-coding-agent/sdk");
 			let session: AgentSession | undefined;
-
-			const stopped = runRootCommand(
+			let authCalls = 0;
+			let createCalls = 0;
+			let modeCalls = 0;
+			await runRootCommand(
 				{
 					mode: "acp",
 					apiKey: "cli-runtime-key",
@@ -511,8 +468,12 @@ describe("ACP lazy startup", () => {
 				},
 				[],
 				{
-					discoverAuthStorage: async () => authStorage,
+					discoverAuthStorage: async () => {
+						authCalls += 1;
+						return authStorage;
+					},
 					createAgentSession: options => {
+						createCalls += 1;
 						const sessionOptions = options ?? {};
 						return createAgentSession({
 							...sessionOptions,
@@ -521,20 +482,17 @@ describe("ACP lazy startup", () => {
 					},
 					settings,
 					runAcpMode: async createAcpSession => {
+						modeCalls += 1;
 						session = await createAcpSession(cwd);
-						throw new Error("stop test ACP mode");
+						throw new Error("ACP mode must remain cold");
 					},
 				},
 			);
-			await expect(stopped).rejects.toThrow("stop test ACP mode");
-
-			if (!session?.model) {
-				throw new Error("Expected extension model to resolve");
-			}
-			expect(session.model.provider).toBe("runtime-provider");
-			expect(await session.modelRegistry.getApiKey(session.model)).toBe("cli-runtime-key");
-			await session.dispose();
+			expect(Number(process.exitCode)).toBe(2);
+			expect(session).toBeUndefined();
+			expect({ authCalls, createCalls, modeCalls }).toEqual({ authCalls: 0, createCalls: 0, modeCalls: 0 });
 		} finally {
+			process.exitCode = previousExitCode ?? 0;
 			authStorage.close();
 		}
 	}, 15_000);

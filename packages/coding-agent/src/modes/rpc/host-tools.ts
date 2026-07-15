@@ -3,6 +3,7 @@ import type { Static, TSchema } from "@oh-my-pi/pi-ai";
 import { Snowflake } from "@oh-my-pi/pi-utils";
 import { applyToolProxy } from "../../extensibility/tool-proxy";
 import type { Theme } from "../../modes/theme/theme";
+import { isPiDisabledToolName } from "../../tools/builtin-names";
 import type {
 	RpcHostToolCallRequest,
 	RpcHostToolCancelRequest,
@@ -85,8 +86,9 @@ export class RpcHostToolBridge {
 	}
 
 	setTools(tools: RpcHostToolDefinition[]): AgentTool[] {
-		this.#definitions = new Map(tools.map(tool => [tool.name, tool]));
-		return tools.map(tool => new RpcHostToolAdapter(tool, this));
+		const allowedTools = tools.filter(tool => !isPiDisabledToolName(tool.name));
+		this.#definitions = new Map(allowedTools.map(tool => [tool.name, tool]));
+		return allowedTools.map(tool => new RpcHostToolAdapter(tool, this));
 	}
 
 	handleResult(frame: RpcHostToolResult): boolean {

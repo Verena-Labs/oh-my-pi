@@ -14,6 +14,7 @@ import { type CustomTool, loadCapability } from "../../discovery";
 import type { ExecOptions } from "../../exec/exec";
 import { execCommand } from "../../exec/exec";
 import type { HookUIContext } from "../../extensibility/hooks/types";
+import { loadLegacyPiModule } from "../../extensibility/plugins/legacy-pi-compat";
 import { getAllPluginToolPaths } from "../../extensibility/plugins/loader";
 // Runtime self-reference: dereference this namespace only inside loader functions to keep the index.ts cycle safe.
 import * as PiCodingAgent from "../../index";
@@ -75,7 +76,9 @@ async function loadTool(
 	}
 
 	try {
-		const module = await withExitGuard(() => import(resolvedPath));
+		const module = (await withExitGuard(() => loadLegacyPiModule(resolvedPath))) as {
+			default?: CustomToolFactory;
+		};
 		const factory = (module.default ?? module) as CustomToolFactory;
 
 		if (typeof factory !== "function") {

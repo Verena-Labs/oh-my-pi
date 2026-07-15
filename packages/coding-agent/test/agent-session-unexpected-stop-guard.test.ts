@@ -9,8 +9,8 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import * as unexpectedStopClassifier from "@oh-my-pi/pi-coding-agent/session/unexpected-stop-classifier";
 import { logger, TempDir } from "@oh-my-pi/pi-utils";
+import * as unexpectedStopClassifier from "../src/session/unexpected-stop-classifier";
 
 const recordToolSchema = z.object({ value: z.string() });
 
@@ -129,7 +129,7 @@ afterEach(async () => {
 	activeHarnesses.length = 0;
 });
 
-describe("AgentSession unexpected stop guard", () => {
+describe("Pi unexpected-stop policy", () => {
 	it("does not classify when the feature is disabled", async () => {
 		const spy = vi.spyOn(unexpectedStopClassifier, "classifyUnexpectedStop").mockResolvedValue(true);
 		const { session, mock } = await createHarness([
@@ -143,7 +143,9 @@ describe("AgentSession unexpected stop guard", () => {
 		expect(mock.calls).toHaveLength(1);
 		expect(reminderMessages(session.agent.state.messages)).toHaveLength(0);
 	});
+});
 
+describe.skip("OMP unexpected-stop recovery (disabled in Pi)", () => {
 	it("schedules a continuation when the classifier returns true", async () => {
 		let calls = 0;
 		const spy = vi.spyOn(unexpectedStopClassifier, "classifyUnexpectedStop").mockImplementation(async () => {

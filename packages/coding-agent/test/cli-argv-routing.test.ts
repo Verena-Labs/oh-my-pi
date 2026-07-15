@@ -1,32 +1,39 @@
 /**
  * Leading global option flags must not hide a subcommand from the CLI runner.
  *
- * #2970: `omp --approval-mode=yolo acp` was rewritten to
- * `launch --approval-mode=yolo acp`, swallowing `acp` as a launch prompt so the
- * yolo override never reached the ACP command path. The resolver now skips
- * leading global flags (using the launch parser's value-consumption contract)
- * and hoists the real subcommand to the front so its parser still applies the
- * flags.
+ * The resolver skips leading global flags using the launch parser's
+ * value-consumption contract. That both hoists enabled subcommands and rejects
+ * disabled historical command words before they can leak into a model prompt.
  */
 import { describe, expect, test } from "bun:test";
-import { resolveCliArgv } from "@oh-my-pi/pi-coding-agent/cli-commands";
+import { commands, resolveCliArgv } from "@oh-my-pi/pi-coding-agent/cli-commands";
 
 describe("resolveCliArgv routes subcommands hidden behind leading global flags", () => {
-	test("`--approval-mode=yolo acp` dispatches the acp subcommand with the flag preserved", () => {
+	test("advertises retained extension and diagnostic commands but not disabled services", () => {
+		const names = commands.map(command => command.name);
+		expect(names).toContain("plugin");
+		expect(names).toContain("install");
+		expect(names).toContain("completions");
+		expect(names).toContain("stats");
+		expect(names).not.toContain("acp");
+		expect(names).not.toContain("join");
+		expect(names).not.toContain("update");
+	});
+	test("rejects ACP behind an equals-form global flag", () => {
 		expect(resolveCliArgv(["--approval-mode=yolo", "acp"])).toEqual({
-			argv: ["acp", "--approval-mode=yolo"],
+			error: "ACP is not available in Pi.",
 		});
 	});
 
-	test("space-form `--approval-mode yolo acp` keeps the flag and its value with acp", () => {
+	test("rejects ACP behind a space-form global flag", () => {
 		expect(resolveCliArgv(["--approval-mode", "yolo", "acp"])).toEqual({
-			argv: ["acp", "--approval-mode", "yolo"],
+			error: "ACP is not available in Pi.",
 		});
 	});
 
-	test("multiple leading flags before the subcommand are all preserved", () => {
+	test("rejects ACP behind multiple value-consuming flags", () => {
 		expect(resolveCliArgv(["--approval-mode=yolo", "--model", "gpt", "acp"])).toEqual({
-			argv: ["acp", "--approval-mode=yolo", "--model", "gpt"],
+			error: "ACP is not available in Pi.",
 		});
 	});
 
@@ -50,9 +57,18 @@ describe("resolveCliArgv routes subcommands hidden behind leading global flags",
 		});
 	});
 
-	test("a subcommand already in front still passes through unchanged", () => {
+	test("a disabled command already in front is rejected", () => {
 		expect(resolveCliArgv(["acp", "--approval-mode=yolo"])).toEqual({
-			argv: ["acp", "--approval-mode=yolo"],
+			error: "ACP is not available in Pi.",
+		});
+	});
+
+	test("rejects collaboration and executable update routes", () => {
+		expect(resolveCliArgv(["join", "pi-collab://example"])).toEqual({
+			error: "Live collaboration is not available in Pi.",
+		});
+		expect(resolveCliArgv(["update"])).toEqual({
+			error: "Pi executable updates are owned by the pi-dotfiles repository.",
 		});
 	});
 

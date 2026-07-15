@@ -3,10 +3,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import * as downloader from "@oh-my-pi/pi-coding-agent/stt/downloader";
-import * as recorder from "@oh-my-pi/pi-coding-agent/stt/recorder";
-import { STTController } from "@oh-my-pi/pi-coding-agent/stt/stt-controller";
 import { getTinyModelsCacheDir, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import * as downloader from "../src/stt/downloader";
+import * as recorder from "../src/stt/recorder";
+import { STTController } from "../src/stt/stt-controller";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
 const WHISPER_BASE_REPO = "onnx-community/whisper-base";

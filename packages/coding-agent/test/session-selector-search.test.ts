@@ -103,7 +103,9 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-describe("session picker incremental search", () => {
+// Retained for OMP parity: Pi keeps this implementation dormant and verifies
+// the fixed plain-selector boundary in phase3b-session-boundaries.test.ts.
+describe.skip("OMP session picker incremental search (unavailable in Pi)", () => {
 	it("surfaces literal matches synchronously and converges async fuzzy chunks to the reference ranking", () => {
 		const sessions = makeCorpus();
 		const harness = makeHarness(sessions);

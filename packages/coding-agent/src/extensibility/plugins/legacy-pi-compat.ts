@@ -850,10 +850,13 @@ async function resolveNodePackageExport(
 	packageRoot: string,
 	subpath: string | null,
 	manifest: Record<string, unknown>,
-): Promise<string | null> {
+): Promise<string | typeof PACKAGE_IMPORT_EXCLUDED | null> {
 	const exportsField = manifest.exports;
 	const rootTarget = subpath === null ? selectPackageImportTarget(exportsField) : null;
-	if (rootTarget !== null && rootTarget !== PACKAGE_IMPORT_EXCLUDED) {
+	if (rootTarget === PACKAGE_IMPORT_EXCLUDED) {
+		return PACKAGE_IMPORT_EXCLUDED;
+	}
+	if (rootTarget !== null) {
 		return resolvePackageExportTarget(packageRoot, rootTarget, null);
 	}
 	if (!isRecord(exportsField)) {
@@ -862,10 +865,14 @@ async function resolveNodePackageExport(
 
 	const exactKey = subpath === null ? "." : `./${subpath}`;
 	const exactTarget = selectPackageImportTarget(exportsField[exactKey]);
-	if (exactTarget !== null && exactTarget !== PACKAGE_IMPORT_EXCLUDED) {
+	if (exactTarget === PACKAGE_IMPORT_EXCLUDED) {
+		return PACKAGE_IMPORT_EXCLUDED;
+	}
+	if (exactTarget !== null) {
 		return resolvePackageExportTarget(packageRoot, exactTarget, null);
 	}
 
+	let bestMatch: { keyLength: number; target: ResolvedPackageImportTargetSelection; wildcard: string } | null = null;
 	for (const [key, entry] of Object.entries(exportsField)) {
 		const starIndex = key.indexOf("*");
 		if (starIndex === -1 || subpath === null) continue;
@@ -875,16 +882,20 @@ async function resolveNodePackageExport(
 			continue;
 		}
 		const target = selectPackageImportTarget(entry);
-		if (target === null || target === PACKAGE_IMPORT_EXCLUDED) {
+		if (target === null) {
 			continue;
 		}
-		return resolvePackageExportTarget(
-			packageRoot,
-			target,
-			subpath.slice(prefix.length, subpath.length - suffix.length),
-		);
+		if (!bestMatch || key.length > bestMatch.keyLength) {
+			bestMatch = {
+				keyLength: key.length,
+				target,
+				wildcard: subpath.slice(prefix.length, subpath.length - suffix.length),
+			};
+		}
 	}
-	return null;
+	if (!bestMatch) return null;
+	if (bestMatch.target === PACKAGE_IMPORT_EXCLUDED) return PACKAGE_IMPORT_EXCLUDED;
+	return resolvePackageExportTarget(packageRoot, bestMatch.target, bestMatch.wildcard);
 }
 
 async function resolveNodePackageFallback(
@@ -912,10 +923,19 @@ async function resolveNodePackageDependency(specifier: string, importerPath: str
 	if (!packageRoot) return null;
 	const manifest = await readPackageManifest(packageRoot);
 	if (!manifest) return null;
-	return (
-		(await resolveNodePackageExport(packageRoot, parsed.subpath, manifest)) ??
-		(await resolveNodePackageFallback(packageRoot, parsed.subpath, manifest))
-	);
+	const exported = await resolveNodePackageExport(packageRoot, parsed.subpath, manifest);
+	if (exported === PACKAGE_IMPORT_EXCLUDED) return null;
+	return exported ?? (await resolveNodePackageFallback(packageRoot, parsed.subpath, manifest));
+}
+
+async function isNodePackageExportExplicitlyExcluded(specifier: string, importerPath: string): Promise<boolean> {
+	const parsed = splitBarePackageSpecifier(specifier);
+	if (!parsed) return false;
+	const packageRoot = await findNodePackageRoot(parsed.name, importerPath);
+	if (!packageRoot) return false;
+	const manifest = await readPackageManifest(packageRoot);
+	if (!manifest) return false;
+	return (await resolveNodePackageExport(packageRoot, parsed.subpath, manifest)) === PACKAGE_IMPORT_EXCLUDED;
 }
 
 async function resolveExtensionBareDependency(specifier: string, importerPath: string): Promise<string | null> {
@@ -933,6 +953,9 @@ async function resolveExtensionBareDependency(specifier: string, importerPath: s
 }
 
 async function resolveExtensionBareDependencyUncached(specifier: string, importerPath: string): Promise<string | null> {
+	if (await isNodePackageExportExplicitlyExcluded(specifier, importerPath)) {
+		throw new Error(`Package export "${specifier}" is explicitly excluded.`);
+	}
 	try {
 		const resolved = Bun.resolveSync(specifier, path.dirname(importerPath));
 		if (resolved && resolved !== specifier && !resolved.startsWith("node:") && !resolved.startsWith("bun:")) {

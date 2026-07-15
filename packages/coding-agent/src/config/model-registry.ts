@@ -2113,14 +2113,11 @@ export class ModelRegistry {
 	}
 
 	/**
-	 * Register a provider dynamically (from extensions).
-	 *
-	 * If provider has models: replaces all existing models for this provider.
-	 * If provider has only baseUrl/headers: overrides existing models' URLs.
-	 * If provider has streamSimple: registers a custom API streaming function.
-	 * If provider has oauth: registers OAuth provider for /login support.
+	 * Validate an extension provider registration without mutating live model,
+	 * OAuth, or custom-transport state. Used by runtime reload to reject an
+	 * invalid candidate before retiring the active plugin snapshot.
 	 */
-	registerProvider(providerName: string, config: ProviderConfigInput, sourceId?: string): void {
+	validateProviderRegistration(providerName: string, config: ProviderConfigInput): void {
 		if (config.streamSimple && !config.api) {
 			throw new Error(`Provider ${providerName}: "api" is required when registering streamSimple.`);
 		}
@@ -2137,6 +2134,18 @@ export class ModelRegistry {
 			},
 			"runtime-register",
 		);
+	}
+
+	/**
+	 * Register a provider dynamically (from extensions).
+	 *
+	 * If provider has models: replaces all existing models for this provider.
+	 * If provider has only baseUrl/headers: overrides existing models' URLs.
+	 * If provider has streamSimple: registers a custom API streaming function.
+	 * If provider has oauth: registers OAuth provider for /login support.
+	 */
+	registerProvider(providerName: string, config: ProviderConfigInput, sourceId?: string): void {
+		this.validateProviderRegistration(providerName, config);
 
 		if (config.streamSimple && config.api) {
 			const streamSimple = config.streamSimple;

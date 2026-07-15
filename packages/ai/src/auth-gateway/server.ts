@@ -734,7 +734,14 @@ function handleModelsList(opts: AuthGatewayBootOptions): Response {
 	return json(200, { object: "list", data });
 }
 
+function piAllowsRemoteCredentialServices(): boolean {
+	return false;
+}
+
 export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServerHandle {
+	if (!piAllowsRemoteCredentialServices()) {
+		throw new Error("The remote credential gateway is unavailable in Pi");
+	}
 	const bind = parseBind(opts.bind ?? DEFAULT_AUTH_GATEWAY_BIND);
 	const tokens = new Set<string>(opts.bearerTokens);
 	const version = opts.version;

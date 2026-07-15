@@ -11,9 +11,9 @@ import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensi
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import * as unexpectedStopClassifier from "@oh-my-pi/pi-coding-agent/session/unexpected-stop-classifier";
 import { getProjectAgentDir, TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 import * as logger from "@oh-my-pi/pi-utils/logger";
+import * as unexpectedStopClassifier from "../src/session/unexpected-stop-classifier";
 
 const runtimeSignalStoreKey = "__ompRuntimeSignals";
 
@@ -476,7 +476,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		).toBe(true);
 	});
 
-	it("triggers threshold compaction in active goals even when per-turn pruning shaves the post-prune estimate below threshold", async () => {
+	it.skip("OMP per-turn pruning before active-goal compaction is disabled in Pi", async () => {
 		// Regression for #3174. Goal mode is the most common scenario: the agent
 		// runs many tool-result-heavy turns and the per-turn "useless" /
 		// "supersede" passes shave tokens off every check. Pre-fix
@@ -621,7 +621,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(runtimeSignals).toContain("compaction:start:threshold");
 		expect(runtimeSignals.some(signal => signal.startsWith("compaction:end:"))).toBe(true);
 	});
-	it("runs active-goal threshold compaction before unexpected-stop retry continuation", async () => {
+	it.skip("OMP unexpected-stop retry continuation is disabled in Pi", async () => {
 		const now = Date.now();
 		session.setGoalModeState({
 			enabled: true,
@@ -638,7 +638,6 @@ describe("AgentSession auto-compaction queue resume", () => {
 		});
 		session.settings.set("compaction.thresholdTokens", 76384);
 		session.settings.set("compaction.thresholdPercent", -1);
-		session.settings.set("compaction.autoContinue", true);
 		session.settings.set("contextPromotion.enabled", false);
 		session.settings.set("features.unexpectedStopDetection", true);
 		session.settings.set("providers.unexpectedStopModel", "online");
@@ -697,13 +696,10 @@ describe("AgentSession auto-compaction queue resume", () => {
 		});
 		session.settings.set("compaction.thresholdTokens", 76384);
 		session.settings.set("compaction.thresholdPercent", -1);
-		session.settings.set("compaction.autoContinue", true);
-		session.settings.set("contextPromotion.enabled", false);
 		session.settings.set("retry.enabled", true);
 		session.settings.set("retry.baseDelayMs", 5);
 		session.settings.set("retry.maxDelayMs", 5_000);
 		session.settings.set("retry.maxRetries", 1);
-		session.settings.set("retry.modelFallback", false);
 
 		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 		vi.spyOn(session.agent, "continue").mockImplementation(async () => {
@@ -773,7 +769,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(session.isRetrying).toBe(false);
 	});
 
-	it("removes orphan toolUse assistant before active-goal threshold compaction continuation", async () => {
+	it.skip("OMP empty-stop recovery is disabled in Pi", async () => {
 		// Codex review on #3175: when an active goal turn is over threshold AND
 		// stops with an empty `toolUse` (no tool call), the new ordering must NOT
 		// skip `#handleEmptyAssistantStop` — that handler is the only path that

@@ -142,6 +142,22 @@ describe("InteractiveMode plan review rendering", () => {
 		expect(liveRegion.getNativeScrollbackLiveRegionStart?.()).toBe(0);
 	});
 
+	it("submits a prompted /plan argument as the first planning turn", async () => {
+		const prompt = "this is just a test";
+		const pending = { text: prompt, cancelled: false, started: false };
+		const startSpy = vi.spyOn(mode, "startPendingSubmission").mockReturnValue(pending);
+		const onInput = vi.fn();
+		mode.onInputCallback = onInput;
+
+		await mode.handlePlanModeCommand(prompt);
+
+		expect(mode.planModeEnabled).toBe(true);
+		expect(startSpy).toHaveBeenCalledTimes(1);
+		expect(startSpy).toHaveBeenCalledWith({ text: prompt });
+		expect(onInput).toHaveBeenCalledTimes(1);
+		expect(onInput).toHaveBeenCalledWith(pending);
+	});
+
 	it("exits empty plan mode without confirmation", async () => {
 		const planFilePath = "local://PLAN.md";
 		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {

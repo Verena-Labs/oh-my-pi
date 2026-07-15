@@ -58,6 +58,7 @@ import type { CollabHost } from "../collab/host";
 import { KeybindingsManager } from "../config/keybindings";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { isSettingsInitialized, onStatusLineSessionAccentChanged, Settings, settings } from "../config/settings";
+import { DelegateSessionRegistry } from "../delegate/runtime";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
 	AutocompleteProviderFactory,
@@ -107,7 +108,7 @@ import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } from "../slash-commands/builtin-registry";
 import { formatDuration } from "../slash-commands/helpers/format";
-import { STTController, type SttState } from "../stt";
+import { isPiDisabledSlashCommandName } from "../slash-commands/pi-policy";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { formatTaskId } from "../task/render";
 import type { ConfiguredThinkingLevel } from "../thinking";
@@ -118,7 +119,6 @@ import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
 import { type ResolveToolDetails, runResolveInvocation } from "../tools/resolve";
 import { formatPhaseDisplayName, todoMatchesAnyDescription } from "../tools/todo";
 import { ToolError } from "../tools/tool-errors";
-import { vocalizer } from "../tts/vocalizer";
 import { renderTreeList } from "../tui/tree-list";
 import { copyToClipboard } from "../utils/clipboard";
 import type { EventBus } from "../utils/event-bus";
@@ -126,7 +126,6 @@ import { getEditorCommand, openInEditor } from "../utils/external-editor";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-color";
 import { messageHasDisplayableThinking } from "../utils/thinking-display";
 import { popTerminalTitle, pushTerminalTitle, setSessionTerminalTitle } from "../utils/title-generator";
-import { VibeSessionRegistry } from "../vibe/runtime";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { ChatBlock, type ChatBlockHost } from "./components/chat-block";
@@ -170,7 +169,6 @@ import {
 	type SessionObserverChangeKind,
 	SessionObserverRegistry,
 } from "./session-observer-registry";
-import { createSessionTeardown, type SessionTeardown } from "./session-teardown";
 import { runProviderSetupWizard } from "./setup-wizard/lazy";
 import { interruptHint } from "./shared";
 import { clearMermaidCache } from "./theme/mermaid-cache";
@@ -436,7 +434,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	planModePaused = false;
 	goalModeEnabled = false;
 	goalModePaused = false;
-	vibeModeEnabled = false;
+	delegateModeEnabled = false;
 	planModePlanFilePath: string | undefined = undefined;
 	loopModeEnabled = false;
 	loopPrompt: string | undefined = undefined;
@@ -525,13 +523,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	#baseAutocompleteProvider: AutocompleteProvider | undefined;
 	/** Extension-registered provider factories, applied in registration order (#4919). */
 	#autocompleteProviderFactories: AutocompleteProviderFactory[] = [];
-	#cleanupUnsubscribe?: () => void;
-	#signalTeardown?: SessionTeardown;
 	readonly #version: string;
 	readonly #changelogMarkdown: string | undefined;
 	#planModePreviousTools: string[] | undefined;
 	#goalModePreviousTools: string[] | undefined;
-	#vibeModePreviousTools: string[] | undefined;
+	#delegateModePreviousTools: string[] | undefined;
 	#goalContinuationTimer: NodeJS.Timeout | undefined;
 	#goalTurnHadToolCalls = false;
 	#goalContinuationTurnInFlight = false;
@@ -603,7 +599,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.pendingTools.clear();
 	}
 	readonly #uiHelpers: UiHelpers;
-	#sttController: STTController | undefined;
 	#voiceAnimationInterval: NodeJS.Timeout | undefined;
 	#voiceHue = 0;
 	#voicePreviousShowHardwareCursor: boolean | null = null;
@@ -698,7 +693,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		try {
 			this.historyStorage = HistoryStorage.open();
 			this.editor.setHistoryStorage(this.historyStorage);
-			this.historyStorage.setSessionResolver(() => this.sessionManager.getSessionId());
 		} catch (error) {
 			logger.warn("History storage unavailable", { error: String(error) });
 		}
@@ -719,33 +713,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.hideThinkingBlock = settings.get("hideThinkingBlock");
 		this.proseOnlyThinking = settings.get("proseOnlyThinking");
 
-		const hookCommands: SlashCommand[] = (
-			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
-		).map(cmd => ({
-			name: cmd.name,
-			description: cmd.description ?? "(hook command)",
-			getArgumentCompletions: cmd.getArgumentCompletions,
-		}));
-
-		// Convert custom commands (TypeScript) to SlashCommand format
-		const customCommands: SlashCommand[] = this.session.customCommands.map(loaded => ({
-			name: loaded.command.name,
-			description: `${loaded.command.description} (${loaded.source})`,
-		}));
-
-		// Build skill commands from session.skills (if enabled)
-		const skillCommandList: SlashCommand[] = [];
-		if (settings.get("skills.enableSkillCommands")) {
-			for (const skill of this.session.skills) {
-				const commandName = `skill:${skill.name}`;
-				this.skillCommands.set(commandName, skill);
-				skillCommandList.push({ name: commandName, description: skill.description });
-			}
-		}
-
-		const builtinCommands = buildTuiBuiltinSlashCommands({ ctx: this });
-		// Store pending commands for init() where file commands are loaded async
-		this.#pendingSlashCommands = [...builtinCommands, ...hookCommands, ...customCommands, ...skillCommandList];
+		this.#refreshPendingSlashCommands();
 
 		this.#uiHelpers = new UiHelpers(this);
 		this.#btwController = new BtwController(this);
@@ -820,30 +788,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.isInitialized) return;
 
 		this.keybindings = logger.time("InteractiveMode.init:keybindings", () => KeybindingsManager.create());
-
-		// Route SIGINT/SIGTERM/SIGHUP/uncaughtException through the same teardown
-		// the TUI Ctrl+C keypress path performs: persist the in-progress editor
-		// draft for `--resume`, then dispose the session (which emits the extension
-		// `session_shutdown` event, cancels the owned async job manager, disposes
-		// eval kernels, releases owned browser tabs, and closes the session
-		// manager). Without this callback a real kernel signal would drop the
-		// draft, skip the `session_shutdown` contract from `shared-events.ts`,
-		// and orphan background bash/task processes (issue #4080). The registered
-		// callback and `shutdown()` share one promise-memoized teardown, so a
-		// signal arriving mid-Ctrl+C no-ops instead of racing a second dispose.
-		this.#signalTeardown = createSessionTeardown({
-			getDraftText: () => this.editor.getText(),
-			beginDispose: () => this.session.beginDispose(),
-			saveDraft: text => this.sessionManager.saveDraft(text),
-			disposeSession: reason =>
-				this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason }),
-		});
-		// Forward the postmortem reason (SIGTERM/SIGHUP/uncaughtException/…) so the
-		// persisted `session_exit` diagnostic carries the real trigger. Postmortem
-		// runs callbacks in REVERSE registration order — this callback (registered
-		// after the AgentSession constructor's `agent-session:<id>` recorder) runs
-		// FIRST and its dispose() would otherwise persist the generic "dispose".
-		this.#cleanupUnsubscribe = postmortem.register("session-teardown", reason => this.#signalTeardown!(reason));
 
 		// Wire the report_tool_issue consent gate to the Yes/No dialog popup.
 		// The handler is process-global — subagent tools (which can't reach
@@ -1080,7 +1024,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** Reload slash commands and autocomplete for the provided working directory. */
 	async refreshSlashCommandState(cwd?: string): Promise<void> {
 		const basePath = cwd ?? this.sessionManager.getCwd();
-		const fileCommands = await loadSlashCommands({ cwd: basePath });
+		this.#refreshPendingSlashCommands();
+		const fileCommands = (await loadSlashCommands({ cwd: basePath })).filter(
+			command => !isPiDisabledSlashCommandName(command.name),
+		);
 		this.fileSlashCommands = new Set(fileCommands.map(cmd => cmd.name));
 		const fileSlashCommands: SlashCommand[] = fileCommands.map(cmd => ({
 			name: cmd.name,
@@ -1101,7 +1048,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			for (const alias of command.aliases ?? []) reservedNames.add(alias);
 		}
 		const promptTemplateCommands: SlashCommand[] = this.session.promptTemplates
-			.filter(template => !reservedNames.has(template.name))
+			.filter(template => !reservedNames.has(template.name) && !isPiDisabledSlashCommandName(template.name))
 			.map(template => ({
 				name: template.name,
 				// `PromptTemplate.description` from `loadTemplatesFromDir` already includes the
@@ -1114,6 +1061,41 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 		this.#applyAutocompleteProvider();
 		this.session.setSlashCommands(fileCommands);
+	}
+
+	/** Rebuild the synchronous command sources that can change when the stable
+	 * extension runner adopts a new plugin snapshot. */
+	#refreshPendingSlashCommands(): void {
+		const hookCommands: SlashCommand[] = (
+			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
+		)
+			.filter(command => !isPiDisabledSlashCommandName(command.name))
+			.map(command => ({
+				name: command.name,
+				description: command.description ?? "(hook command)",
+				getArgumentCompletions: command.getArgumentCompletions,
+			}));
+		const customCommands: SlashCommand[] = this.session.customCommands
+			.filter(loaded => !isPiDisabledSlashCommandName(loaded.command.name))
+			.map(loaded => ({
+				name: loaded.command.name,
+				description: `${loaded.command.description} (${loaded.source})`,
+			}));
+		this.skillCommands.clear();
+		const skillCommands: SlashCommand[] = [];
+		if (this.settings.get("skills.enableSkillCommands")) {
+			for (const skill of this.session.skills) {
+				const commandName = `skill:${skill.name}`;
+				this.skillCommands.set(commandName, skill);
+				skillCommands.push({ name: commandName, description: skill.description });
+			}
+		}
+		this.#pendingSlashCommands = [
+			...buildTuiBuiltinSlashCommands({ ctx: this }),
+			...hookCommands,
+			...customCommands,
+			...skillCommands,
+		];
 	}
 
 	/**
@@ -1954,8 +1936,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
-	#updateVibeModeStatus(): void {
-		this.statusLine.setVibeModeStatus(this.vibeModeEnabled ? { enabled: true } : undefined);
+	#updateDelegateModeStatus(): void {
+		this.statusLine.setDelegateModeStatus(this.delegateModeEnabled ? { enabled: true } : undefined);
 		this.ui.requestRender();
 	}
 
@@ -2128,16 +2110,16 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#updateGoalModeStatus();
 		}
 
-		if (this.vibeModeEnabled) {
-			await this.session.deactivateVibeTools(this.#vibeModePreviousTools ?? []);
-			this.session.setVibeModeState(undefined);
-			this.vibeModeEnabled = false;
-			this.#vibeModePreviousTools = undefined;
-			await VibeSessionRegistry.global().killAll(
+		if (this.delegateModeEnabled) {
+			await this.session.deactivateDelegateTools(this.#delegateModePreviousTools ?? []);
+			this.session.setDelegateModeState(undefined);
+			this.delegateModeEnabled = false;
+			this.#delegateModePreviousTools = undefined;
+			await DelegateSessionRegistry.global().killAll(
 				this.session.getAgentId() ?? MAIN_AGENT_ID,
 				this.session.asyncJobManager,
 			);
-			this.#updateVibeModeStatus();
+			this.#updateDelegateModeStatus();
 		}
 	}
 
@@ -2178,8 +2160,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		this.session.goalRuntime.clearAccounting();
-		if (sessionContext.mode === "vibe") {
-			await this.#enterVibeMode();
+		// Resume old sessions written before the public Vibe -> Delegate rename,
+		// but persist and advertise only the new Delegate identity from now on.
+		if (sessionContext.mode === "delegate" || sessionContext.mode === "vibe") {
+			await this.#enterDelegateMode();
 			return;
 		}
 		if (!this.session.settings.get("plan.enabled")) {
@@ -2208,8 +2192,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Exit goal mode first.");
 			return;
 		}
-		if (this.vibeModeEnabled) {
-			this.showWarning("Exit vibe mode first.");
+		if (this.delegateModeEnabled) {
+			this.showWarning("Exit delegate mode first.");
 			return;
 		}
 
@@ -2379,8 +2363,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Exit plan mode first.");
 			return;
 		}
-		if (this.vibeModeEnabled) {
-			this.showWarning("Exit vibe mode first.");
+		if (this.delegateModeEnabled) {
+			this.showWarning("Exit delegate mode first.");
 			return;
 		}
 		const previousTools = this.session.getActiveToolNames().filter(name => name !== "goal");
@@ -2899,8 +2883,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Exit goal mode first.");
 			return;
 		}
-		if (this.vibeModeEnabled) {
-			this.showWarning("Exit vibe mode first.");
+		if (this.delegateModeEnabled) {
+			this.showWarning("Exit delegate mode first.");
 			return;
 		}
 		if (this.planModeEnabled) {
@@ -2939,14 +2923,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/**
-	 * `/vibe` toggle. Entering installs the ephemeral vibe tools, strips the
+	 * `/delegate` toggle. Entering installs the ephemeral delegate tools, strips the
 	 * active toolset down to `read` plus those tools, and injects the director
 	 * context. Exiting unregisters them, restores the previous toolset, and kills
 	 * every worker session so workers cannot outlive the mode that directs them.
 	 */
-	async handleVibeModeCommand(initialPrompt?: string): Promise<void> {
-		if (this.vibeModeEnabled) {
-			await this.#exitVibeMode();
+	async handleDelegateModeCommand(initialPrompt?: string): Promise<void> {
+		if (this.delegateModeEnabled) {
+			await this.#exitDelegateMode();
 			return;
 		}
 		if (this.planModeEnabled || this.planModePaused) {
@@ -2957,14 +2941,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Exit goal mode first.");
 			return;
 		}
-		await this.#enterVibeMode();
+		await this.#enterDelegateMode();
 		if (initialPrompt && this.onInputCallback) {
 			this.onInputCallback(this.startPendingSubmission({ text: initialPrompt }));
 		}
 	}
 
-	async #enterVibeMode(): Promise<void> {
-		if (this.vibeModeEnabled) {
+	async #enterDelegateMode(): Promise<void> {
+		if (this.delegateModeEnabled) {
 			return;
 		}
 		if (this.planModeEnabled || this.planModePaused) {
@@ -2977,40 +2961,40 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		const previousTools = this.session.getActiveToolNames();
-		await this.session.activateVibeTools(["read"]);
-		this.#vibeModePreviousTools = previousTools;
-		this.vibeModeEnabled = true;
-		// Suppress cache-miss marker on the next turn: vibe mode changes the
+		await this.session.activateDelegateTools(["read"]);
+		this.#delegateModePreviousTools = previousTools;
+		this.delegateModeEnabled = true;
+		// Suppress cache-miss marker on the next turn: delegate mode changes the
 		// injected context, which predictably invalidates the cache.
 		this.lastAssistantUsage = undefined;
-		this.session.setVibeModeState({ enabled: true });
+		this.session.setDelegateModeState({ enabled: true });
 		if (this.session.isStreaming) {
-			await this.session.sendVibeModeContext({ deliverAs: "steer" });
+			await this.session.sendDelegateModeContext({ deliverAs: "steer" });
 		}
-		this.#updateVibeModeStatus();
-		this.sessionManager.appendModeChange("vibe");
-		this.showStatus("Vibe mode enabled. You direct fast/good worker sessions; toolset is read + vibe tools.");
+		this.#updateDelegateModeStatus();
+		this.sessionManager.appendModeChange("delegate");
+		this.showStatus("Delegate mode enabled. You direct fast/good worker sessions; toolset is read + delegate tools.");
 	}
 
-	async #exitVibeMode(): Promise<void> {
-		if (!this.vibeModeEnabled) {
+	async #exitDelegateMode(): Promise<void> {
+		if (!this.delegateModeEnabled) {
 			return;
 		}
-		await this.session.deactivateVibeTools(this.#vibeModePreviousTools ?? []);
-		this.session.setVibeModeState(undefined);
-		this.vibeModeEnabled = false;
-		this.#vibeModePreviousTools = undefined;
+		await this.session.deactivateDelegateTools(this.#delegateModePreviousTools ?? []);
+		this.session.setDelegateModeState(undefined);
+		this.delegateModeEnabled = false;
+		this.#delegateModePreviousTools = undefined;
 		this.lastAssistantUsage = undefined;
-		const killed = await VibeSessionRegistry.global().killAll(
+		const killed = await DelegateSessionRegistry.global().killAll(
 			this.session.getAgentId() ?? MAIN_AGENT_ID,
 			this.session.asyncJobManager,
 		);
-		this.#updateVibeModeStatus();
+		this.#updateDelegateModeStatus();
 		this.sessionManager.appendModeChange("none");
 		this.showStatus(
 			killed > 0
-				? `Vibe mode disabled. Killed ${killed} worker session${killed === 1 ? "" : "s"}.`
-				: "Vibe mode disabled.",
+				? `Delegate mode disabled. Killed ${killed} worker session${killed === 1 ? "" : "s"}.`
+				: "Delegate mode disabled.",
 		);
 	}
 
@@ -3046,8 +3030,8 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.showWarning("Exit plan mode first.");
 				return;
 			}
-			if (this.vibeModeEnabled) {
-				this.showWarning("Exit vibe mode first.");
+			if (this.delegateModeEnabled) {
+				this.showWarning("Exit delegate mode first.");
 				return;
 			}
 			if (!this.session.settings.get("goal.enabled")) {
@@ -3565,10 +3549,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#cancelTodoAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
 		this.#cancelGoalContinuation();
-		if (this.#sttController) {
-			this.#sttController.dispose();
-			this.#sttController = undefined;
-		}
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.#extensionUiController.clearHookWidgets();
 		for (const unsubscribe of this.#eventBusUnsubscribers) {
@@ -3587,9 +3567,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (this.unsubscribe) {
 			this.unsubscribe();
-		}
-		if (this.#cleanupUnsubscribe) {
-			this.#cleanupUnsubscribe();
 		}
 		// Clear the process-global consent handler so it doesn't outlive this
 		// InteractiveMode instance (e.g. test harnesses, headless re-init).
@@ -3615,17 +3592,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		// dispose blocks.
 		this.showStatus("Closing session…");
 
-		// Persist the draft and dispose the session through the shared teardown
-		// so a signal that arrives mid-shutdown cannot fire a second dispose.
-		// The teardown is a promise-memoized singleton; whichever path calls it
-		// first runs the work, the other awaits the same settled promise.
-		// The teardown is registered lazily in `init()` — a `/exit` reached
-		// before `init()` completed falls back to a direct dispose.
-		if (this.#signalTeardown) {
-			await this.#signalTeardown();
-		} else {
-			await this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS });
+		// Persist the current editor draft before ordinary interactive teardown.
+		// Stop-recovery signal callbacks and lifecycle diagnostics are unavailable
+		// in Pi, but an explicit `/exit` still preserves the resumable draft and
+		// performs the normal bounded session cleanup.
+		const draftText = this.editor.getText();
+		this.session.beginDispose();
+		try {
+			await this.sessionManager.saveDraft(draftText);
+		} catch (error) {
+			logger.warn("Failed to save session draft during teardown", { error: String(error) });
 		}
+		await this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS });
 
 		// Do not force a final render during teardown: disposed session/UI state can
 		// collapse to an empty frame, clearing the viewport and leaving the parent
@@ -3913,10 +3891,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.setWorkingMessage(message);
 	}
 
-	showNewVersionNotification(newVersion: string): void {
-		this.#uiHelpers.showNewVersionNotification(newVersion);
-	}
-
 	clearEditor(): void {
 		this.#uiHelpers.clearEditor();
 	}
@@ -4049,6 +4023,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	handleDropCommand(): Promise<void> {
+		if (isPiDisabledSlashCommandName("drop")) return Promise.resolve();
 		this.#prepareSessionSwitch();
 		return this.#commandController.handleDropCommand();
 	}
@@ -4060,6 +4035,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	handleMoveCommand(targetPath?: string): Promise<void> {
+		if (isPiDisabledSlashCommandName("move")) return Promise.resolve();
 		return this.#commandController.handleMoveCommand(targetPath);
 	}
 
@@ -4072,36 +4048,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async handleSTTToggle(): Promise<void> {
-		if (!settings.get("stt.enabled")) {
-			this.showWarning("Speech-to-text is disabled. Enable it in settings: stt.enabled");
-			return;
-		}
-		if (!this.#sttController) {
-			this.#sttController = new STTController();
-		}
-		await this.#sttController.toggle(this.editor, {
-			showWarning: (msg: string) => this.showWarning(msg),
-			showStatus: (msg: string) => this.showStatus(msg),
-			requestRender: () => this.ui.requestRender(),
-			onStateChange: (state: SttState) => {
-				// Duck assistant speech while the user is talking (push-to-talk); restore after.
-				if (state === "recording") vocalizer.duck();
-				else vocalizer.unduck();
-				if (state === "recording") {
-					this.#voicePreviousShowHardwareCursor = this.ui.getShowHardwareCursor();
-					this.#voicePreviousUseTerminalCursor = this.editor.getUseTerminalCursor();
-					this.ui.setShowHardwareCursor(false);
-					this.editor.setUseTerminalCursor(false);
-					this.#startMicAnimation();
-				} else if (state === "transcribing") {
-					this.#stopMicAnimation();
-					this.#setMicCursor({ r: 200, g: 200, b: 200 });
-				} else {
-					this.#cleanupMicAnimation();
-				}
-				this.ui.requestRender();
-			},
-		});
+		this.showWarning("Speech-to-text is unavailable in Pi");
 	}
 
 	#setMicCursor(color: { r: number; g: number; b: number }): void {
@@ -4115,6 +4062,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#setMicCursor({ r, g, b });
 	}
 
+	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: dormant OMP speech UI retained behind Pi's boundary
 	#startMicAnimation(): void {
 		if (this.#voiceAnimationInterval) return;
 		this.#voiceHue = 0;
@@ -4128,6 +4076,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}, 60);
 	}
 
+	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: dormant OMP speech UI retained behind Pi's boundary
 	#stopMicAnimation(): void {
 		if (this.#voiceAnimationInterval) {
 			clearInterval(this.#voiceAnimationInterval);
@@ -4179,6 +4128,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async handleSSHCommand(text: string): Promise<void> {
+		if (isPiDisabledSlashCommandName("ssh")) return;
 		const controller = new SSHCommandController(this);
 		await controller.handle(text);
 	}
@@ -4314,6 +4264,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	handleTanCommand(work: string): Promise<void> {
+		if (isPiDisabledSlashCommandName("tan")) return Promise.resolve();
 		return this.#tanCommandController.start(work);
 	}
 
@@ -4361,6 +4312,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	handleOmfgCommand(complaint: string): Promise<void> {
+		if (isPiDisabledSlashCommandName("omfg")) return Promise.resolve();
 		return this.#omfgController.start(complaint);
 	}
 
@@ -4424,7 +4376,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	registerExtensionShortcuts(): void {
-		this.#inputController.registerExtensionShortcuts();
+		// Rebuild the full key map so shortcuts removed by a plugin reload do not
+		// leave stale handlers behind, then register the newly adopted snapshot.
+		this.#inputController.setupKeyHandlers();
 	}
 
 	// Hook UI methods

@@ -112,6 +112,7 @@ function pythonCommandPrefixLength(trimmedText: string): 0 | 1 | 2 {
 }
 
 function parsePythonCommandInput(text: string): { code: string; isExcluded: boolean } | undefined {
+	if (!piAllowsEvalKernels()) return undefined;
 	const trimmed = text.trimStart();
 	const prefixLength = pythonCommandPrefixLength(trimmed);
 	if (prefixLength === 0) return undefined;
@@ -121,6 +122,10 @@ function parsePythonCommandInput(text: string): { code: string; isExcluded: bool
 		code,
 		isExcluded: prefixLength === 2,
 	};
+}
+
+function piAllowsEvalKernels(): boolean {
+	return false;
 }
 
 /** Wrap pasted text in `<attachment>` tags so the model treats it as one quoted block. */
@@ -439,8 +444,8 @@ export class InputController {
 		this.ctx.editor.onExpandTools = () => this.toggleToolOutputExpansion();
 		this.ctx.editor.setActionKeys("app.message.dequeue", this.ctx.keybindings.getKeys("app.message.dequeue"));
 		this.ctx.editor.onDequeue = () => this.handleDequeue();
-		this.ctx.editor.setActionKeys("app.retry", this.ctx.keybindings.getKeys("app.retry"));
-		this.ctx.editor.onRetry = () => void this.handleRetry();
+		this.ctx.editor.setActionKeys("app.retry", []);
+		this.ctx.editor.onRetry = undefined;
 		this.ctx.editor.clearCustomKeyHandlers();
 		// Wire up extension shortcuts
 		this.registerExtensionShortcuts();
@@ -452,9 +457,6 @@ export class InputController {
 		for (const key of this.ctx.keybindings.getKeys("app.session.new")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.handleClearCommand());
 		}
-		for (const key of this.ctx.keybindings.getKeys("app.session.tree")) {
-			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showTreeSelector());
-		}
 		for (const key of this.ctx.keybindings.getKeys("app.session.fork")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showUserMessageSelector());
 		}
@@ -464,15 +466,9 @@ export class InputController {
 		for (const key of this.ctx.keybindings.getKeys("app.message.followUp")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => void this.handleFollowUp());
 		}
-		for (const key of this.ctx.keybindings.getKeys("app.stt.toggle")) {
-			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handleSTTToggle());
-		}
-		// Hold the space bar to push-to-talk: the editor recognizes the auto-repeat burst, tracks
-		// the spam back out, and toggles STT on hold start / release. Gated on `stt.enabled` so a
-		// disabled STT leaves the space bar typing normally.
-		this.ctx.editor.sttHoldEnabled = () => settings.get("stt.enabled");
-		this.ctx.editor.onSpaceHoldStart = () => void this.ctx.handleSTTToggle();
-		this.ctx.editor.onSpaceHoldEnd = () => void this.ctx.handleSTTToggle();
+		this.ctx.editor.sttHoldEnabled = () => false;
+		this.ctx.editor.onSpaceHoldStart = undefined;
+		this.ctx.editor.onSpaceHoldEnd = undefined;
 		for (const key of this.ctx.keybindings.getKeys("app.clipboard.copyLine")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.handleCopyCurrentLine());
 		}

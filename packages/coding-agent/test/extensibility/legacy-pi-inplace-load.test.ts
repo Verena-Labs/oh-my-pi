@@ -178,6 +178,79 @@ describe("legacy-pi in-place module loading (issue #1674)", () => {
 		expect(second.depValue).toBe("dep-v2");
 	});
 
+	it("does not bypass an exact null package export through a wildcard", async () => {
+		const dir = await writePackage({
+			"package.json": JSON.stringify({ name: "blocked-export-ext", version: "1.0.0" }),
+			"node_modules/localdep/package.json": JSON.stringify({
+				name: "localdep",
+				version: "1.0.0",
+				type: "module",
+				exports: {
+					"./blocked": null,
+					"./*": "./src/*.js",
+				},
+			}),
+			"node_modules/localdep/src/blocked.js": 'export const blockedValue = "must-not-load";\n',
+			"index.ts": [
+				'import { blockedValue } from "localdep/blocked";',
+				"export { blockedValue };",
+				"export default function (pi) { void pi; }",
+			].join("\n"),
+		});
+
+		await expect(loadLegacyPiModule(path.join(dir, "index.ts"))).rejects.toThrow(
+			'Package export "localdep/blocked" is explicitly excluded.',
+		);
+	});
+
+	it("honors the most-specific null wildcard after a broad export", async () => {
+		const dir = await writePackage({
+			"package.json": JSON.stringify({ name: "blocked-wildcard-export-ext", version: "1.0.0" }),
+			"node_modules/localdep/package.json": JSON.stringify({
+				name: "localdep",
+				version: "1.0.0",
+				type: "module",
+				exports: {
+					"./*": "./src/*.js",
+					"./private/*": null,
+				},
+			}),
+			"node_modules/localdep/src/private/blocked.js": 'export const blockedValue = "must-not-load";\n',
+			"index.ts": [
+				'import { blockedValue } from "localdep/private/blocked";',
+				"export { blockedValue };",
+				"export default function (pi) { void pi; }",
+			].join("\n"),
+		});
+
+		await expect(loadLegacyPiModule(path.join(dir, "index.ts"))).rejects.toThrow(
+			'Package export "localdep/private/blocked" is explicitly excluded.',
+		);
+	});
+
+	it("does not bypass a null root package export through the main fallback", async () => {
+		const dir = await writePackage({
+			"package.json": JSON.stringify({ name: "blocked-root-export-ext", version: "1.0.0" }),
+			"node_modules/localdep/package.json": JSON.stringify({
+				name: "localdep",
+				version: "1.0.0",
+				type: "module",
+				exports: null,
+				main: "index.js",
+			}),
+			"node_modules/localdep/index.js": 'export const blockedValue = "must-not-load";\n',
+			"index.ts": [
+				'import { blockedValue } from "localdep";',
+				"export { blockedValue };",
+				"export default function (pi) { void pi; }",
+			].join("\n"),
+		});
+
+		await expect(loadLegacyPiModule(path.join(dir, "index.ts"))).rejects.toThrow(
+			'Package export "localdep" is explicitly excluded.',
+		);
+	});
+
 	it("reloads edited children of an installed plugin's extension-local bare dependency", async () => {
 		const entrySource = (version: string): string =>
 			[

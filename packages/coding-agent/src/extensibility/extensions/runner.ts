@@ -37,6 +37,7 @@ import type {
 	ExtensionUIContext,
 	InputEvent,
 	InputEventResult,
+	LoadExtensionsResult,
 	MessageRenderer,
 	RegisteredCommand,
 	RegisteredTool,
@@ -249,8 +250,8 @@ export class ExtensionRunner {
 	#pendingCredentialDisabled: CredentialDisabledEvent[] = [];
 
 	constructor(
-		private readonly extensions: Extension[],
-		private readonly runtime: ExtensionRuntime,
+		private extensions: Extension[],
+		private runtime: ExtensionRuntime,
 		private readonly cwd: string,
 		private readonly sessionManager: SessionManager,
 		private readonly modelRegistry: ModelRegistry,
@@ -259,6 +260,38 @@ export class ExtensionRunner {
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
+	}
+
+	/**
+	 * Atomically adopt a separately loaded extension snapshot while preserving
+	 * this runner's session/UI wiring. Tool wrappers and mode controllers retain
+	 * the runner identity, so the new handlers, commands, renderers, shortcuts,
+	 * and factories become visible together without a process restart.
+	 */
+	adopt(result: LoadExtensionsResult): void {
+		const nextRuntime = result.runtime;
+		if (this.#initialized) {
+			nextRuntime.sendMessage = this.runtime.sendMessage;
+			nextRuntime.sendUserMessage = this.runtime.sendUserMessage;
+			nextRuntime.appendEntry = this.runtime.appendEntry;
+			nextRuntime.getActiveTools = this.runtime.getActiveTools;
+			nextRuntime.getAllTools = this.runtime.getAllTools;
+			nextRuntime.setActiveTools = this.runtime.setActiveTools;
+			nextRuntime.getCommands = this.runtime.getCommands;
+			nextRuntime.setModel = this.runtime.setModel;
+			nextRuntime.getThinkingLevel = this.runtime.getThinkingLevel;
+			nextRuntime.setThinkingLevel = this.runtime.setThinkingLevel;
+			nextRuntime.getSessionName = this.runtime.getSessionName;
+			nextRuntime.setSessionName = this.runtime.setSessionName;
+		}
+
+		const nextFlags = ExtensionRunner.aggregateFlags(result.extensions);
+		for (const [name, value] of this.runtime.flagValues) {
+			if (nextFlags.has(name)) nextRuntime.flagValues.set(name, value);
+		}
+
+		this.extensions = [...result.extensions];
+		this.runtime = nextRuntime;
 	}
 
 	initialize(

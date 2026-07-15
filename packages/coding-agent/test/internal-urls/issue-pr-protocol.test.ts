@@ -14,6 +14,7 @@ import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { resetForTests as resetCacheForTests } from "@oh-my-pi/pi-coding-agent/tools/github-cache";
 import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { IssueProtocolHandler, PrProtocolHandler } from "../../src/internal-urls/issue-pr-protocol";
 
 let tempDir: string;
 let originalEnv: string | undefined;
@@ -27,6 +28,9 @@ beforeEach(async () => {
 	process.env.GH_TOKEN = "test-token";
 	resetCacheForTests();
 	InternalUrlRouter.resetForTests();
+	const router = InternalUrlRouter.instance();
+	router.registerForTests(new IssueProtocolHandler());
+	router.registerForTests(new PrProtocolHandler());
 });
 
 afterEach(async () => {

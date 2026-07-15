@@ -36,7 +36,7 @@ async function readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
 	}
 }
 
-describe("profile directories", () => {
+describe.skip("OMP named profile directories (disabled in Pi)", () => {
 	let tempRoot = "";
 	let configDir = "";
 	let originalAgentDir = "";
@@ -188,8 +188,8 @@ describe("profile directories", () => {
 	});
 
 	it("rejects path-like profile names", () => {
-		expect(() => setProfile("../work")).toThrow("Invalid OMP profile");
-		expect(() => setProfile("work/team")).toThrow("Invalid OMP profile");
+		expect(() => setProfile("../work")).toThrow("Invalid Pi profile");
+		expect(() => setProfile("work/team")).toThrow("Invalid Pi profile");
 	});
 
 	it("rejects trailing-dot profile names to avoid Windows path collisions", () => {
@@ -269,8 +269,8 @@ describe("profile env + name validation", () => {
 	it("rejects uppercase profile names so isolation is filesystem-independent", () => {
 		// `work` and `WORK` would collide on case-insensitive macOS/Windows but
 		// differ on Linux; reject uppercase to keep profile identity stable.
-		expect(() => normalizeProfileName("WORK")).toThrow("Invalid OMP profile");
-		expect(() => normalizeProfileName("Work")).toThrow("Invalid OMP profile");
+		expect(() => normalizeProfileName("WORK")).toThrow("Invalid Pi profile");
+		expect(() => normalizeProfileName("Work")).toThrow("Invalid Pi profile");
 		expect(normalizeProfileName("work")).toBe("work");
 		expect(normalizeProfileName("work-2.0_a")).toBe("work-2.0_a");
 	});
@@ -364,7 +364,7 @@ describe("dirs module import behavior", () => {
 		}
 	});
 
-	it("ignores inherited profile agent dir when OMP_PROFILE explicitly selects default", async () => {
+	it.skip("ignores inherited profile agent dir when OMP_PROFILE explicitly selects default", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-utils-dirs-default-profile-"));
 		const probeConfigDir = `.omp-default-profile-${Snowflake.next()}`;
 		try {
@@ -415,7 +415,7 @@ describe("dirs module import behavior", () => {
 		}
 	});
 
-	it("honors XDG dir keys from a profile .env applied after the resolver froze", async () => {
+	it.skip("honors XDG dir keys from a profile .env applied after the resolver froze", async () => {
 		if (process.platform === "win32") return;
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-utils-profile-env-xdg-"));
 		const homeDir = path.join(root, "home");

@@ -2,20 +2,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
-import { type AutocompleteItem, Spacer } from "@oh-my-pi/pi-tui";
-import { APP_NAME, getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
-import { COLLAB_GUEST_ALLOWED_COMMANDS, CollabGuestLink } from "../collab/guest";
-import { CollabHost } from "../collab/host";
+import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
+import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
 import { expandRoleAlias, getModelMatchPreferences, resolveCliModel } from "../config/model-resolver";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
-import {
-	clearPluginRootsAndCaches,
-	resolveActiveProjectRegistryPath,
-	resolveOrDefaultProjectRegistryPath,
-} from "../discovery/helpers.js";
-import { shareSession } from "../export/share";
+import { clearPluginRootsAndCaches, resolveOrDefaultProjectRegistryPath } from "../discovery/helpers.js";
 import { PluginManager } from "../extensibility/plugins";
 import {
 	getInstalledPluginsRegistryPath,
@@ -27,7 +20,6 @@ import {
 import { resolveMemoryBackend } from "../memory-backend";
 import { runPauseScreen } from "../modes/components/pause-screen";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
-import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
 import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
 import type { AgentSession, FreshSessionResult } from "../session/agent-session";
@@ -35,7 +27,6 @@ import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { resolveResumableSession } from "../session/session-listing";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { expandTilde, resolveToCwd } from "../tools/path-utils";
-import { urlHyperlinkAlways } from "../tui";
 import {
 	getChangelogPath,
 	parseChangelog,
@@ -43,7 +34,6 @@ import {
 	renderChangelogEntries,
 } from "../utils/changelog";
 import { copyToClipboard } from "../utils/clipboard";
-import { CollabQrCodeComponent } from "./helpers/collab-qrcode";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatDuration } from "./helpers/format";
 import { createMarketplaceManager } from "./helpers/marketplace-manager";
@@ -55,6 +45,7 @@ import { launchStatsDashboard, parseStatsDashboardArgs } from "./helpers/stats-d
 import { handleTodoAcp } from "./helpers/todo";
 import { buildUsageReportText } from "./helpers/usage-report";
 import { parseMarketplaceInstallArgs, parsePluginScopeArgs } from "./marketplace-install-parser";
+import { isPiDisabledSlashCommandName, PI_DISABLED_SLASH_COMMAND_NAMES } from "./pi-policy";
 import type {
 	BuiltinSlashCommand,
 	ParsedSlashCommand,
@@ -64,6 +55,8 @@ import type {
 	SubcommandDef,
 	TuiSlashCommandRuntime,
 } from "./types";
+
+export { isPiDisabledSlashCommandName, PI_DISABLED_SLASH_COMMAND_NAMES } from "./pi-policy";
 
 export type { BuiltinSlashCommand, SubcommandDef } from "./types";
 
@@ -95,43 +88,6 @@ function shortDetail(value: string, limit = AUTOCOMPLETE_DETAIL_LIMIT): string {
 
 function formatTokenCount(value: number): string {
 	return value.toLocaleString();
-}
-
-/** Scheme-less display form of a browser deep link: accent + underline, OSC-8 linked to the full URL. */
-function collabWebLinkClickable(webLink: string): string {
-	const display = theme.fg("accent", `\x1b[4m${webLink.replace(/^https?:\/\//, "")}\x1b[24m`);
-	return urlHyperlinkAlways(webLink, display);
-}
-
-/** Join hint printed by /collab: compact terminal link + clickable browser deep link. */
-function collabLinkHint(host: CollabHost, heading: string, view = false): string {
-	const bullet = theme.fg("accent", theme.format.bullet);
-	const link = view ? host.viewLink : host.link;
-	const webLink = view ? host.webViewLink : host.webLink;
-	return [
-		theme.fg("success", heading),
-		` ${bullet} ${theme.fg("muted", view ? "Watch from another terminal:" : "Join from another terminal:")} ${APP_NAME} join "${link}"`,
-		` ${bullet} ${theme.fg("muted", "or any web browser:")} ${collabWebLinkClickable(webLink)}`,
-		theme.fg(
-			"dim",
-			view
-				? "Anyone with this link can watch the session but cannot prompt the agent."
-				: "Anyone with the link can read the session and prompt the agent. Read-only link: /collab view",
-		),
-	].join("\n");
-}
-
-function showCollabQrCode(ctx: InteractiveModeContext, webLink: string): void {
-	try {
-		ctx.present([new Spacer(1), new CollabQrCodeComponent(webLink)]);
-	} catch (err) {
-		ctx.showError(`Failed to render collab QR code: ${errorMessage(err)}`);
-	}
-}
-
-function showCollabLink(ctx: InteractiveModeContext, host: CollabHost, heading: string, view = false): void {
-	ctx.showStatus(collabLinkHint(host, heading, view), { dim: false });
-	showCollabQrCode(ctx, view ? host.webViewLink : host.webLink);
 }
 
 function formatFreshSessionResult(result: FreshSessionResult): string {
@@ -258,18 +214,18 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
-		name: "vibe",
-		description: "Toggle vibe mode (direct persistent fast/good worker sessions; read-only toolset)",
+		name: "delegate",
+		description: "Toggle delegate mode (direct persistent fast/good worker sessions; read-only toolset)",
 		inlineHint: "[prompt]",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
-			if (runtime.ctx.vibeModeEnabled) return "Vibe: on";
-			if (runtime.ctx.planModeEnabled) return "Vibe: blocked by plan mode";
-			if (runtime.ctx.goalModeEnabled) return "Vibe: blocked by goal mode";
-			return "Vibe: off";
+			if (runtime.ctx.delegateModeEnabled) return "Delegate: on";
+			if (runtime.ctx.planModeEnabled) return "Delegate: blocked by plan mode";
+			if (runtime.ctx.goalModeEnabled) return "Delegate: blocked by goal mode";
+			return "Delegate: off";
 		},
 		handleTui: async (command, runtime) => {
-			await runtime.ctx.handleVibeModeCommand(command.args || undefined);
+			await runtime.ctx.handleDelegateModeCommand(command.args || undefined);
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -661,168 +617,6 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
-		name: "share",
-		description: "Share session via an encrypted link (share server or secret gist)",
-		handle: async (_command, runtime) => {
-			try {
-				const result = await shareSession(runtime.sessionManager, {
-					serverUrl: runtime.settings.get("share.serverUrl"),
-					store: runtime.settings.get("share.store"),
-					state: runtime.session.state,
-					obfuscator: runtime.settings.get("share.redactSecrets") ? runtime.session.obfuscator : undefined,
-				});
-				const lines = [`Share URL: ${result.url}`];
-				if (result.gistUrl) lines.push(`Gist: ${result.gistUrl}`);
-				if (result.truncated) lines.push("Note: large content was trimmed to fit the share size limit.");
-				await runtime.output(lines.join("\n"));
-				return commandConsumed();
-			} catch (err) {
-				return usage(`Failed to share session: ${errorMessage(err)}`, runtime);
-			}
-		},
-		handleTui: async (_command, runtime) => {
-			await runtime.ctx.handleShareCommand();
-			runtime.ctx.editor.setText("");
-		},
-	},
-	{
-		name: "collab",
-		description: "Share this session live via a relay",
-		inlineHint: "[start|view|stop|status] [relayUrl]",
-		subcommands: [
-			{ name: "view", description: "Share a read-only link (guests can watch, not prompt)" },
-			{ name: "status", description: "Show link + participants" },
-			{ name: "stop", description: "Stop sharing" },
-		],
-		allowArgs: true,
-		getTuiAutocompleteDescription: runtime => {
-			if (runtime.ctx.collabHost) {
-				return `Collab: hosting (${Math.max(0, runtime.ctx.collabHost.participants.length - 1)} guests)`;
-			}
-			if (runtime.ctx.collabGuest?.readOnly) return "Collab: read-only guest";
-			if (runtime.ctx.collabGuest) return "Collab: guest";
-			return "Collab: off";
-		},
-		handleTui: async (command, runtime) => {
-			const ctx = runtime.ctx;
-			ctx.editor.setText("");
-			const args = command.args.trim();
-			const { verb, rest } = parseSubcommand(args);
-			if (verb === "stop") {
-				if (!ctx.collabHost) {
-					ctx.showStatus("Not hosting a collab session");
-					return;
-				}
-				await ctx.collabHost.stop("host stopped");
-				ctx.showStatus("Collab stopped");
-				return;
-			}
-			if (verb === "status") {
-				if (ctx.collabHost) {
-					const names = ctx.collabHost.participants.map(p =>
-						p.role === "host" ? `${p.name} (host)` : p.readOnly ? `${p.name} (view-only)` : p.name,
-					);
-					ctx.showStatus(`Collab: ${names.join(", ")} — ${collabWebLinkClickable(ctx.collabHost.webLink)}`);
-				} else if (ctx.collabGuest) {
-					ctx.showStatus(
-						ctx.collabGuest.readOnly
-							? "In a collab session as a read-only guest (/leave to exit)"
-							: "In a collab session as a guest (/leave to exit)",
-					);
-				} else {
-					ctx.showStatus("Not in a collab session");
-				}
-				return;
-			}
-			if (ctx.collabGuest) {
-				ctx.showError("Already in a collab session as a guest (/leave first)");
-				return;
-			}
-			const knownStartVerb = verb === "start" || verb === "view";
-			const view = verb === "view";
-			if (ctx.collabHost) {
-				showCollabLink(
-					ctx,
-					ctx.collabHost,
-					view ? "Read-only collab session active" : "Collab session active",
-					view,
-				);
-				return;
-			}
-			const explicitUrl = knownStartVerb ? rest : args;
-			const relayInput = explicitUrl || ctx.settings.get("collab.relayUrl") || "";
-			if (!relayInput) {
-				ctx.showError(
-					"No relay configured. Set collab.relayUrl in /settings or pass one: /collab relay.example.com",
-				);
-				return;
-			}
-			// Scheme-less relay args default to wss (ws:// must be spelled out for localhost).
-			const relayUrl = relayInput.includes("://") ? relayInput : `wss://${relayInput}`;
-			const webUrl = ctx.settings.get("collab.webUrl") || "";
-			const host = new CollabHost(ctx);
-			try {
-				await host.start(relayUrl, webUrl);
-			} catch (err) {
-				ctx.showError(`Failed to start collab session: ${errorMessage(err)}`);
-				return;
-			}
-			ctx.collabHost = host;
-			showCollabLink(ctx, host, "Collab session started!", view);
-		},
-	},
-	{
-		name: "join",
-		description: "Join a shared collab session",
-		inlineHint: "<link>",
-		allowArgs: true,
-		handleTui: async (command, runtime) => {
-			const ctx = runtime.ctx;
-			ctx.editor.setText("");
-			const link = command.args.trim();
-			if (!link) {
-				ctx.showError("Usage: /join <link>");
-				return;
-			}
-			if (ctx.collabHost) {
-				ctx.showError("Stop hosting first (/collab stop)");
-				return;
-			}
-			if (ctx.collabGuest) {
-				ctx.showError("Already in a collab session (/leave first)");
-				return;
-			}
-			try {
-				await new CollabGuestLink(ctx).join(link);
-			} catch (err) {
-				ctx.showError(`Failed to join collab session: ${errorMessage(err)}`);
-			}
-		},
-	},
-	{
-		name: "leave",
-		description: "Leave the collab session",
-		getTuiAutocompleteDescription: runtime => {
-			if (runtime.ctx.collabHost) return "Leave collab: hosting";
-			if (runtime.ctx.collabGuest) return "Leave collab: guest";
-			return "Leave collab: not in collab";
-		},
-		handleTui: async (_command, runtime) => {
-			const ctx = runtime.ctx;
-			ctx.editor.setText("");
-			if (ctx.collabGuest) {
-				await ctx.collabGuest.leave("left");
-				return;
-			}
-			if (ctx.collabHost) {
-				await ctx.collabHost.stop("host stopped");
-				ctx.showStatus("Collab stopped");
-				return;
-			}
-			ctx.showStatus("Not in a collab session");
-		},
-	},
-	{
 		name: "browser",
 		description: "Toggle browser headless vs visible mode",
 		acpInputHint: "[headless|visible]",
@@ -973,13 +767,10 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "session",
-		description: "Session management commands",
+		description: "Show session information",
 		acpDescription: "Show session information",
-		acpInputHint: "info|delete",
-		subcommands: [
-			{ name: "info", description: "Show session info and stats" },
-			{ name: "delete", description: "Delete current session and return to selector" },
-		],
+		acpInputHint: "info",
+		subcommands: [{ name: "info", description: "Show session info and stats" }],
 		allowArgs: true,
 		handle: async (command, runtime) => {
 			if (!command.args || command.args === "info") {
@@ -992,32 +783,13 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				);
 				return commandConsumed();
 			}
-			if (command.args === "delete") {
-				if (runtime.session.isStreaming) return usage("Cannot delete the session while streaming.", runtime);
-				const sessionFile = runtime.sessionManager.getSessionFile();
-				if (!sessionFile) return usage("No session file to delete (in-memory session).", runtime);
-				// Route through the active SessionManager so the persist writer is
-				// closed before the file is deleted. Constructing a fresh
-				// FileSessionStorage and calling deleteSessionWithArtifacts leaves
-				// the active writer attached to the now-deleted path, so the next
-				// prompt would silently resurrect or corrupt the "deleted" file.
-				try {
-					await runtime.sessionManager.dropSession(sessionFile);
-				} catch (err) {
-					return usage(`Failed to delete session: ${errorMessage(err)}`, runtime);
-				}
-				await runtime.output(
-					`Session deleted: ${sessionFile}. Use ACP \`session/load\` to switch to another session.`,
-				);
-				return commandConsumed();
-			}
-			return usage("Usage: /session [info|delete]", runtime);
+			return usage("Usage: /session [info]", runtime);
 		},
 		handleTui: async (command, runtime) => {
 			const sub = command.args.trim().toLowerCase() || "info";
-			if (sub === "delete") {
+			if (sub !== "info") {
+				runtime.ctx.showWarning("Unknown command.");
 				runtime.ctx.editor.setText("");
-				await runtime.ctx.handleSessionDeleteCommand();
 				return;
 			}
 			// Default: show session info
@@ -1521,7 +1293,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				sessionArg,
 				runtime.ctx.sessionManager.getCwd(),
 				runtime.ctx.sessionManager.getSessionDir(),
-				{ allowGlobalFallback: true },
+				{ allowGlobalFallback: false },
 			);
 			if (!match) {
 				runtime.ctx.showError(`Session "${sessionArg}" not found`);
@@ -2245,12 +2017,9 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			return commandConsumed();
 		},
 		handleTui: async (_command, runtime) => {
-			// Invalidate registry fs caches and the plugin roots cache so
-			// listClaudePluginRoots re-reads from disk on next access.
-			const projectPath = await resolveActiveProjectRegistryPath(runtime.ctx.sessionManager.getCwd());
-			clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
+			await runtime.ctx.session.reloadPlugins();
 			await runtime.ctx.refreshSlashCommandState();
-			await runtime.ctx.session.refreshSshTool({ activateIfAvailable: true });
+			runtime.ctx.registerExtensionShortcuts();
 			runtime.ctx.showStatus("Plugins reloaded.");
 			runtime.ctx.editor.setText("");
 		},
@@ -2319,15 +2088,22 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 ];
 
+const PI_BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = BUILTIN_SLASH_COMMAND_REGISTRY.filter(
+	command => !isPiDisabledSlashCommandName(command.name),
+);
+
 const BUILTIN_SLASH_COMMAND_LOOKUP = new Map<string, SlashCommandSpec>();
-for (const command of BUILTIN_SLASH_COMMAND_REGISTRY) {
+for (const command of PI_BUILTIN_SLASH_COMMAND_REGISTRY) {
 	BUILTIN_SLASH_COMMAND_LOOKUP.set(command.name, command);
 	for (const alias of command.aliases ?? []) {
 		BUILTIN_SLASH_COMMAND_LOOKUP.set(alias, command);
 	}
 }
 
-export const BUILTIN_SLASH_COMMAND_RESERVED_NAMES: ReadonlySet<string> = new Set(BUILTIN_SLASH_COMMAND_LOOKUP.keys());
+export const BUILTIN_SLASH_COMMAND_RESERVED_NAMES: ReadonlySet<string> = new Set([
+	...BUILTIN_SLASH_COMMAND_LOOKUP.keys(),
+	...PI_DISABLED_SLASH_COMMAND_NAMES,
+]);
 
 /**
  * Build getArgumentCompletions from declarative subcommand definitions.
@@ -2494,7 +2270,7 @@ function buildDirectoryCompletionDisplayValue(prefix: string, absoluteValue: str
 }
 
 /** Builtin command metadata used for slash-command autocomplete and help text. */
-export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BUILTIN_SLASH_COMMAND_REGISTRY.map(
+export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = PI_BUILTIN_SLASH_COMMAND_REGISTRY.map(
 	command => ({
 		name: command.name,
 		aliases: command.aliases,
@@ -2543,7 +2319,7 @@ export function buildTuiBuiltinSlashCommands(runtime: TuiSlashCommandRuntime): R
  * one of `handle` / `handleTui`. The TUI dispatcher prefers `handleTui`; the
  * ACP dispatcher requires `handle` and skips TUI-only entries.
  */
-export const BUILTIN_SLASH_COMMANDS_INTERNAL: ReadonlyArray<SlashCommandSpec> = BUILTIN_SLASH_COMMAND_REGISTRY;
+export const BUILTIN_SLASH_COMMANDS_INTERNAL: ReadonlyArray<SlashCommandSpec> = PI_BUILTIN_SLASH_COMMAND_REGISTRY;
 
 /**
  * Execute a builtin slash command in the interactive TUI.
@@ -2558,18 +2334,16 @@ export async function executeBuiltinSlashCommand(
 ): Promise<string | boolean> {
 	const parsed = parseSlashCommand(text);
 	if (!parsed) return false;
+	if (isPiDisabledSlashCommandName(parsed.name)) {
+		runtime.ctx.showWarning("Unknown command.");
+		runtime.ctx.editor.setText("");
+		return true;
+	}
 
 	const command = BUILTIN_SLASH_COMMAND_LOOKUP.get(parsed.name);
 	if (!command) return false;
 	if (parsed.args.length > 0 && !command.allowArgs) {
 		return false;
-	}
-	// Collab guests run a read-mostly replica: session-mutating builtins are
-	// host-only; the allowlist covers purely local/read-only commands.
-	if (runtime.ctx.collabGuest && !COLLAB_GUEST_ALLOWED_COMMANDS[command.name]) {
-		runtime.ctx.showStatus(`/${command.name} is host-only during a collab session`);
-		runtime.ctx.editor.setText("");
-		return true;
 	}
 	if (command.handleTui) {
 		const result = await command.handleTui(parsed, runtime);
@@ -2594,10 +2368,9 @@ export async function executeBuiltinSlashCommand(
 			},
 			refreshCommands: () => ctx.refreshSlashCommandState(),
 			reloadPlugins: async () => {
-				const projectPath = await resolveActiveProjectRegistryPath(ctx.sessionManager.getCwd());
-				clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
+				await ctx.session.reloadPlugins();
 				await ctx.refreshSlashCommandState();
-				await ctx.session.refreshSshTool({ activateIfAvailable: true });
+				ctx.registerExtensionShortcuts();
 			},
 		};
 		const result = await command.handle(parsed, adapted);

@@ -5,7 +5,6 @@ import * as path from "node:path";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import * as autoThinkingClassifier from "@oh-my-pi/pi-coding-agent/auto-thinking/classifier";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -14,6 +13,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
+import * as autoThinkingClassifier from "../src/auto-thinking/classifier";
 
 const mockTaskTool: AgentTool = {
 	name: "task",

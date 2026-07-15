@@ -3,7 +3,6 @@
   "name": "@oh-my-pi/pi-coding-agent",
   "version": "16.5.0",
   "description": "Coding agent CLI with read, bash, edit, write tools and session management",
-  "homepage": "https://omp.sh",
   "author": "Can Boluk",
   "contributors": [
     "Mario Zechner"
@@ -28,7 +27,7 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "bin": {
-    "omp": "src/cli.ts"
+    "pi": "src/cli.ts"
   },
   "scripts": {
     "build": "bun scripts/build-binary.ts",
@@ -115,6 +114,7 @@
       "types": "./src/*.ts",
       "import": "./src/*.ts"
     },
+    "./autolearn/*": null,
     "./async": {
       "types": "./src/async/index.ts",
       "import": "./src/async/index.ts"
@@ -123,26 +123,39 @@
       "types": "./src/async/*.ts",
       "import": "./src/async/*.ts"
     },
-    "./autoresearch": {
-      "types": "./src/autoresearch/index.ts",
-      "import": "./src/autoresearch/index.ts"
-    },
-    "./autoresearch/*": {
-      "types": "./src/autoresearch/*.ts",
-      "import": "./src/autoresearch/*.ts"
-    },
-    "./autoresearch/tools/*": {
-      "types": "./src/autoresearch/tools/*.ts",
-      "import": "./src/autoresearch/tools/*.ts"
-    },
+    "./autoresearch": null,
+    "./autoresearch/*": null,
+    "./autoresearch/tools/*": null,
+    "./auto-thinking/classifier": null,
+    "./auto-thinking/classifier.js": null,
     "./capability": {
       "types": "./src/capability/index.ts",
       "import": "./src/capability/index.ts"
     },
+    "./capability/rule": null,
+    "./capability/rule.js": null,
+    "./capability/rule-buckets": null,
+    "./capability/rule-buckets.js": null,
     "./capability/*": {
       "types": "./src/capability/*.ts",
       "import": "./src/capability/*.ts"
     },
+    "./cli/auth-broker-cli": null,
+    "./cli/auth-broker-cli.js": null,
+    "./cli/auth-gateway-cli": null,
+    "./cli/auth-gateway-cli.js": null,
+    "./cli/dry-balance-cli": null,
+    "./cli/dry-balance-cli.js": null,
+    "./cli/profile-alias": null,
+    "./cli/profile-alias.js": null,
+    "./cli/profile-bootstrap": null,
+    "./cli/profile-bootstrap.js": null,
+    "./cli/ssh-cli": null,
+    "./cli/ssh-cli.js": null,
+    "./cli/ttsr-cli": null,
+    "./cli/ttsr-cli.js": null,
+    "./cli/update-cli": null,
+    "./cli/update-cli.js": null,
     "./cli/*": {
       "types": "./src/cli/*.ts",
       "import": "./src/cli/*.ts"
@@ -159,61 +172,58 @@
       "types": "./src/cli/commands/*.ts",
       "import": "./src/cli/commands/*.ts"
     },
+    "./commands/acp": null,
+    "./commands/auth-broker": null,
+    "./commands/auth-broker.js": null,
+    "./commands/auth-gateway": null,
+    "./commands/auth-gateway.js": null,
+    "./commands/commit": null,
+    "./commands/dry-balance": null,
+    "./commands/dry-balance.js": null,
+    "./commands/join": null,
+    "./commands/say": null,
+    "./commands/say.js": null,
+    "./commands/ssh": null,
+    "./commands/ssh.js": null,
+	"./commands/token": null,
+	"./commands/token.js": null,
+    "./commands/ttsr": null,
+    "./commands/ttsr.js": null,
+    "./commands/update": null,
     "./commands/*": {
       "types": "./src/commands/*.ts",
       "import": "./src/commands/*.ts"
     },
-    "./commit": {
-      "types": "./src/commit/index.ts",
-      "import": "./src/commit/index.ts"
-    },
-    "./commit/*": {
-      "types": "./src/commit/*.ts",
-      "import": "./src/commit/*.ts"
-    },
-    "./commit/agentic": {
-      "types": "./src/commit/agentic/index.ts",
-      "import": "./src/commit/agentic/index.ts"
-    },
-    "./commit/agentic/*": {
-      "types": "./src/commit/agentic/*.ts",
-      "import": "./src/commit/agentic/*.ts"
-    },
-    "./commit/agentic/tools": {
-      "types": "./src/commit/agentic/tools/index.ts",
-      "import": "./src/commit/agentic/tools/index.ts"
-    },
-    "./commit/agentic/tools/*": {
-      "types": "./src/commit/agentic/tools/*.ts",
-      "import": "./src/commit/agentic/tools/*.ts"
-    },
-    "./commit/analysis": {
-      "types": "./src/commit/analysis/index.ts",
-      "import": "./src/commit/analysis/index.ts"
-    },
-    "./commit/analysis/*": {
-      "types": "./src/commit/analysis/*.ts",
-      "import": "./src/commit/analysis/*.ts"
-    },
-    "./commit/changelog": {
-      "types": "./src/commit/changelog/index.ts",
-      "import": "./src/commit/changelog/index.ts"
-    },
-    "./commit/changelog/*": {
-      "types": "./src/commit/changelog/*.ts",
-      "import": "./src/commit/changelog/*.ts"
-    },
+    "./commit": null,
+    "./commit/agentic": null,
+    "./commit/agentic/*": null,
+    "./commit/agentic/tools": null,
+    "./commit/agentic/tools/*": null,
+    "./commit/analysis": null,
+    "./commit/analysis/*": null,
+    "./commit/changelog": null,
+    "./commit/changelog/*": null,
+    "./commit/cli": null,
     "./commit/git/*": {
       "types": "./src/commit/git/*.ts",
       "import": "./src/commit/git/*.ts"
     },
-    "./commit/map-reduce": {
-      "types": "./src/commit/map-reduce/index.ts",
-      "import": "./src/commit/map-reduce/index.ts"
+    "./commit/map-reduce": null,
+    "./commit/map-reduce/*": null,
+    "./commit/message": {
+      "types": "./src/commit/message.ts",
+      "import": "./src/commit/message.ts"
     },
-    "./commit/map-reduce/*": {
-      "types": "./src/commit/map-reduce/*.ts",
-      "import": "./src/commit/map-reduce/*.ts"
+    "./commit/model-selection": null,
+    "./commit/pipeline": null,
+    "./commit/shared-llm": null,
+    "./commit/types": {
+      "types": "./src/commit/types.ts",
+      "import": "./src/commit/types.ts"
+    },
+    "./commit/utils": {
+      "types": "./src/commit/utils.ts",
+      "import": "./src/commit/utils.ts"
     },
     "./commit/utils/*": {
       "types": "./src/commit/utils/*.ts",
@@ -223,14 +233,8 @@
       "types": "./src/config/*.ts",
       "import": "./src/config/*.ts"
     },
-    "./dap": {
-      "types": "./src/dap/index.ts",
-      "import": "./src/dap/index.ts"
-    },
-    "./dap/*": {
-      "types": "./src/dap/*.ts",
-      "import": "./src/dap/*.ts"
-    },
+    "./dap": null,
+    "./dap/*": null,
     "./debug": {
       "types": "./src/debug/index.ts",
       "import": "./src/debug/index.ts"
@@ -243,6 +247,18 @@
       "types": "./src/discovery/index.ts",
       "import": "./src/discovery/index.ts"
     },
+    "./discovery/agents": null,
+    "./discovery/builtin-defaults": null,
+    "./discovery/builtin-defaults.js": null,
+    "./discovery/claude": null,
+    "./discovery/cline": null,
+    "./discovery/codex": null,
+    "./discovery/cursor": null,
+    "./discovery/gemini": null,
+    "./discovery/github": null,
+    "./discovery/opencode": null,
+    "./discovery/vscode": null,
+    "./discovery/windsurf": null,
     "./discovery/*": {
       "types": "./src/discovery/*.ts",
       "import": "./src/discovery/*.ts"
@@ -271,6 +287,9 @@
       "types": "./src/exec/*.ts",
       "import": "./src/exec/*.ts"
     },
+    "./export/share": null,
+    "./export/ttsr": null,
+    "./export/ttsr.js": null,
     "./export/*": {
       "types": "./src/export/*.ts",
       "import": "./src/export/*.ts"
@@ -295,10 +314,7 @@
       "types": "./src/extensibility/custom-commands/*.ts",
       "import": "./src/extensibility/custom-commands/*.ts"
     },
-    "./extensibility/custom-commands/bundled/ci-green": {
-      "types": "./src/extensibility/custom-commands/bundled/ci-green/index.ts",
-      "import": "./src/extensibility/custom-commands/bundled/ci-green/index.ts"
-    },
+    "./extensibility/custom-commands/bundled/ci-green": null,
     "./extensibility/custom-commands/bundled/review": {
       "types": "./src/extensibility/custom-commands/bundled/review/index.ts",
       "import": "./src/extensibility/custom-commands/bundled/review/index.ts"
@@ -347,22 +363,18 @@
       "types": "./src/internal-urls/index.ts",
       "import": "./src/internal-urls/index.ts"
     },
+    "./internal-urls/issue-pr-protocol": null,
+    "./internal-urls/rule-protocol": null,
     "./internal-urls/*": {
       "types": "./src/internal-urls/*.ts",
       "import": "./src/internal-urls/*.ts"
     },
-    "./eval": {
-      "types": "./src/eval/index.ts",
-      "import": "./src/eval/index.ts"
-    },
-    "./eval/js/*": {
-      "types": "./src/eval/js/*.ts",
-      "import": "./src/eval/js/*.ts"
-    },
-    "./eval/py/*": {
-      "types": "./src/eval/py/*.ts",
-      "import": "./src/eval/py/*.ts"
-    },
+    "./eval": null,
+    "./eval/*": null,
+    "./eval/js/*": null,
+    "./eval/jl/*": null,
+    "./eval/py/*": null,
+    "./eval/rb/*": null,
     "./lsp": {
       "types": "./src/lsp/index.ts",
       "import": "./src/lsp/index.ts"
@@ -431,22 +443,30 @@
       "types": "./src/modes/index.ts",
       "import": "./src/modes/index.ts"
     },
+    "./modes/acp": null,
+    "./modes/acp/*": null,
     "./modes/*": {
       "types": "./src/modes/*.ts",
       "import": "./src/modes/*.ts"
-    },
-    "./modes/acp": {
-      "types": "./src/modes/acp/index.ts",
-      "import": "./src/modes/acp/index.ts"
-    },
-    "./modes/acp/*": {
-      "types": "./src/modes/acp/*.ts",
-      "import": "./src/modes/acp/*.ts"
     },
     "./modes/components": {
       "types": "./src/modes/components/index.ts",
       "import": "./src/modes/components/index.ts"
     },
+    "./modes/components/history-search": {
+      "types": "./src/modes/components/history-search.ts",
+      "import": "./src/modes/components/history-search.ts"
+    },
+    "./modes/components/history-search.js": {
+      "types": "./src/modes/components/history-search.ts",
+      "import": "./src/modes/components/history-search.ts"
+    },
+    "./modes/components/snapcompact-shape-preview": null,
+    "./modes/components/snapcompact-shape-preview.js": null,
+    "./modes/components/tree-selector": null,
+    "./modes/components/tree-selector.js": null,
+    "./modes/components/ttsr-notification": null,
+    "./modes/components/ttsr-notification.js": null,
     "./modes/components/*": {
       "types": "./src/modes/components/*.ts",
       "import": "./src/modes/components/*.ts"
@@ -467,6 +487,14 @@
       "types": "./src/modes/components/status-line/*.ts",
       "import": "./src/modes/components/status-line/*.ts"
     },
+    "./modes/controllers/omfg-controller": null,
+    "./modes/controllers/omfg-controller.js": null,
+    "./modes/controllers/omfg-rule": null,
+    "./modes/controllers/omfg-rule.js": null,
+    "./modes/controllers/ssh-command-controller": null,
+    "./modes/controllers/ssh-command-controller.js": null,
+    "./modes/controllers/tan-command-controller": null,
+    "./modes/controllers/tan-command-controller.js": null,
     "./modes/controllers/*": {
       "types": "./src/modes/controllers/*.ts",
       "import": "./src/modes/controllers/*.ts"
@@ -500,14 +528,24 @@
       "import": "./src/plan-mode/*.ts"
     },
     "./prompts/*": "./src/prompts/*.md",
-    "./secrets": {
-      "types": "./src/secrets/index.ts",
-      "import": "./src/secrets/index.ts"
-    },
-    "./secrets/*": {
-      "types": "./src/secrets/*.ts",
-      "import": "./src/secrets/*.ts"
-    },
+    "./secrets": null,
+    "./secrets/*": null,
+    "./session/auth-broker-config": null,
+    "./session/auth-broker-config.js": null,
+    "./session/compact-modes": null,
+    "./session/compact-modes.js": null,
+    "./session/checkpoint-rewind-private": null,
+    "./session/checkpoint-rewind-private.js": null,
+    "./session/exit-diagnostics": null,
+    "./session/exit-diagnostics.js": null,
+    "./session/history-storage": null,
+    "./session/history-storage.js": null,
+    "./session/snapcompact-inline": null,
+    "./session/snapcompact-inline.js": null,
+    "./session/snapcompact-savings-journal": null,
+    "./session/snapcompact-savings-journal.js": null,
+    "./session/unexpected-stop-classifier": null,
+    "./session/unexpected-stop-classifier.js": null,
     "./session/*": {
       "types": "./src/session/*.ts",
       "import": "./src/session/*.ts"
@@ -516,22 +554,17 @@
       "types": "./src/slash-commands/*.ts",
       "import": "./src/slash-commands/*.ts"
     },
-    "./ssh/*": {
-      "types": "./src/ssh/*.ts",
-      "import": "./src/ssh/*.ts"
-    },
-    "./stt": {
-      "types": "./src/stt/index.ts",
-      "import": "./src/stt/index.ts"
-    },
-    "./stt/*": {
-      "types": "./src/stt/*.ts",
-      "import": "./src/stt/*.ts"
-    },
+    "./ssh": null,
+    "./ssh/*": null,
+    "./stt": null,
+    "./stt/*": null,
     "./task": {
       "types": "./src/task/index.ts",
       "import": "./src/task/index.ts"
     },
+    "./task/isolation-runner": null,
+    "./task/omp-command": null,
+    "./task/worktree": null,
     "./task/*": {
       "types": "./src/task/*.ts",
       "import": "./src/task/*.ts"
@@ -544,6 +577,25 @@
       "types": "./src/tools/index.ts",
       "import": "./src/tools/index.ts"
     },
+    "./tools/acp-bridge": null,
+    "./tools/debug": null,
+    "./tools/eval": null,
+    "./tools/eval-backends": null,
+    "./tools/eval-render": null,
+    "./tools/gh": null,
+    "./tools/gh-cache-invalidation": null,
+    "./tools/learn": {
+      "types": "./src/tools/learn.ts",
+      "import": "./src/tools/learn.ts"
+    },
+    "./tools/learn.js": {
+      "types": "./src/tools/learn.ts",
+      "import": "./src/tools/learn.ts"
+    },
+    "./tools/manage-skill": null,
+    "./tools/manage-skill.js": null,
+    "./tools/ssh": null,
+    "./tools/tts": null,
     "./tools/*": {
       "types": "./src/tools/*.ts",
       "import": "./src/tools/*.ts"
@@ -560,30 +612,51 @@
       "types": "./src/utils/*.ts",
       "import": "./src/utils/*.ts"
     },
-    "./web/*": {
-      "types": "./src/web/*.ts",
-      "import": "./src/web/*.ts"
+    "./web/*": null,
+    "./web/scrapers": null,
+    "./web/scrapers/types": {
+      "types": "./src/web/scrapers/types.ts",
+      "import": "./src/web/scrapers/types.ts"
     },
-    "./web/scrapers": {
-      "types": "./src/web/scrapers/index.ts",
-      "import": "./src/web/scrapers/index.ts"
+    "./web/scrapers/utils": {
+      "types": "./src/web/scrapers/utils.ts",
+      "import": "./src/web/scrapers/utils.ts"
     },
-    "./web/scrapers/*": {
-      "types": "./src/web/scrapers/*.ts",
-      "import": "./src/web/scrapers/*.ts"
-    },
+    "./web/scrapers/*": null,
     "./web/search": {
       "types": "./src/web/search/index.ts",
       "import": "./src/web/search/index.ts"
     },
-    "./web/search/*": {
-      "types": "./src/web/search/*.ts",
-      "import": "./src/web/search/*.ts"
+    "./web/search/provider": {
+      "types": "./src/web/search/provider.ts",
+      "import": "./src/web/search/provider.ts"
     },
-    "./web/search/providers/*": {
-      "types": "./src/web/search/providers/*.ts",
-      "import": "./src/web/search/providers/*.ts"
+    "./web/search/render": {
+      "types": "./src/web/search/render.ts",
+      "import": "./src/web/search/render.ts"
     },
+    "./web/search/types": {
+      "types": "./src/web/search/types.ts",
+      "import": "./src/web/search/types.ts"
+    },
+    "./web/search/utils": {
+      "types": "./src/web/search/utils.ts",
+      "import": "./src/web/search/utils.ts"
+    },
+    "./web/search/*": null,
+    "./web/search/providers/base": {
+      "types": "./src/web/search/providers/base.ts",
+      "import": "./src/web/search/providers/base.ts"
+    },
+    "./web/search/providers/codex": {
+      "types": "./src/web/search/providers/codex.ts",
+      "import": "./src/web/search/providers/codex.ts"
+    },
+    "./web/search/providers/duckduckgo": {
+      "types": "./src/web/search/providers/duckduckgo.ts",
+      "import": "./src/web/search/providers/duckduckgo.ts"
+    },
+    "./web/search/providers/*": null,
     "./*.js": "./src/*.ts"
   }
 }

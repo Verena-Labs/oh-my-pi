@@ -2,13 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { exportFromFile, type SessionData } from "@oh-my-pi/pi-coding-agent/export/html";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
-import { collectSubSessions } from "../src/export/html";
 
 /**
- * Contract: a session at `<dir>/<name>.jsonl` embeds subagent transcripts from
- * `<dir>/<name>/<AgentId>.jsonl` (recursively) under slash-joined keys, with
- * parent links and last-entry leaf ids. Corrupt/empty/backup files are skipped.
+ * Contract: the retained HTML exporter ignores the upstream compatibility flag
+ * and never publishes adjacent subagent transcripts.
  */
 
 function sessionJsonl(id: string, entryIds: string[]): string {
@@ -31,7 +30,13 @@ function sessionJsonl(id: string, entryIds: string[]): string {
 	return `${lines.join("\n")}\n`;
 }
 
-describe("collectSubSessions", () => {
+function sessionDataFromHtml(html: string): SessionData {
+	const encoded = html.match(/<script id="session-data" type="application\/json">([^<]+)<\/script>/)?.[1];
+	expect(encoded).toBeDefined();
+	return JSON.parse(Buffer.from(encoded ?? "", "base64").toString("utf8")) as SessionData;
+}
+
+describe("HTML sub-session boundary", () => {
 	let root: string;
 	let mainFile: string;
 
@@ -45,35 +50,15 @@ describe("collectSubSessions", () => {
 		await removeWithRetries(root);
 	});
 
-	test("collects nested subagent sessions with parent links and leaf ids", async () => {
+	test("does not embed adjacent subagent transcripts even when explicitly requested", async () => {
 		await Bun.write(path.join(root, "main/Alpha.jsonl"), sessionJsonl("alpha", ["a1", "a2"]));
 		await Bun.write(path.join(root, "main/Alpha/Child.jsonl"), sessionJsonl("child", ["c1"]));
-		await Bun.write(path.join(root, "main/Beta.jsonl"), sessionJsonl("beta", ["b1"]));
+		const outputPath = path.join(root, "session.html");
+		await exportFromFile(mainFile, { includeSubSessions: true, outputPath });
 
-		const subs = await collectSubSessions(mainFile);
-
-		expect(Object.keys(subs).sort()).toEqual(["Alpha", "Alpha/Child", "Beta"]);
-		expect(subs.Alpha).toMatchObject({ agentId: "Alpha", parent: null, leafId: "a2" });
-		expect(subs.Alpha.entries.map(e => e.id)).toEqual(["a1", "a2"]);
-		expect(subs.Alpha.header?.id).toBe("alpha");
-		expect(subs["Alpha/Child"]).toMatchObject({ agentId: "Child", parent: "Alpha", leafId: "c1" });
-		expect(subs.Beta).toMatchObject({ agentId: "Beta", parent: null, leafId: "b1" });
-	});
-
-	test("skips corrupt, empty, backup, and non-jsonl files", async () => {
-		await Bun.write(path.join(root, "main/Good.jsonl"), sessionJsonl("good", ["g1"]));
-		await Bun.write(path.join(root, "main/corrupt.jsonl"), "{not json\n");
-		await Bun.write(path.join(root, "main/empty.jsonl"), "");
-		await Bun.write(path.join(root, "main/Good.jsonl.123.bak"), sessionJsonl("bak", ["x1"]));
-		await Bun.write(path.join(root, "main/notes.md"), "# notes\n");
-
-		const subs = await collectSubSessions(mainFile);
-
-		expect(Object.keys(subs)).toEqual(["Good"]);
-	});
-
-	test("returns empty record when no subagent dir exists", async () => {
-		expect(await collectSubSessions(mainFile)).toEqual({});
-		expect(await collectSubSessions(path.join(root, "not-a-session"))).toEqual({});
+		const data = sessionDataFromHtml(await Bun.file(outputPath).text());
+		expect(data.header?.id).toBe("main");
+		expect(data.entries.map(entry => entry.id)).toEqual(["m1"]);
+		expect(data.subSessions).toBeUndefined();
 	});
 });

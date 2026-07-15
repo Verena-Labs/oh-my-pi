@@ -70,7 +70,6 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		// Core tools should always be present
-		expect(names).toContain("eval");
 		expect(names).toContain("bash");
 		expect(names).toContain("read");
 		expect(names).toContain("edit");
@@ -82,6 +81,10 @@ describe("createTools", () => {
 		expect(names).toContain("todo");
 		expect(names).toContain("web_search");
 		expect(names).toContain("resolve");
+		expect(names).not.toContain("debug");
+		expect(names).not.toContain("eval");
+		expect(names).not.toContain("github");
+		expect(names).not.toContain("ssh");
 		expect(names).not.toContain("fetch");
 		expect(names).not.toContain("vim");
 	});
@@ -100,48 +103,19 @@ describe("createTools", () => {
 		expect(names).not.toContain("find");
 	});
 
-	it("includes bash and eval when both eval backends are allowed", async () => {
+	it("does not reactivate disabled tools through legacy settings or explicit requests", async () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({
+				"debug.enabled": true,
 				"eval.py": true,
 				"eval.js": true,
+				"github.enabled": true,
 			}),
 		});
-		const tools = await createTools(session);
+		const tools = await createTools(session, ["read", "debug", "eval", "github", "ssh"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toContain("eval");
-		expect(names).toContain("bash");
-	});
-
-	it("still exposes eval when only the js backend is allowed", async () => {
-		const session = createTestSession({
-			settings: createSettingsWithOverrides({
-				"eval.py": false,
-				"eval.js": true,
-			}),
-		});
-		const tools = await createTools(session);
-		const names = tools.map(t => t.name);
-
-		expect(names).toContain("bash");
-		expect(names).toContain("eval");
-	});
-
-	it("still exposes eval when python kernel is unavailable (dispatches to js)", async () => {
-		const session = createTestSession();
-		vi.spyOn(
-			await import("@oh-my-pi/pi-coding-agent/eval/py/kernel"),
-			"checkPythonKernelAvailability",
-		).mockResolvedValue({
-			ok: false,
-			reason: "missing python",
-		});
-		const tools = await createTools(session, ["eval"]);
-		const names = tools.map(t => t.name);
-
-		expect(names).toContain("eval");
-		expect(names).toContain("resolve");
+		expect(names).toEqual(["read", "resolve"]);
 	});
 
 	it("excludes lsp tool when session disables LSP", async () => {

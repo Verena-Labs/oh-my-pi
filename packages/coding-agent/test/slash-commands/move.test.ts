@@ -22,7 +22,7 @@ function createRuntime() {
 	};
 }
 
-describe("/move slash command", () => {
+describe.skip("/move slash command (dormant OMP behavior; disabled by Pi policy)", () => {
 	it("routes the path through the move handler and saves the full command to history", async () => {
 		const harness = createRuntime();
 

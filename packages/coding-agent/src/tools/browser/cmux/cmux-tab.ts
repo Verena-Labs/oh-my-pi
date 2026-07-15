@@ -2,10 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { logger, postmortem, Snowflake, untilAborted } from "@oh-my-pi/pi-utils";
-import { JsRuntime, type RuntimeHooks } from "../../../eval/js/shared/runtime";
-import { callSessionTool } from "../../../eval/js/tool-bridge";
+import type { JsRuntime } from "../../../eval/js/shared/runtime";
 import { resizeImage } from "../../../utils/image-resize";
-import type { ToolSession } from "../../index";
 import { resolveToCwd } from "../../path-utils";
 import { formatScreenshot } from "../../render-utils";
 import { ToolAbortError, ToolError, throwIfAborted } from "../../tool-errors";
@@ -19,6 +17,7 @@ import {
 	waitForBrowserRun,
 } from "../run-cancellation";
 import { cloneSafe, RunOutput } from "../run-output";
+import { type BrowserRuntimeHooks, createBrowserRuntime } from "../runtime";
 import type { Observation, ReadyInfo, RunResultOk, ScreenshotResult, SessionSnapshot } from "../tab-protocol";
 import {
 	type CmuxEvalResult,
@@ -256,7 +255,6 @@ export interface RunCmuxCodeOptions {
 	code: string;
 	timeoutMs: number;
 	signal?: AbortSignal;
-	session: ToolSession;
 	snapshot: SessionSnapshot;
 }
 
@@ -698,10 +696,7 @@ export class CmuxTab {
 
 	ensureRuntime(session: SessionSnapshot): JsRuntime {
 		if (!this.#runtime) {
-			this.#runtime = new JsRuntime({
-				initialCwd: session.cwd,
-				sessionId: `cmux-tab-${this.#surfaceId}`,
-			});
+			this.#runtime = createBrowserRuntime(session.cwd, `cmux-tab-${this.#surfaceId}`);
 		}
 		return this.#runtime;
 	}
@@ -1370,7 +1365,7 @@ export async function runCmuxCode(tab: CmuxTab, opts: RunCmuxCodeOptions): Promi
 				),
 		});
 
-		const hooks: RuntimeHooks = {
+		const hooks: BrowserRuntimeHooks = {
 			onText: chunk => {
 				throwIfAborted(signal);
 				output.pushText(chunk);
@@ -1380,15 +1375,15 @@ export async function runCmuxCode(tab: CmuxTab, opts: RunCmuxCodeOptions): Promi
 				throwIfAborted(signal);
 				output.pushDisplay(displayed);
 			},
-			callTool: (name, args) => {
-				throwIfAborted(signal);
-				return callSessionTool(name, args, { session: opts.session, signal });
-			},
 		};
-		// Like the inline worker fallback, cmux runs user JS in-process: awaited cmux/tool calls
-		// observe this abort signal, but a synchronous infinite loop cannot be interrupted here.
+		// Awaited cmux calls observe this abort signal; BrowserRealm also applies the
+		// cell timeout while synchronous user code is executing inside its VM context.
 		const returnValue = await Promise.race([
-			runtime.run(opts.code, `cmux-run-${runId}.js`, hooks, { runId, cwd: opts.snapshot.cwd }),
+			runtime.run(opts.code, `cmux-run-${runId}.js`, hooks, {
+				runId,
+				cwd: opts.snapshot.cwd,
+				timeoutMs: opts.timeoutMs,
+			}),
 			cancelRejection,
 		]);
 		return { displays: output.finish(), returnValue: cloneSafe(returnValue), screenshots };

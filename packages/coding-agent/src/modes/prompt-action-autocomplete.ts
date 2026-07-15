@@ -24,6 +24,10 @@ interface PromptActionDefinition {
 	execute: (prefix: string) => void;
 }
 
+function piAllowsGithubRefs(): boolean {
+	return false;
+}
+
 interface PromptActionAutocompleteItem extends AutocompleteItem {
 	actionId: string;
 	execute: (prefix: string) => void;
@@ -160,7 +164,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			}
 		}
 
-		const githubRefSuggestions = getGithubRefSuggestions(textBeforeCursor);
+		const githubRefSuggestions = piAllowsGithubRefs() ? getGithubRefSuggestions(textBeforeCursor) : null;
 		if (githubRefSuggestions) return githubRefSuggestions;
 		const promptActionPrefix = getPromptActionPrefix(textBeforeCursor);
 		if (promptActionPrefix) {
@@ -209,7 +213,9 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		cursorCol: number;
 		onApplied?: () => void;
 	} {
-		const githubRefCompletion = applyGithubRefCompletion(lines, cursorLine, cursorCol, item, prefix);
+		const githubRefCompletion = piAllowsGithubRefs()
+			? applyGithubRefCompletion(lines, cursorLine, cursorCol, item, prefix)
+			: null;
 		if (githubRefCompletion) return githubRefCompletion;
 		if (prefix.startsWith("#") && isPromptActionItem(item)) {
 			if (item.actionId === "undo") {

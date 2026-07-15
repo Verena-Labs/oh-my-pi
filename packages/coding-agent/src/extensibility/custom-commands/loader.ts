@@ -13,8 +13,9 @@ import { getConfigDirs } from "../../config";
 import { execCommand } from "../../exec/exec";
 // Runtime self-reference: dereference this namespace only inside loader functions to keep the index.ts cycle safe.
 import * as PiCodingAgent from "../../index";
+import { isPiDisabledSlashCommandName } from "../../slash-commands/pi-policy";
+import { loadLegacyPiModule } from "../plugins/legacy-pi-compat";
 import * as typebox from "../typebox";
-import { GreenCommand } from "./bundled/ci-green";
 import { ReviewCommand } from "./bundled/review";
 import type {
 	CustomCommand,
@@ -34,7 +35,7 @@ async function loadCommandModule(
 	sharedApi: CustomCommandAPI,
 ): Promise<{ commands: CustomCommand[] | null; error: string | null }> {
 	try {
-		const module = await import(commandPath);
+		const module = (await loadLegacyPiModule(commandPath)) as { default?: CustomCommandFactory };
 		const factory = (module.default ?? module) as CustomCommandFactory;
 
 		if (typeof factory !== "function") {
@@ -153,12 +154,6 @@ function loadBundledCommands(sharedApi: CustomCommandAPI): LoadedCustomCommand[]
 
 	// Add bundled commands here
 	bundled.push({
-		path: "bundled:green",
-		resolvedPath: "bundled:green",
-		command: new GreenCommand(sharedApi),
-		source: "bundled",
-	});
-	bundled.push({
 		path: "bundled:review",
 		resolvedPath: "bundled:review",
 		command: new ReviewCommand(sharedApi),
@@ -194,6 +189,7 @@ export async function loadCustomCommands(options: LoadCustomCommandsOptions = {}
 
 	// 1. Load bundled commands first (lowest priority - can be overridden)
 	for (const loaded of loadBundledCommands(sharedApi)) {
+		if (isPiDisabledSlashCommandName(loaded.command.name)) continue;
 		seenNames.add(loaded.command.name);
 		commands.push(loaded);
 	}
@@ -209,6 +205,7 @@ export async function loadCustomCommands(options: LoadCustomCommandsOptions = {}
 
 		if (loadedCommands) {
 			for (const command of loadedCommands) {
+				if (isPiDisabledSlashCommandName(command.name)) continue;
 				// Allow overriding bundled commands, but not user/project conflicts
 				const existingIdx = commands.findIndex(c => c.command.name === command.name);
 				if (existingIdx !== -1) {

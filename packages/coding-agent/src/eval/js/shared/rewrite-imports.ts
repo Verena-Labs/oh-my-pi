@@ -548,3 +548,69 @@ export async function wrapCode(
 		finalExpressionReturned: rewritten.returned,
 	};
 }
+
+/**
+ * Wrap a browser.run function body without granting it the eval runtime's host-module
+ * loader. Browser code intentionally cannot import modules in the worker process; page
+ * scripts can still be supplied directly to Puppeteer's `page.evaluate()`/`tab.evaluate()`.
+ */
+export async function wrapBrowserCode(
+	code: string,
+): Promise<{ source: string; asyncWrapped: boolean; finalExpressionReturned: boolean }> {
+	const parsed = await parseProgram(code);
+	if (parsed) {
+		let unavailable:
+			| "static import"
+			| "dynamic import()"
+			| "import.meta"
+			| "eval()"
+			| "constructor access"
+			| undefined;
+		walkNodes(parsed, node => {
+			if (unavailable) return;
+			if (node.type === "ImportDeclaration") {
+				unavailable = "static import";
+				return;
+			}
+			if (node.type === "MetaProperty") {
+				unavailable = "import.meta";
+				return;
+			}
+			if (node.type === "MemberExpression" || node.type === "OptionalMemberExpression") {
+				const member = node as unknown as {
+					computed?: boolean;
+					property?: { type?: string; name?: string; value?: string };
+				};
+				const property = member.property;
+				const name = member.computed
+					? property?.type === "StringLiteral"
+						? property.value
+						: undefined
+					: property?.type === "Identifier"
+						? property.name
+						: undefined;
+				if (name === "constructor" || name === "__proto__") unavailable = "constructor access";
+				return;
+			}
+			if (node.type !== "CallExpression") return;
+			const callee = (node as unknown as { callee?: { type?: string; name?: string } }).callee;
+			if (callee?.type === "Import") unavailable = "dynamic import()";
+			else if (callee?.type === "Identifier" && callee.name === "eval") unavailable = "eval()";
+		});
+		if (unavailable) {
+			throw new TypeError(`${unavailable} is unavailable in browser.run; use page/tab Puppeteer APIs`);
+		}
+	}
+
+	const finalExpression = await returnFinalExpression(code);
+	const stripped = stripTypeScript(finalExpression.source);
+	const rewritten = await demoteTopLevelLexicals(stripped, { publishGlobals: true });
+	return {
+		// BrowserRealm supplies a distinct global object with string/wasm code generation
+		// disabled. The wrapper only provides cell-style await/return semantics; it is not
+		// itself the security boundary.
+		source: `(async () => {\n${rewritten}\n})()`,
+		asyncWrapped: true,
+		finalExpressionReturned: finalExpression.returned,
+	};
+}

@@ -63,22 +63,22 @@ describe("buildSessionContext snapcompact archives", () => {
 		expect(summary.blocks).toBeUndefined();
 	});
 
-	it("keeps snapcompact archive blocks in full transcript summaries", () => {
+	it("keeps legacy snapcompact archive blocks inert in full transcript summaries", () => {
 		const context = buildSessionContext(compactedEntries, undefined, undefined, { transcript: true });
 
 		const summary = compactionSummary(context.messages);
 
-		expect(summary.images?.map(image => image.data)).toEqual(["base64-frame"]);
-		expect(summary.blocks?.map(block => block.type)).toEqual(["text", "image", "text"]);
+		expect(summary.images).toBeUndefined();
+		expect(summary.blocks).toBeUndefined();
 	});
 
-	it("keeps snapcompact archive blocks in provider context summaries", () => {
+	it("keeps legacy snapcompact archive blocks inert in provider context summaries", () => {
 		const context = buildSessionContext(compactedEntries);
 
 		const summary = compactionSummary(context.messages);
 
-		expect(summary.images?.map(image => image.data)).toEqual(["base64-frame"]);
-		expect(summary.blocks?.map(block => block.type)).toEqual(["text", "image", "text"]);
+		expect(summary.images).toBeUndefined();
+		expect(summary.blocks).toBeUndefined();
 	});
 });
 

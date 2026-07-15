@@ -318,15 +318,15 @@ describe("readArgsTargetInternalUrl", () => {
 	it.each([
 		["skill://my-skill"],
 		["skill://my-skill/file.md"],
-		["omp://docs/tools/read.md"],
-		["issue://123"],
-		["pr://can1357/oh-my-pi/456"],
+		["pi://docs/tools/read.md"],
 		["agent://abc"],
 		["artifact://abc"],
+		["history://abc"],
 		["memory://root"],
-		["rule://name"],
 		["mcp://server/resource"],
 		["local://PLAN.md"],
+		["ssh://host/etc/hosts"],
+		["vault://notes/today.md"],
 	])("treats %s as an internal URL read", target => {
 		expect(readArgsTargetInternalUrl({ path: target })).toBe(true);
 		expect(readArgsTargetInternalUrl({ file_path: target })).toBe(true);
@@ -336,6 +336,10 @@ describe("readArgsTargetInternalUrl", () => {
 		[path.resolve("/tmp/example.ts")],
 		["./relative/path.md"],
 		["https://example.com/file"],
+		["issue://123"],
+		["pr://owner/repo/456"],
+		["rule://name"],
+		["omp://docs"],
 		[""],
 	])("treats %s as a filesystem/external target", target => {
 		expect(readArgsTargetInternalUrl({ path: target })).toBe(false);

@@ -6,11 +6,11 @@ import { ReviewCommand } from "@oh-my-pi/pi-coding-agent/extensibility/custom-co
 import type { CustomCommandAPI } from "@oh-my-pi/pi-coding-agent/extensibility/custom-commands/types";
 import type { HookCommandContext } from "@oh-my-pi/pi-coding-agent/extensibility/hooks/types";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import type { PrDiffPayload, ViewLookupResult } from "@oh-my-pi/pi-coding-agent/tools/gh";
-import * as gh from "@oh-my-pi/pi-coding-agent/tools/gh";
 import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
 import * as jj from "@oh-my-pi/pi-coding-agent/utils/jj";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import type { PrDiffPayload, ViewLookupResult } from "../../../src/tools/gh";
+import * as gh from "../../../src/tools/gh";
 
 const SAMPLE_JJ_DIFF = `diff --git a/src/workspace.ts b/src/workspace.ts
 --- a/src/workspace.ts
@@ -247,7 +247,7 @@ describe("ReviewCommand", () => {
 		}
 	});
 
-	it("parses supported explicit PR URL formats", async () => {
+	it.skip("OMP remote PR review parses supported explicit URL formats (disabled in Pi)", async () => {
 		const dir = await createTempDir();
 		const diffSpy = spyOn(gh, "getOrFetchPrDiff").mockResolvedValue(makePrDiffLookup(SAMPLE_PR_DIFF));
 		const command = new ReviewCommand({ cwd: dir } as unknown as CustomCommandAPI);
@@ -273,7 +273,7 @@ describe("ReviewCommand", () => {
 		}
 	});
 
-	it("prevents local file reads for PR URL reviews", async () => {
+	it.skip("OMP remote PR review prevents local file reads (disabled in Pi)", async () => {
 		const dir = await createTempDir();
 		spyOn(gh, "getOrFetchPrDiff").mockResolvedValue(makePrDiffLookup(SAMPLE_PR_DIFF));
 		const command = new ReviewCommand({ cwd: dir } as unknown as CustomCommandAPI);
@@ -288,7 +288,7 @@ describe("ReviewCommand", () => {
 		expect(result!).not.toContain("MAY read full file context as needed via `read`");
 	});
 
-	it("uses PR diff URLs for omitted large PR diff instructions", async () => {
+	it.skip("OMP remote PR review uses PR diff URLs (disabled in Pi)", async () => {
 		const dir = await createTempDir();
 		spyOn(gh, "getOrFetchPrDiff").mockResolvedValue(makePrDiffLookup(makeManyFileDiff(21)));
 		const command = new ReviewCommand({ cwd: dir } as unknown as CustomCommandAPI);
@@ -327,7 +327,7 @@ describe("ReviewCommand", () => {
 		expect(diffSpy).not.toHaveBeenCalled();
 	});
 
-	it("removes only the first valid PR URL from extra instructions", async () => {
+	it.skip("OMP remote PR review extracts its first URL (disabled in Pi)", async () => {
 		const dir = await createTempDir();
 		const diffSpy = spyOn(gh, "getOrFetchPrDiff").mockResolvedValue(makePrDiffLookup(SAMPLE_PR_DIFF));
 		const command = new ReviewCommand({ cwd: dir } as unknown as CustomCommandAPI);
@@ -341,7 +341,7 @@ describe("ReviewCommand", () => {
 		expect(diffSpy).toHaveBeenCalledWith({ cwd: dir, repo: "owner/repo", number: 123 });
 	});
 
-	it("bypasses the interactive menu for explicit PR URLs", async () => {
+	it.skip("OMP remote PR review bypasses the menu (disabled in Pi)", async () => {
 		const dir = await createTempDir();
 		const diffSpy = spyOn(gh, "getOrFetchPrDiff").mockResolvedValue(makePrDiffLookup(SAMPLE_PR_DIFF));
 		let selectCalled = false;
@@ -360,7 +360,7 @@ describe("ReviewCommand", () => {
 		expect(diffSpy).toHaveBeenCalledWith({ cwd: dir, repo: "owner/repo", number: 123 });
 	});
 
-	it("notifies and stops when explicit PR diff fetching fails", async () => {
+	it.skip("OMP remote PR review reports fetch failures (disabled in Pi)", async () => {
 		const dir = await createTempDir();
 		spyOn(gh, "getOrFetchPrDiff").mockRejectedValue(new Error("authentication required"));
 		const notifications: NotifyCall[] = [];
@@ -382,7 +382,7 @@ describe("ReviewCommand", () => {
 		]);
 	});
 
-	it("notifies and stops when explicit PR diff content is empty", async () => {
+	it.skip("OMP remote PR review reports empty diffs (disabled in Pi)", async () => {
 		const dir = await createTempDir();
 		spyOn(gh, "getOrFetchPrDiff").mockResolvedValue(makePrDiffLookup(" \n"));
 		const notifications: NotifyCall[] = [];
@@ -404,7 +404,7 @@ describe("ReviewCommand", () => {
 		]);
 	});
 
-	it("reviews a detected PR from recent conversation context", async () => {
+	it.skip("OMP remote PR review detects conversation refs (disabled in Pi)", async () => {
 		const dir = await createTempDir();
 		const diffSpy = spyOn(gh, "getOrFetchPrDiff").mockResolvedValue(makePrDiffLookup(SAMPLE_PR_DIFF));
 		const command = new ReviewCommand({ cwd: dir } as unknown as CustomCommandAPI);
@@ -440,7 +440,7 @@ describe("ReviewCommand", () => {
 		expect(reviewModeOptions).not.toContain("Review PR owner/example#77 from conversation");
 	});
 
-	it("detects only PR URLs from the active branch path", async () => {
+	it.skip("OMP remote PR review detects only active-branch refs (disabled in Pi)", async () => {
 		const dir = await createTempDir();
 		let reviewModeOptions: string[] = [];
 		const command = new ReviewCommand({ cwd: dir } as unknown as CustomCommandAPI);
@@ -463,7 +463,7 @@ describe("ReviewCommand", () => {
 		expect(reviewModeOptions).not.toContain("Review PR owner/example#77 from conversation");
 	});
 
-	it("deduplicates detected PR menu entries", async () => {
+	it.skip("OMP remote PR review deduplicates menu entries (disabled in Pi)", async () => {
 		const dir = await createTempDir();
 		let reviewModeOptions: string[] = [];
 		const command = new ReviewCommand({ cwd: dir } as unknown as CustomCommandAPI);
@@ -485,7 +485,7 @@ describe("ReviewCommand", () => {
 		).toHaveLength(1);
 	});
 
-	it("orders detected PR menu entries by most recent mention", async () => {
+	it.skip("OMP remote PR review orders recent mentions (disabled in Pi)", async () => {
 		const dir = await createTempDir();
 		let reviewModeOptions: string[] = [];
 		const command = new ReviewCommand({ cwd: dir } as unknown as CustomCommandAPI);
@@ -509,7 +509,7 @@ describe("ReviewCommand", () => {
 		]);
 	});
 
-	it("orders detected PR menu entries by rightmost mention within one message", async () => {
+	it.skip("OMP remote PR review orders same-message mentions (disabled in Pi)", async () => {
 		const dir = await createTempDir();
 		let reviewModeOptions: string[] = [];
 		const command = new ReviewCommand({ cwd: dir } as unknown as CustomCommandAPI);

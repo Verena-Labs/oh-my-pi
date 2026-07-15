@@ -76,6 +76,27 @@ describe("AgentSession.switchSession previous-context build", () => {
 		return { session, sessionManager };
 	}
 
+	async function persistAssistantMessage(sessionManager: SessionManager, text: string): Promise<void> {
+		sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+		await sessionManager.flush();
+	}
+
 	/** Wrap `sessionManager.buildSessionContext` so each call's caller-visible
 	 *  state (the manager's currently-loaded session file) is recorded in
 	 *  invocation order. The constructor itself calls `buildSessionContext`
@@ -111,8 +132,7 @@ describe("AgentSession.switchSession previous-context build", () => {
 		expect(previousSessionFile).toBeString();
 
 		const otherManager = SessionManager.create(tempDir.path(), tempDir.path());
-		otherManager.appendMessage({ role: "user", content: "target", timestamp: 2 });
-		await otherManager.flush();
+		await persistAssistantMessage(otherManager, "target");
 		const targetSessionFile = otherManager.getSessionFile();
 		expect(targetSessionFile).toBeString();
 		expect(targetSessionFile).not.toBe(previousSessionFile);
@@ -157,5 +177,24 @@ describe("AgentSession.switchSession previous-context build", () => {
 			{ sessionFile: sessionFile!, transcript: undefined },
 			{ sessionFile: sessionFile!, transcript: undefined },
 		]);
+	});
+
+	it("rejects direct switches to a session recorded for another project", async () => {
+		const currentDir = TempDir.createSync("@pi-switch-current-project-");
+		const otherDir = TempDir.createSync("@pi-switch-other-project-");
+		tempDirs.push(currentDir, otherDir);
+
+		const { session, sessionManager } = buildSession(currentDir);
+		sessionManager.appendMessage({ role: "user", content: "current", timestamp: 1 });
+		await sessionManager.flush();
+
+		const otherManager = SessionManager.create(otherDir.path(), currentDir.path());
+		await persistAssistantMessage(otherManager, "other");
+		const targetSessionFile = otherManager.getSessionFile();
+		await otherManager.close();
+
+		await expect(session.switchSession(targetSessionFile!)).rejects.toThrow(
+			"Cross-project session switching is unavailable in Pi",
+		);
 	});
 });

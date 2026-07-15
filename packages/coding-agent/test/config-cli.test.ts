@@ -34,6 +34,51 @@ afterEach(async () => {
 });
 
 describe("config CLI schema coverage", () => {
+	it("omits Pi-disabled setting families while preserving selected settings", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await runConfigCommand({ action: "list", flags: { json: true } });
+
+		const payload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0])) as Record<string, unknown>;
+		for (const hidden of [
+			"eval.js",
+			"python.interpreter",
+			"github.enabled",
+			"ttsr.repeatMode",
+			"stt.modelName",
+			"speech.mode",
+			"commands.enableClaudeUser",
+			"auth.broker.url",
+			"collab.relayUrl",
+			"share.serverUrl",
+		]) {
+			expect(Object.hasOwn(payload, hidden), hidden).toBe(false);
+		}
+		expect(Object.hasOwn(payload, "tools.approvalMode")).toBe(true);
+		expect(Object.hasOwn(payload, "task.isolation.mode")).toBe(true);
+		expect(Object.hasOwn(payload, "providers.webSearch")).toBe(true);
+	});
+
+	it("rejects get, set, and reset for disabled settings without printing success", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+			throw new Error("process.exit");
+		}) as typeof process.exit);
+
+		for (const command of [
+			{ action: "get", key: "eval.js", flags: { json: true } },
+			{ action: "set", key: "eval.js", value: "true", flags: { json: true } },
+			{ action: "reset", key: "eval.js", flags: { json: true } },
+		] as const) {
+			await expect(runConfigCommand(command)).rejects.toThrow("process.exit");
+		}
+
+		expect(exitSpy).toHaveBeenCalledTimes(3);
+		expect(logSpy).not.toHaveBeenCalled();
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining("Unknown setting: eval.js"));
+	});
+
 	it("renders record settings as JSON and with record type in text output", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 

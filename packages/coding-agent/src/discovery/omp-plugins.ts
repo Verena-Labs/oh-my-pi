@@ -32,7 +32,7 @@ import { buildRuleFromMarkdown, createSourceMeta, loadFilesFromDir, scanSkillsFr
 import { listOmpExtensionRoots, type OmpExtensionRoot } from "./omp-extension-roots";
 
 const PROVIDER_ID = "omp-plugins";
-const DISPLAY_NAME = "OMP Extension Packages";
+const DISPLAY_NAME = "Pi Extension Packages";
 const DESCRIPTION =
 	"Sub-discovery (skills, hooks, tools, commands, rules, prompts, .mcp.json) inside extension packages";
 const PRIORITY = 90;

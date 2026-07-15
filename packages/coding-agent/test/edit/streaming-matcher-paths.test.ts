@@ -175,11 +175,11 @@ describe("EDIT_MODE_STRATEGIES.matcherEntries", () => {
  * TTSR pipeline does after the fix.
  */
 import { getCapability } from "@oh-my-pi/pi-coding-agent/capability";
-import { BUILTIN_DEFAULTS_PROVIDER_ID, type Rule, ruleCapability } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import type { LoadContext } from "@oh-my-pi/pi-coding-agent/capability/types";
+import { BUILTIN_DEFAULTS_PROVIDER_ID, type Rule, ruleCapability } from "../../src/capability/rule";
 // Register all discovery providers as a side effect.
 import "@oh-my-pi/pi-coding-agent/discovery";
-import { TtsrManager } from "@oh-my-pi/pi-coding-agent/export/ttsr";
+import { TtsrManager } from "../../src/export/ttsr";
 
 async function loadBundledTsNoAnyRule(): Promise<Rule> {
 	const cap = getCapability(ruleCapability.id);

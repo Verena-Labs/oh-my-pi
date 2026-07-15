@@ -20,6 +20,7 @@ import {
 } from "@oh-my-pi/pi-utils";
 import { ArtifactManager } from "./artifacts";
 import { type BlobPutOptions, type BlobPutResult, BlobStore } from "./blob-store";
+import { CHECKPOINT_CONVERSATION_REWRITE, type CheckpointConversationRewrite } from "./checkpoint-rewind-private";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -78,6 +79,10 @@ const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
 const SUPERSEDED_COMPACTION_SUMMARY = "[Superseded compaction summary elided after a newer compaction]";
 const SUPERSEDED_COMPACTION_SHORT_SUMMARY = "Superseded compaction elided";
+
+function piAllowsExtraSessionOperations(): boolean {
+	return false;
+}
 
 function mintSessionId(): string {
 	return Bun.randomUUIDv7();
@@ -1020,6 +1025,9 @@ export class SessionManager {
 
 	/** Delete a session file and its artifact directory. ENOENT is treated as success. */
 	async dropSession(sessionPath: string): Promise<void> {
+		if (!piAllowsExtraSessionOperations()) {
+			throw new Error("Session deletion is unavailable in Pi");
+		}
 		await this.#drainAndCloseWriter();
 		try {
 			await this.#storage.deleteSessionWithArtifacts(sessionPath);
@@ -1075,6 +1083,9 @@ export class SessionManager {
 	 * artifacts on disk, update internal references, and rewrite the header cwd.
 	 */
 	async moveTo(newCwd: string, targetSessionDir?: string): Promise<void> {
+		if (!piAllowsExtraSessionOperations()) {
+			throw new Error("Session moving is unavailable in Pi");
+		}
 		const resolvedCwd = path.resolve(newCwd);
 		const resolvedTargetDir = targetSessionDir ? path.resolve(targetSessionDir) : undefined;
 		if (
@@ -1664,6 +1675,9 @@ export class SessionManager {
 	 * Set or clear a label on an entry. Pass undefined/empty to clear.
 	 */
 	appendLabelChange(targetId: string, label: string | undefined): string {
+		if (!piAllowsExtraSessionOperations()) {
+			throw new Error("Session labels are unavailable in Pi");
+		}
 		if (!this.#index.has(targetId)) throw new Error(`Entry ${targetId} not found`);
 
 		const entry: LabelEntry = { type: "label", ...this.#freshEntryFields(), targetId, label };
@@ -1734,8 +1748,33 @@ export class SessionManager {
 		this.#index.setLeaf(null);
 	}
 
+	/**
+	 * Checkpoint/rewind's private conversation-only rewrite capability. This is
+	 * deliberately symbol-keyed: generic callers must use the public branch APIs,
+	 * while the selected checkpoint feature can atomically move the active leaf
+	 * and retain exactly one hidden report without reopening branch summaries or
+	 * session-tree navigation.
+	 */
+	[CHECKPOINT_CONVERSATION_REWRITE](rewrite: CheckpointConversationRewrite): string {
+		if (rewrite.branchFromId !== null && !this.#index.has(rewrite.branchFromId)) {
+			throw new Error(`Entry ${rewrite.branchFromId} not found`);
+		}
+
+		const previousLeafId = this.#index.leafId();
+		this.#index.setLeaf(rewrite.branchFromId);
+		try {
+			return this.appendCustomMessageEntry("rewind-report", rewrite.content, false, rewrite.details, "agent");
+		} catch (error) {
+			this.#index.setLeaf(previousLeafId);
+			throw error;
+		}
+	}
+
 	/** Like branch(), but also records a branch_summary of the abandoned path. */
 	branchWithSummary(branchFromId: string | null, summary: string, details?: unknown, fromExtension?: boolean): string {
+		if (!piAllowsExtraSessionOperations()) {
+			throw new Error("Session branch summaries are unavailable in Pi");
+		}
 		if (branchFromId !== null && !this.#index.has(branchFromId)) throw new Error(`Entry ${branchFromId} not found`);
 
 		this.#index.setLeaf(branchFromId);
@@ -2046,7 +2085,7 @@ export class SessionManager {
 				const looksLikeMovedProject =
 					breadcrumbCwdMissing &&
 					(newestInTargetDir === null || (newestIsBreadcrumb && !currentProjectAlreadyHasSession));
-				if (looksLikeMovedProject) {
+				if (looksLikeMovedProject && piAllowsExtraSessionOperations()) {
 					logger.info("Re-rooting moved session", { from: breadcrumbCwd, to: resolvedCwd });
 					// Anchor at the gone breadcrumb cwd so the moveTo below relocates the
 					// session: open() now falls back to the launch cwd for a missing
@@ -2058,7 +2097,14 @@ export class SessionManager {
 					return manager;
 				}
 
-				chosenSession = newestInTargetDir;
+				if (!piAllowsExtraSessionOperations()) {
+					chosenSession = (await SessionManager.list(cwd, dir, storage)).find(
+						session => session.cwd && path.resolve(session.cwd) === resolvedCwd,
+					)?.path;
+					chosenSession ??= null;
+				} else {
+					chosenSession = newestInTargetDir;
+				}
 			}
 		}
 
@@ -2095,6 +2141,9 @@ export class SessionManager {
 
 	/** List all sessions across all project directories. */
 	static listAll(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
+		if (!piAllowsExtraSessionOperations()) {
+			return Promise.reject(new Error("Cross-project session listing is unavailable in Pi"));
+		}
 		return listAllSessions(storage);
 	}
 }
@@ -2115,6 +2164,7 @@ export async function cleanupEmptyMoveSession(
 		e => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"),
 	);
 	if (hasRealMessages) return;
+	if (!piAllowsExtraSessionOperations()) return;
 	try {
 		await sessionManager.dropSession(sessionFile);
 	} catch (err) {

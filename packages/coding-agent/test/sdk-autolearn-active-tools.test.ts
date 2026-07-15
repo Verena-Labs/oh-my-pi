@@ -2,23 +2,19 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { AuthStorage } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { CustomTool } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools/types";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { type } from "arktype";
 
-// Guards the auto-learn tool ACTIVATION wiring in createAgentSession: createTools
-// force-includes manage_skill into the built registry for an enabled top-level
-// session, but an explicit `toolNames` whitelist would otherwise drop it from the
-// active set — so the SDK must re-activate it (mirroring the `yield` invariant),
-// or the nudge/guidance would point at a tool the model cannot call. No memory
-// backend is configured (manage_skill needs only `autolearn.enabled`), so the
-// session starts without a heavy backend.
-describe("createAgentSession auto-learn tool activation", () => {
+describe("createAgentSession disabled tool boundary", () => {
 	let registryDir: string;
 	let authStorage: AuthStorage;
 	let modelRegistry: ModelRegistry;
@@ -52,15 +48,13 @@ describe("createAgentSession auto-learn tool activation", () => {
 		return session.getActiveToolNames();
 	}
 
-	it("activates force-included manage_skill in a restricted top-level session", async () => {
+	it("does not reactivate manage_skill from legacy settings", async () => {
 		const names = await activeToolNames(Settings.isolated({ "autolearn.enabled": true }));
 		expect(names).toContain("read");
-		// Built by createTools' force-include AND activated by the SDK's explicit-list
-		// re-inclusion, so guidance/controller point at a callable tool.
-		expect(names).toContain("manage_skill");
+		expect(names).not.toContain("manage_skill");
 	});
 
-	it("initializes the selected memory backend before an auto-learn session can run", async () => {
+	it("still initializes the selected memory backend independently", async () => {
 		const { session } = await createAgentSession({
 			cwd: registryDir,
 			agentDir: registryDir,
@@ -78,12 +72,91 @@ describe("createAgentSession auto-learn tool activation", () => {
 		});
 		sessions.push(session);
 
+		for (let attempt = 0; attempt < 50 && !session.getHindsightSessionState(); attempt++) {
+			await Bun.sleep(10);
+		}
 		expect(session.getHindsightSessionState()).toBeDefined();
+		expect(session.getActiveToolNames()).toEqual(
+			expect.arrayContaining(["read", "retain", "recall", "reflect", "learn"]),
+		);
 	});
 
 	it("omits manage_skill from a restricted session when auto-learn is off", async () => {
 		const names = await activeToolNames(Settings.isolated({}));
 		expect(names).toContain("read");
 		expect(names).not.toContain("manage_skill");
+	});
+
+	it("does not let SDK custom tools reclaim disabled names", async () => {
+		const disabledNames = ["debug", "eval", "github", "manage_skill", "ssh", "tts"];
+		const customTools: CustomTool[] = [...disabledNames, "phase3c_probe"].map(name => ({
+			name,
+			label: name,
+			description: `Custom ${name}`,
+			parameters: type({}),
+			async execute() {
+				return { content: [{ type: "text" as const, text: name }] };
+			},
+		}));
+		const { session } = await createAgentSession({
+			cwd: registryDir,
+			agentDir: registryDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({}),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			customTools,
+		});
+		sessions.push(session);
+
+		const names = session.getActiveToolNames();
+		expect(names).toContain("phase3c_probe");
+		for (const disabled of disabledNames) expect(names).not.toContain(disabled);
+	});
+
+	it("keeps the retained learn implementation across SDK, deferred MCP, and RPC collisions", async () => {
+		const replacement = {
+			name: "learn",
+			label: "Replacement Learn",
+			description: "Would replace the narrowed memory operation",
+			parameters: type({}),
+			strict: true,
+			async execute() {
+				return { content: [{ type: "text" as const, text: "replacement" }] };
+			},
+		};
+		const { session } = await createAgentSession({
+			cwd: registryDir,
+			agentDir: registryDir,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "memory.backend": "local" }),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			customTools: [replacement],
+			extensions: [
+				pi => {
+					pi.registerTool({ ...replacement, label: "Plugin Replacement Learn" });
+				},
+			],
+		});
+		sessions.push(session);
+
+		const retained = session.getToolByName("learn");
+		expect(retained?.label).toBe("Learn");
+		expect(retained?.description).not.toContain("replace the narrowed");
+		await session.reloadPlugins();
+		expect(session.getToolByName("learn")).toBe(retained);
+
+		await session.refreshMCPTools([{ ...replacement, mcpServerName: "host", mcpToolName: "learn" }] as never, {
+			activateAll: true,
+		});
+		expect(session.getToolByName("learn")).toBe(retained);
+
+		await expect(session.refreshRpcHostTools([replacement as AgentTool])).rejects.toThrow(
+			'RPC host tool "learn" conflicts with an existing tool',
+		);
+		expect(session.getToolByName("learn")).toBe(retained);
 	});
 });

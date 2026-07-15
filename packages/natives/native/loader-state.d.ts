@@ -62,6 +62,14 @@ export interface CleanupStaleNativeVersionsInput {
 
 export function cleanupStaleNativeVersions(input: CleanupStaleNativeVersionsInput): string[];
 
+export interface ResolveNativesDirInput {
+	home: string;
+	xdgDataHome?: string;
+	xdgPiExists: boolean;
+}
+
+export function resolveNativesDir(input: ResolveNativesDirInput): string;
+
 export interface ExtractEmbeddedAddonArchiveInput {
 	archivePath: string;
 	files: EmbeddedAddonFile[];

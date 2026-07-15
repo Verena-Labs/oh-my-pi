@@ -36,18 +36,26 @@ describe("legacy pi compat compiled-mode subpath overrides (issue #3442)", () =>
 		expect(bundledModuleKeys.has("@oh-my-pi/pi-ai/oauth/openai-codex")).toBe(true);
 	});
 
-	it("expands web search provider wildcard exports for compiled plugin imports", () => {
+	it("bundles only Pi-selected web search provider exports for compiled plugin imports", () => {
 		const overrides = __buildLegacyPiPackageRootOverrides(true, bundledModuleKeys);
-		const providerKeys = [
-			"@oh-my-pi/pi-coding-agent/web/search/providers/xai",
-			"@oh-my-pi/pi-coding-agent/web/search/providers/tinyfish",
-			"@oh-my-pi/pi-coding-agent/web/search/providers/firecrawl",
+		const retainedProviderKeys = [
+			"@oh-my-pi/pi-coding-agent/web/search/providers/base",
+			"@oh-my-pi/pi-coding-agent/web/search/providers/codex",
 			"@oh-my-pi/pi-coding-agent/web/search/providers/duckduckgo",
 		] as const;
 
-		for (const key of providerKeys) {
+		for (const key of retainedProviderKeys) {
 			expect(bundledModuleKeys.has(key)).toBe(true);
 			expect(overrides[key]).toBe(`omp-legacy-pi-bundled:${key}`);
+		}
+
+		for (const key of [
+			"@oh-my-pi/pi-coding-agent/web/search/providers/xai",
+			"@oh-my-pi/pi-coding-agent/web/search/providers/tinyfish",
+			"@oh-my-pi/pi-coding-agent/web/search/providers/firecrawl",
+		]) {
+			expect(bundledModuleKeys.has(key)).toBe(false);
+			expect(overrides[key]).toBeUndefined();
 		}
 	});
 
@@ -59,6 +67,28 @@ describe("legacy pi compat compiled-mode subpath overrides (issue #3442)", () =>
 		// Concrete check: `@oh-my-pi/pi-coding-agent/cli` is NOT bundled.
 		expect(bundledModuleKeys.has("@oh-my-pi/pi-coding-agent/cli")).toBe(false);
 		expect(bundledModuleKeys.has("@oh-my-pi/pi-coding-agent/main")).toBe(false);
+	});
+
+	it("does not bundle explicitly blocked package exports", () => {
+		for (const key of [
+			"@oh-my-pi/pi-ai/auth-broker",
+			"@oh-my-pi/pi-ai/auth-gateway.js",
+			"@oh-my-pi/pi-coding-agent/commands/update",
+			"@oh-my-pi/pi-coding-agent/commands/ssh.js",
+			"@oh-my-pi/pi-coding-agent/session/checkpoint-rewind-private",
+		]) {
+			expect(bundledModuleKeys.has(key)).toBe(false);
+		}
+	});
+
+	it("uses distinct valid bindings for retained dotted aliases", async () => {
+		const entries = await collectBundledPiEntries();
+		const learn = entries.find(entry => entry.key === "@oh-my-pi/pi-coding-agent/tools/learn");
+		const learnJs = entries.find(entry => entry.key === "@oh-my-pi/pi-coding-agent/tools/learn.js");
+		expect(learn).toBeDefined();
+		expect(learnJs).toBeDefined();
+		expect(learn?.binding).not.toBe(learnJs?.binding);
+		expect(learnJs?.binding).toMatch(/^[A-Za-z_$][A-Za-z0-9_$]*$/);
 	});
 
 	it("does not bundle main-thread-unsafe worker entrypoints", () => {

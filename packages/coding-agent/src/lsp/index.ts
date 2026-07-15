@@ -28,6 +28,7 @@ import {
 	sendNotification,
 	sendRequest,
 	setIdleTimeout,
+	shutdownAll,
 	syncContent,
 	WARMUP_TIMEOUT_MS,
 	waitForProjectLoaded,
@@ -254,6 +255,16 @@ async function notifyFileSaved(
 
 // Cache config per cwd to avoid repeated file I/O
 const configCache = new Map<string, LspConfig>();
+
+/** Drop cached plugin/project LSP config and stop clients created from the old
+ * snapshot. Callers may warm the newly discovered servers immediately or let
+ * the next LSP/edit invocation start them lazily. */
+export async function reloadLspRuntime(cwd: string, warmup: boolean): Promise<LspStartupServerInfo[]> {
+	configCache.delete(cwd);
+	await shutdownAll();
+	if (!warmup) return discoverStartupLspServers(cwd, "available");
+	return (await warmupLspServers(cwd)).servers;
+}
 
 function getConfig(cwd: string): LspConfig {
 	let config = configCache.get(cwd);
@@ -2240,7 +2251,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 		if (action === "reload" && (isWorkspace || !resolvedFile)) {
 			// `reload *` is the user's explicit request to re-read config from
-			// disk. Drop the per-cwd cache entry so `.omp/lsp.json`, root markers,
+			// disk. Drop the per-cwd cache entry so `.pi/lsp.json`, root markers,
 			// and plugin configs added after the first LSP call become visible —
 			// otherwise `getConfig` returns the first observation for the rest of
 			// the process lifetime (#3546).

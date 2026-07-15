@@ -17,14 +17,14 @@ import type { ContextFile } from "@oh-my-pi/pi-coding-agent/capability/context-f
 import { clearCache } from "@oh-my-pi/pi-coding-agent/capability/fs";
 import type { Instruction } from "@oh-my-pi/pi-coding-agent/capability/instruction";
 import type { Prompt } from "@oh-my-pi/pi-coding-agent/capability/prompt";
-import { type Rule, resetActiveRulesForTests, setActiveRules } from "@oh-my-pi/pi-coding-agent/capability/rule";
-import { RuleProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/rule-protocol";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { type Rule, resetActiveRulesForTests, setActiveRules } from "../../src/capability/rule";
+import { RuleProtocolHandler } from "../../src/internal-urls/rule-protocol";
 import "@oh-my-pi/pi-coding-agent/capability/context-file";
 import "@oh-my-pi/pi-coding-agent/capability/instruction";
 import "@oh-my-pi/pi-coding-agent/capability/prompt";
-import "@oh-my-pi/pi-coding-agent/capability/rule";
-import "@oh-my-pi/pi-coding-agent/discovery/github";
+import "../../src/capability/rule";
+import "../../src/discovery/github";
 
 const ENV_KEYS = ["COPILOT_HOME", "COPILOT_CUSTOM_INSTRUCTIONS_DIRS"] as const;
 

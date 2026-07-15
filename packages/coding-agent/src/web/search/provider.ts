@@ -10,7 +10,14 @@
 
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import type { SearchProvider } from "./providers/base";
-import { SEARCH_PROVIDER_LABELS, SEARCH_PROVIDER_ORDER, SearchProviderError, type SearchProviderId } from "./types";
+import {
+	isSearchProviderId,
+	type PiSearchProviderId,
+	SEARCH_PROVIDER_LABELS,
+	SEARCH_PROVIDER_ORDER,
+	SearchProviderError,
+	type SearchProviderId,
+} from "./types";
 
 export type { SearchParams } from "./providers/base";
 export { SearchProvider } from "./providers/base";
@@ -178,6 +185,9 @@ export function formatSearchProviderFailures(
  * underlying module; subsequent calls return the cached singleton.
  */
 export async function getSearchProvider(id: SearchProviderId): Promise<SearchProvider> {
+	if (!isSearchProviderId(id)) {
+		throw new Error(`Search provider ${id} is unavailable in Pi`);
+	}
 	const cached = instanceCache.get(id);
 	if (cached) return cached;
 	const meta = PROVIDER_META[id];
@@ -190,11 +200,11 @@ export async function getSearchProvider(id: SearchProviderId): Promise<SearchPro
 }
 
 /** Preferred provider set via settings (default: auto) */
-let preferredProvId: SearchProviderId | "auto" = "auto";
+let preferredProvId: PiSearchProviderId | "auto" = "auto";
 
 /** Set the preferred web search provider from settings */
 export function setPreferredSearchProvider(provider: SearchProviderId | "auto"): void {
-	preferredProvId = provider;
+	preferredProvId = provider === "auto" || isSearchProviderId(provider) ? provider : "auto";
 }
 
 /** Providers excluded from web search resolution via settings. */
@@ -218,21 +228,27 @@ export function isSearchProviderExcluded(id: SearchProviderId): boolean {
 export async function resolveProviderChain(
 	authStorage: AuthStorage,
 	preferredProvider: SearchProviderId | "auto" = preferredProvId,
+	allowFallback = false,
 ): Promise<SearchProvider[]> {
 	const providers: SearchProvider[] = [];
+	const selectedProvider =
+		preferredProvider === "auto" || isSearchProviderId(preferredProvider) ? preferredProvider : "auto";
 
-	if (preferredProvider !== "auto" && !isSearchProviderExcluded(preferredProvider)) {
-		const provider = await getSearchProvider(preferredProvider);
+	if (selectedProvider !== "auto" && !isSearchProviderExcluded(selectedProvider)) {
+		const provider = await getSearchProvider(selectedProvider);
 		if (await provider.isExplicitlyAvailable(authStorage)) {
 			providers.push(provider);
+			if (!allowFallback) return providers;
 		}
+		if (!allowFallback) return providers;
 	}
 
 	for (const id of SEARCH_PROVIDER_ORDER) {
-		if (id === preferredProvider || isSearchProviderExcluded(id)) continue;
+		if (id === selectedProvider || isSearchProviderExcluded(id)) continue;
 		const provider = await getSearchProvider(id);
 		if (await provider.isAvailable(authStorage)) {
 			providers.push(provider);
+			if (!allowFallback) return providers;
 		}
 	}
 

@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
+import { ProviderResponseError } from "@oh-my-pi/pi-ai/error";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -210,5 +211,32 @@ describe("issue #986 compaction auth fallback", () => {
 		// The raw provider envelope must not leak into the actionable error.
 		expect((error as Error).message).not.toContain("authentication_error");
 		expect((error as Error).message).not.toMatch(/\b401\b/);
+	});
+
+	it("does not mislabel an auto-compaction prompt-policy block as missing credentials", async () => {
+		const { currentModel } = await createSession({ configureFallbackAuth: false });
+		const events: AgentSessionEvent[] = [];
+		session.subscribe(event => events.push(event));
+		vi.spyOn(compactionModule, "compact").mockRejectedValue(
+			new ProviderResponseError("Summarization failed: Codex error event: Request blocked. (code=invalid_prompt)", {
+				provider: currentModel.provider,
+				kind: "content-blocked",
+			}),
+		);
+		vi.spyOn(modelRegistry, "getApiKey").mockImplementation(async model =>
+			model.provider === currentModel.provider && model.id === currentModel.id ? "usable-codex-token" : undefined,
+		);
+
+		await session.runIdleCompaction();
+
+		expect(compactionModule.compact).toHaveBeenCalledTimes(1);
+		const end = events.find(
+			(event): event is Extract<AgentSessionEvent, { type: "auto_compaction_end" }> =>
+				event.type === "auto_compaction_end",
+		);
+		expect(end?.errorMessage).toContain("Auto-compaction failed");
+		expect(end?.errorMessage).toContain("invalid_prompt");
+		expect(end?.errorMessage).not.toContain("Compaction requires usable credentials");
+		expect(end?.errorMessage).not.toContain("Configure openai-codex credentials");
 	});
 });

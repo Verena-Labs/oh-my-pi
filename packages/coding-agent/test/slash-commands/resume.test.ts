@@ -42,7 +42,7 @@ async function writeSession(
 	return sessionPath;
 }
 
-function createRuntime(cwd = tempDir, sessionDir = tempDir) {
+function createRuntime(cwd = tempDir, sessionDir = computeDefaultSessionDir(cwd, storage)) {
 	const showSessionSelector = vi.fn();
 	const handleResumeSession = vi.fn(async () => {});
 	const showError = vi.fn();
@@ -106,7 +106,7 @@ describe("/resume slash command", () => {
 		expect(harness.handleResumeSession).toHaveBeenCalledWith(sessionPath);
 	});
 
-	it("resumes a matching session id prefix from another cwd", async () => {
+	it("does not resume a matching session id prefix from another cwd", async () => {
 		const currentCwd = path.join(tempDir, "current");
 		const otherCwd = path.join(tempDir, "other");
 		await fs.mkdir(currentCwd, { recursive: true });
@@ -119,11 +119,12 @@ describe("/resume slash command", () => {
 		const handled = await executeBuiltinSlashCommand("/resume 019ed777", harness.runtime);
 
 		expect(handled).toBe(true);
-		expect(harness.showError).not.toHaveBeenCalled();
-		expect(harness.handleResumeSession).toHaveBeenCalledWith(sessionPath);
+		expect(harness.showError).toHaveBeenCalledWith('Session "019ed777" not found');
+		expect(harness.handleResumeSession).not.toHaveBeenCalled();
+		expect(sessionPath).toBeString();
 	});
 
-	it("keeps explicit session directories scoped unless global fallback is enabled", async () => {
+	it("keeps explicit session directories scoped even when legacy fallback is requested", async () => {
 		const currentCwd = path.join(tempDir, "current");
 		const otherCwd = path.join(tempDir, "other");
 		const customSessionDir = path.join(tempDir, "custom-sessions");
@@ -133,13 +134,13 @@ describe("/resume slash command", () => {
 		const sessionPath = await writeSession("019ed888-02fb-7000-8dac-396e2f84d484", otherCwd, otherSessionDir);
 
 		const scoped = await resolveResumableSession("019ed888", currentCwd, customSessionDir);
-		const fallback = await resolveResumableSession("019ed888", currentCwd, customSessionDir, {
+		const legacyFallbackAttempt = await resolveResumableSession("019ed888", currentCwd, customSessionDir, {
 			allowGlobalFallback: true,
 		});
 
 		expect(scoped).toBeUndefined();
-		expect(fallback?.scope).toBe("global");
-		expect(fallback?.session.path).toBe(sessionPath);
+		expect(legacyFallbackAttempt).toBeUndefined();
+		expect(sessionPath).toBeString();
 	});
 
 	it("shows an error when no session id matches", async () => {

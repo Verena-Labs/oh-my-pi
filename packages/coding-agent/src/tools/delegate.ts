@@ -1,7 +1,7 @@
 /**
- * Vibe mode tools — the director's entire non-read surface.
+ * Delegate mode tools — the director's entire non-read surface.
  *
- * Five thin tools over {@link VibeSessionRegistry}: spawn/send/wait/kill/list
+ * Five thin tools over {@link DelegateSessionRegistry}: spawn/send/wait/kill/list
  * persistent worker sessions ("fast"/"good" CLIs). Spawns and sends return
  * immediately; turn results self-deliver through the async job manager.
  *
@@ -15,26 +15,26 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
+import {
+	type DelegateCli,
+	type DelegateKillOutcome,
+	type DelegateScreenSnapshot,
+	type DelegateSendOutcome,
+	DelegateSessionRegistry,
+	type DelegateSessionState,
+	type DelegateWaitOutcome,
+} from "../delegate/runtime";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../modes/theme/shimmer";
 import type { Theme } from "../modes/theme/theme";
-import vibeKillDescription from "../prompts/tools/vibe-kill.md" with { type: "text" };
-import vibeListDescription from "../prompts/tools/vibe-list.md" with { type: "text" };
-import vibeSendDescription from "../prompts/tools/vibe-send.md" with { type: "text" };
-import vibeSpawnDescription from "../prompts/tools/vibe-spawn.md" with { type: "text" };
-import vibeWaitDescription from "../prompts/tools/vibe-wait.md" with { type: "text" };
+import delegateKillDescription from "../prompts/tools/delegate-kill.md" with { type: "text" };
+import delegateListDescription from "../prompts/tools/delegate-list.md" with { type: "text" };
+import delegateSendDescription from "../prompts/tools/delegate-send.md" with { type: "text" };
+import delegateSpawnDescription from "../prompts/tools/delegate-spawn.md" with { type: "text" };
+import delegateWaitDescription from "../prompts/tools/delegate-wait.md" with { type: "text" };
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import { oneLineLabel } from "../task/types";
 import { renderStatusLine } from "../tui";
-import {
-	type VibeCli,
-	type VibeKillOutcome,
-	type VibeScreenSnapshot,
-	type VibeSendOutcome,
-	VibeSessionRegistry,
-	type VibeSessionState,
-	type VibeWaitOutcome,
-} from "../vibe/runtime";
 import type { Tool, ToolSession } from "./index";
 import {
 	Ellipsis,
@@ -47,9 +47,15 @@ import {
 	truncateToWidth,
 } from "./render-utils";
 
-export const VIBE_TOOL_NAMES = ["vibe_spawn", "vibe_send", "vibe_wait", "vibe_kill", "vibe_list"] as const;
+export const DELEGATE_TOOL_NAMES = [
+	"delegate_spawn",
+	"delegate_send",
+	"delegate_wait",
+	"delegate_kill",
+	"delegate_list",
+] as const;
 
-const vibeSpawnSchema = type({
+const delegateSpawnSchema = type({
 	cli: type("'fast' | 'good'").describe(
 		"worker flavor: fast = low-latency model for mechanical work; good = strong model for hard work",
 	),
@@ -57,31 +63,31 @@ const vibeSpawnSchema = type({
 	prompt: type("string > 0").describe("first instruction; the worker starts with no other context"),
 });
 
-const vibeSendSchema = type({
-	session: type("string > 0").describe("session id from vibe_spawn / vibe_list"),
+const delegateSendSchema = type({
+	session: type("string > 0").describe("session id from delegate_spawn / delegate_list"),
 	message: type("string > 0").describe("message for the session; steers mid-turn, else runs as its next turn"),
 });
 
-const vibeWaitSchema = type({
+const delegateWaitSchema = type({
 	"sessions?": type("string[]").describe("session ids to watch; omit to watch every session with a turn in flight"),
 	"timeout?": type("number > 0").describe("max seconds to wait (default 30)"),
 });
 
-const vibeKillSchema = type({
+const delegateKillSchema = type({
 	session: type("string > 0").describe("session id to terminate"),
 });
 
-const vibeListSchema = type({});
+const delegateListSchema = type({});
 
-type VibeOp = "spawn" | "send" | "wait" | "kill" | "list";
+type DelegateOp = "spawn" | "send" | "wait" | "kill" | "list";
 
-/** Details payload shared by every vibe tool for TUI rendering. */
-export interface VibeToolDetails {
-	op: VibeOp;
+/** Details payload shared by every delegate tool for TUI rendering. */
+export interface DelegateToolDetails {
+	op: DelegateOp;
 	/** Live TV-wall snapshot of the owner's worker sessions at (or during) the call. */
-	screens: VibeScreenSnapshot[];
-	spawned?: { id: string; cli: VibeCli; jobId: string };
-	send?: VibeSendOutcome;
+	screens: DelegateScreenSnapshot[];
+	spawned?: { id: string; cli: DelegateCli; jobId: string };
+	send?: DelegateSendOutcome;
 	wait?: {
 		settled: Array<{ id: string; jobId: string; status: "completed" | "failed" | "cancelled" }>;
 		stillRunning: string[];
@@ -89,52 +95,58 @@ export interface VibeToolDetails {
 		/** True on interim progress emissions while the wait is still blocking. */
 		waiting?: boolean;
 	};
-	killed?: VibeKillOutcome;
+	killed?: DelegateKillOutcome;
 }
 
-function screensOf(session: ToolSession, ids?: string[]): VibeScreenSnapshot[] {
-	return VibeSessionRegistry.global().screens(session.getAgentId?.() ?? MAIN_AGENT_ID, ids);
+function screensOf(session: ToolSession, ids?: string[]): DelegateScreenSnapshot[] {
+	return DelegateSessionRegistry.global().screens(session.getAgentId?.() ?? MAIN_AGENT_ID, ids);
 }
 
-function textResult(text: string, details: VibeToolDetails): AgentToolResult<VibeToolDetails> {
+function textResult(text: string, details: DelegateToolDetails): AgentToolResult<DelegateToolDetails> {
 	return { content: [{ type: "text", text }], details };
 }
 
-export class VibeSpawnTool implements AgentTool<typeof vibeSpawnSchema, VibeToolDetails> {
-	readonly name = "vibe_spawn";
+export class DelegateSpawnTool implements AgentTool<typeof delegateSpawnSchema, DelegateToolDetails> {
+	readonly name = "delegate_spawn";
 	readonly approval = "exec" as const;
-	readonly label = "Vibe Spawn";
+	readonly label = "Delegate Spawn";
 	readonly summary = "Start a persistent fast/good worker session";
 	readonly description: string;
-	readonly parameters = vibeSpawnSchema;
+	readonly parameters = delegateSpawnSchema;
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(vibeSpawnDescription);
+		this.description = prompt.render(delegateSpawnDescription);
 	}
 
-	async execute(_toolCallId: string, params: typeof vibeSpawnSchema.infer): Promise<AgentToolResult<VibeToolDetails>> {
-		const { id, jobId } = await VibeSessionRegistry.global().spawn(this.session, params);
+	async execute(
+		_toolCallId: string,
+		params: typeof delegateSpawnSchema.infer,
+	): Promise<AgentToolResult<DelegateToolDetails>> {
+		const { id, jobId } = await DelegateSessionRegistry.global().spawn(this.session, params);
 		return textResult(
-			`Spawned ${params.cli} session \`${id}\` (turn job \`${jobId}\`). The turn result will be delivered when it finishes — keep directing other sessions meanwhile. Continue this one with vibe_send \`${id}\`.`,
+			`Spawned ${params.cli} session \`${id}\` (turn job \`${jobId}\`). The turn result will be delivered when it finishes — keep directing other sessions meanwhile. Continue this one with delegate_send \`${id}\`.`,
 			{ op: "spawn", screens: screensOf(this.session), spawned: { id, cli: params.cli, jobId } },
 		);
 	}
 }
 
-export class VibeSendTool implements AgentTool<typeof vibeSendSchema, VibeToolDetails> {
-	readonly name = "vibe_send";
+export class DelegateSendTool implements AgentTool<typeof delegateSendSchema, DelegateToolDetails> {
+	readonly name = "delegate_send";
 	readonly approval = "exec" as const;
-	readonly label = "Vibe Send";
+	readonly label = "Delegate Send";
 	readonly summary = "Message a worker session (steer or next turn)";
 	readonly description: string;
-	readonly parameters = vibeSendSchema;
+	readonly parameters = delegateSendSchema;
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(vibeSendDescription);
+		this.description = prompt.render(delegateSendDescription);
 	}
 
-	async execute(_toolCallId: string, params: typeof vibeSendSchema.infer): Promise<AgentToolResult<VibeToolDetails>> {
-		const outcome = await VibeSessionRegistry.global().send(this.session, params);
+	async execute(
+		_toolCallId: string,
+		params: typeof delegateSendSchema.infer,
+	): Promise<AgentToolResult<DelegateToolDetails>> {
+		const outcome = await DelegateSessionRegistry.global().send(this.session, params);
 		const ack =
 			outcome.mode === "turn"
 				? `Started a new turn on \`${outcome.id}\` (job \`${outcome.jobId}\`). Its result will be delivered when the turn finishes.`
@@ -147,26 +159,26 @@ export class VibeSendTool implements AgentTool<typeof vibeSendSchema, VibeToolDe
 
 const WAIT_PROGRESS_INTERVAL_MS = 500;
 
-export class VibeWaitTool implements AgentTool<typeof vibeWaitSchema, VibeToolDetails> {
-	readonly name = "vibe_wait";
+export class DelegateWaitTool implements AgentTool<typeof delegateWaitSchema, DelegateToolDetails> {
+	readonly name = "delegate_wait";
 	readonly approval = "read" as const;
-	readonly label = "Vibe Wait";
+	readonly label = "Delegate Wait";
 	readonly summary = "Block until a worker session finishes its turn";
 	readonly description: string;
-	readonly parameters = vibeWaitSchema;
+	readonly parameters = delegateWaitSchema;
 	readonly strict = true;
 	readonly interruptible = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(vibeWaitDescription);
+		this.description = prompt.render(delegateWaitDescription);
 	}
 
 	async execute(
 		_toolCallId: string,
-		params: typeof vibeWaitSchema.infer,
+		params: typeof delegateWaitSchema.infer,
 		signal?: AbortSignal,
-		onUpdate?: AgentToolUpdateCallback<VibeToolDetails>,
-	): Promise<AgentToolResult<VibeToolDetails>> {
-		const registry = VibeSessionRegistry.global();
+		onUpdate?: AgentToolUpdateCallback<DelegateToolDetails>,
+	): Promise<AgentToolResult<DelegateToolDetails>> {
+		const registry = DelegateSessionRegistry.global();
 		// Live TV-wall frames while the wait blocks: each tick re-snapshots the
 		// watched workers so their tool calls and streamed text play in place.
 		const emitProgress = (): void => {
@@ -181,7 +193,7 @@ export class VibeWaitTool implements AgentTool<typeof vibeWaitSchema, VibeToolDe
 		};
 		const progressTimer = onUpdate ? setInterval(emitProgress, WAIT_PROGRESS_INTERVAL_MS) : undefined;
 		emitProgress();
-		let outcome: VibeWaitOutcome;
+		let outcome: DelegateWaitOutcome;
 		try {
 			outcome = await registry.wait(this.session, {
 				sessions: params.sessions,
@@ -191,7 +203,7 @@ export class VibeWaitTool implements AgentTool<typeof vibeWaitSchema, VibeToolDe
 		} finally {
 			clearInterval(progressTimer);
 		}
-		const details: VibeToolDetails = {
+		const details: DelegateToolDetails = {
 			op: "wait",
 			screens: screensOf(this.session, params.sessions),
 			wait: {
@@ -211,7 +223,7 @@ export class VibeWaitTool implements AgentTool<typeof vibeWaitSchema, VibeToolDe
 			lines.push(`Still running: ${outcome.stillRunning.map(id => `\`${id}\``).join(", ")}.`);
 		}
 		if (outcome.timedOut) {
-			lines.push("Wait window elapsed before any turn settled — re-issue vibe_wait to keep waiting.");
+			lines.push("Wait window elapsed before any turn settled — re-issue delegate_wait to keep waiting.");
 		}
 		const result = textResult(lines.join("\n").trimEnd(), details);
 		// A pure "still waiting" frame is noise once a newer wait exists.
@@ -219,20 +231,23 @@ export class VibeWaitTool implements AgentTool<typeof vibeWaitSchema, VibeToolDe
 	}
 }
 
-export class VibeKillTool implements AgentTool<typeof vibeKillSchema, VibeToolDetails> {
-	readonly name = "vibe_kill";
+export class DelegateKillTool implements AgentTool<typeof delegateKillSchema, DelegateToolDetails> {
+	readonly name = "delegate_kill";
 	readonly approval = "read" as const;
-	readonly label = "Vibe Kill";
+	readonly label = "Delegate Kill";
 	readonly summary = "Terminate a worker session";
 	readonly description: string;
-	readonly parameters = vibeKillSchema;
+	readonly parameters = delegateKillSchema;
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(vibeKillDescription);
+		this.description = prompt.render(delegateKillDescription);
 	}
 
-	async execute(_toolCallId: string, params: typeof vibeKillSchema.infer): Promise<AgentToolResult<VibeToolDetails>> {
-		const outcome = await VibeSessionRegistry.global().kill(this.session, params.session);
+	async execute(
+		_toolCallId: string,
+		params: typeof delegateKillSchema.infer,
+	): Promise<AgentToolResult<DelegateToolDetails>> {
+		const outcome = await DelegateSessionRegistry.global().kill(this.session, params.session);
 		const cancelNote = outcome.cancelledTurn ? " Its in-flight turn was cancelled." : "";
 		return textResult(
 			`Killed session \`${outcome.id}\`.${cancelNote} Transcript remains at history://${outcome.id}.`,
@@ -245,23 +260,23 @@ export class VibeKillTool implements AgentTool<typeof vibeKillSchema, VibeToolDe
 	}
 }
 
-export class VibeListTool implements AgentTool<typeof vibeListSchema, VibeToolDetails> {
-	readonly name = "vibe_list";
+export class DelegateListTool implements AgentTool<typeof delegateListSchema, DelegateToolDetails> {
+	readonly name = "delegate_list";
 	readonly approval = "read" as const;
-	readonly label = "Vibe List";
+	readonly label = "Delegate List";
 	readonly summary = "List worker sessions and their states";
 	readonly description: string;
-	readonly parameters = vibeListSchema;
+	readonly parameters = delegateListSchema;
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(vibeListDescription);
+		this.description = prompt.render(delegateListDescription);
 	}
 
-	async execute(): Promise<AgentToolResult<VibeToolDetails>> {
+	async execute(): Promise<AgentToolResult<DelegateToolDetails>> {
 		const screens = screensOf(this.session);
-		const details: VibeToolDetails = { op: "list", screens };
+		const details: DelegateToolDetails = { op: "list", screens };
 		if (screens.length === 0) {
-			return textResult("No vibe sessions. Spawn one with vibe_spawn.", details);
+			return textResult("No delegate sessions. Spawn one with delegate_spawn.", details);
 		}
 		const lines = screens.map(screen => {
 			const parts = [
@@ -277,14 +292,14 @@ export class VibeListTool implements AgentTool<typeof vibeListSchema, VibeToolDe
 	}
 }
 
-/** Creates the ephemeral tools installed while `/vibe` mode is active. */
-export function createVibeTools(session: ToolSession): Tool[] {
+/** Creates the ephemeral tools installed while `/delegate` mode is active. */
+export function createDelegateTools(session: ToolSession): Tool[] {
 	return [
-		new VibeSpawnTool(session),
-		new VibeSendTool(session),
-		new VibeWaitTool(session),
-		new VibeKillTool(session),
-		new VibeListTool(session),
+		new DelegateSpawnTool(session),
+		new DelegateSendTool(session),
+		new DelegateWaitTool(session),
+		new DelegateKillTool(session),
+		new DelegateListTool(session),
 	];
 }
 
@@ -300,7 +315,7 @@ const TV_OUTPUT_COLLAPSED = 1;
 const TV_OUTPUT_EXPANDED = 3;
 const CURSOR_GLYPH = "▌";
 
-function stateToIcon(state: VibeSessionState): ToolUIStatus {
+function stateToIcon(state: DelegateSessionState): ToolUIStatus {
 	switch (state) {
 		case "running":
 			return "running";
@@ -313,7 +328,7 @@ function stateToIcon(state: VibeSessionState): ToolUIStatus {
 	}
 }
 
-function stateToColor(state: VibeSessionState): ToolUIColor {
+function stateToColor(state: DelegateSessionState): ToolUIColor {
 	switch (state) {
 		case "running":
 			return "accent";
@@ -326,8 +341,8 @@ function stateToColor(state: VibeSessionState): ToolUIColor {
 	}
 }
 
-interface VibeRenderArgs {
-	cli?: VibeCli;
+interface DelegateRenderArgs {
+	cli?: DelegateCli;
 	prompt?: string;
 	name?: string;
 	session?: string;
@@ -381,7 +396,7 @@ function composerRows(uiTheme: Theme, message: string, options: { cursor: boolea
 /** Render one worker "TV": header + live tool calls + streamed text tail. */
 function tvScreen(
 	uiTheme: Theme,
-	screen: VibeScreenSnapshot,
+	screen: DelegateScreenSnapshot,
 	options: RenderResultOptions,
 	settledStatus?: "completed" | "failed" | "cancelled",
 ): string[] {
@@ -461,7 +476,7 @@ function linesComponent(lines: string[] | (() => string[])): Component {
 	};
 }
 
-function describeCall(op: VibeOp, args: VibeRenderArgs | undefined): string {
+function describeCall(op: DelegateOp, args: DelegateRenderArgs | undefined): string {
 	switch (op) {
 		case "spawn":
 			return `spawn ${args?.cli ?? "?"}${args?.name ? ` · ${frameText(args.name, 40)}` : ""}`;
@@ -478,8 +493,8 @@ function describeCall(op: VibeOp, args: VibeRenderArgs | undefined): string {
 	}
 }
 
-/** Build the shared vibe renderer for one tool name. */
-export function createVibeToolRenderer(op: VibeOp) {
+/** Build the shared delegate renderer for one tool name. */
+export function createDelegateToolRenderer(op: DelegateOp) {
 	const composerOp = op === "spawn" || op === "send";
 	return {
 		inline: true,
@@ -487,8 +502,8 @@ export function createVibeToolRenderer(op: VibeOp) {
 		animatedPendingPreview: composerOp,
 		animatedPartialResult: op === "wait",
 
-		renderCall(args: VibeRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
-			const title = uiTheme.fg("muted", `vibe ${describeCall(op, args)}`);
+		renderCall(args: DelegateRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
+			const title = uiTheme.fg("muted", `delegate ${describeCall(op, args)}`);
 			if (composerOp) {
 				const message = op === "spawn" ? (args?.prompt ?? "") : (args?.message ?? "");
 				return linesComponent(() => {
@@ -501,20 +516,24 @@ export function createVibeToolRenderer(op: VibeOp) {
 					);
 				});
 			}
-			return new Text(renderStatusLine({ icon: "pending", title: `vibe ${describeCall(op, args)}` }, uiTheme), 0, 0);
+			return new Text(
+				renderStatusLine({ icon: "pending", title: `delegate ${describeCall(op, args)}` }, uiTheme),
+				0,
+				0,
+			);
 		},
 
 		renderResult(
-			result: { content: Array<{ type: string; text?: string }>; details?: VibeToolDetails; isError?: boolean },
+			result: { content: Array<{ type: string; text?: string }>; details?: DelegateToolDetails; isError?: boolean },
 			options: RenderResultOptions,
 			uiTheme: Theme,
-			args?: VibeRenderArgs,
+			args?: DelegateRenderArgs,
 		): Component {
 			const details = result.details;
 			if (!details || result.isError) {
 				const fallback = result.content.find(part => part.type === "text")?.text ?? "";
 				const header = renderStatusLine(
-					{ icon: result.isError ? "error" : "done", title: `vibe ${describeCall(op, args)}` },
+					{ icon: result.isError ? "error" : "done", title: `delegate ${describeCall(op, args)}` },
 					uiTheme,
 				);
 				const body = fallback
@@ -527,8 +546,8 @@ export function createVibeToolRenderer(op: VibeOp) {
 				const message = op === "spawn" ? (args?.prompt ?? "") : (args?.message ?? "");
 				const target =
 					op === "spawn"
-						? `${uiTheme.fg("muted", "vibe spawn")} ${formatBadge(details.spawned?.cli ?? args?.cli ?? "?", "accent", uiTheme)} ${uiTheme.fg("accent", frameText(details.spawned?.id ?? args?.name ?? "", 40))}`
-						: `${uiTheme.fg("muted", "vibe send →")} ${uiTheme.fg("accent", frameText(args?.session ?? "?", 40))}`;
+						? `${uiTheme.fg("muted", "delegate spawn")} ${formatBadge(details.spawned?.cli ?? args?.cli ?? "?", "accent", uiTheme)} ${uiTheme.fg("accent", frameText(details.spawned?.id ?? args?.name ?? "", 40))}`
+						: `${uiTheme.fg("muted", "delegate send →")} ${uiTheme.fg("accent", frameText(args?.session ?? "?", 40))}`;
 				const ack =
 					op === "spawn"
 						? uiTheme.fg("success", `turn started${details.spawned ? ` (job ${details.spawned.jobId})` : ""}`)
@@ -554,7 +573,7 @@ export function createVibeToolRenderer(op: VibeOp) {
 				const header = renderStatusLine(
 					{
 						icon: "done",
-						title: `vibe kill ${frameText(details.killed?.id ?? args?.session ?? "?", 40)}${killedNote}`,
+						title: `delegate kill ${frameText(details.killed?.id ?? args?.session ?? "?", 40)}${killedNote}`,
 					},
 					uiTheme,
 				);
@@ -567,7 +586,7 @@ export function createVibeToolRenderer(op: VibeOp) {
 				const fallback = result.content.find(part => part.type === "text")?.text ?? "no sessions";
 				return new Text(
 					renderStatusLine(
-						{ icon: "warning", title: `vibe ${op}`, meta: [uiTheme.fg("dim", frameText(fallback, 60))] },
+						{ icon: "warning", title: `delegate ${op}`, meta: [uiTheme.fg("dim", frameText(fallback, 60))] },
 						uiTheme,
 					),
 					0,
@@ -585,9 +604,9 @@ export function createVibeToolRenderer(op: VibeOp) {
 				const title =
 					op === "wait"
 						? waiting
-							? "vibe wait — watching the wall"
-							: "vibe wait"
-						: `vibe sessions (${screens.length})`;
+							? "delegate wait — watching the wall"
+							: "delegate wait"
+						: `delegate sessions (${screens.length})`;
 				const header = renderStatusLine(
 					{
 						icon: details.wait?.timedOut ? "warning" : running > 0 ? "info" : "done",

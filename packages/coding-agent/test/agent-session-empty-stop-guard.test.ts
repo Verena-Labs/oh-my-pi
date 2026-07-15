@@ -161,7 +161,24 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 
-describe("AgentSession empty stop guard", () => {
+describe("Pi automatic empty-stop recovery policy", () => {
+	it("stops without injecting a reminder or consuming a fallback response", async () => {
+		const { session, mock } = await createHarness([
+			emptyStop(),
+			{ content: ["must remain unused"], stopReason: "stop" },
+		]);
+
+		await session.prompt("answer once");
+		await session.waitForIdle();
+
+		expect(mock.calls).toHaveLength(1);
+		expect(reminderMessages(session.agent.state.messages)).toHaveLength(0);
+		expect(assistantText(session.agent.state.messages)).not.toContain("must remain unused");
+	});
+});
+
+// Retained upstream behavioral coverage for the dormant OMP recovery path.
+describe.skip("AgentSession empty stop guard (disabled in Pi)", () => {
 	it("retries an empty assistant stop after a tool result", async () => {
 		const { session, mock } = await createHarness([
 			recordCall("alpha", "call-record-alpha"),

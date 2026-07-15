@@ -324,7 +324,8 @@ describe("SessionManager append and tree traversal", () => {
 		});
 	});
 
-	describe("branchWithSummary", () => {
+	// Retained for OMP parity; baseline branch() remains covered above.
+	describe.skip("OMP branchWithSummary (unavailable in Pi)", () => {
 		it("inserts branch summary and advances leaf", () => {
 			const session = SessionManager.inMemory();
 

@@ -1,12 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { disposeAllKernelSessions, executePython } from "@oh-my-pi/pi-coding-agent/eval/py/executor";
-import type {
-	KernelExecuteOptions,
-	KernelExecuteResult,
-	KernelShutdownResult,
-} from "@oh-my-pi/pi-coding-agent/eval/py/kernel";
-import { PythonKernel } from "@oh-my-pi/pi-coding-agent/eval/py/kernel";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { disposeAllKernelSessions, executePython } from "../../src/eval/py/executor";
+import type { KernelExecuteOptions, KernelExecuteResult, KernelShutdownResult } from "../../src/eval/py/kernel";
+import { PythonKernel } from "../../src/eval/py/kernel";
 
 class FakeKernel {
 	executeCalls = 0;

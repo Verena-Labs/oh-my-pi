@@ -19,7 +19,7 @@ function createRuntime() {
 	};
 }
 
-describe("/omfg slash command", () => {
+describe.skip("/omfg slash command (dormant OMP behavior; disabled by Pi policy)", () => {
 	it("routes the full complaint through the interactive omfg handler", async () => {
 		const harness = createRuntime();
 

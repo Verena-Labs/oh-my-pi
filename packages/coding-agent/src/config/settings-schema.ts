@@ -172,8 +172,7 @@ export type StatusLineSegmentId =
 	| "cache_write"
 	| "cache_hit"
 	| "session_name"
-	| "usage"
-	| "collab";
+	| "usage";
 
 /** Submenu choice metadata. */
 export type SubmenuOption<V extends string = string> = {
@@ -342,7 +341,7 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 			"^\\s*(?:(?:bun|npm|pnpm|yarn)\\s+(?:run\\s+)?(?:dev|start)(?:\\s|$)|(?:vite|next\\s+dev|nuxt\\s+dev|nodemon|lldb|gdb|tail\\s+-f)(?:\\s|$)|docker\\s+compose\\s+up(?!.*(?:\\s-d(?:\\s|$)|--detach))(?:\\s|$))",
 		tool: "launch",
 		message:
-			"Use the `launch` tool for services, watchers, and debuggers so other omp instances can observe and control them.",
+			"Use the `launch` tool for services, watchers, and debuggers so other Pi instances can observe and control them.",
 	},
 	{
 		pattern:
@@ -440,7 +439,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "model",
 			group: "Advisor",
 			label: "Advisor for Subagents",
-			description: "Also enable the advisor on spawned task/eval subagents.",
+			description: "Also enable the advisor on spawned subagents.",
 			condition: "advisorEnabled",
 		},
 	},
@@ -503,7 +502,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Services",
 			label: "Max In-Flight Requests",
 			description:
-				'Maximum concurrent LLM requests per provider id (for example "openai" or "anthropic"), shared across local OMP processes with this config root. Omitted providers are unlimited.',
+				'Maximum concurrent LLM requests per provider id (for example "openai" or "anthropic"), shared across local Pi processes with this config root. Omitted providers are unlimited.',
 		},
 	},
 
@@ -724,7 +723,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Output Limits",
 			label: "Output Column Cap",
 			description:
-				"Per-line byte cap for streaming tool outputs (bash, ssh, python, js eval) and `read`. Lines wider than this are ellipsis-truncated; remaining bytes up to the next newline are dropped. 0 disables.",
+				"Per-line byte cap for streaming tool output and `read`. Lines wider than this are ellipsis-truncated; remaining bytes up to the next newline are dropped. 0 disables.",
 			options: [
 				{ value: "0", label: "Off", description: "No per-line cap" },
 				{ value: "256", label: "256", description: "Tight" },
@@ -1357,7 +1356,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Sampling",
 			label: "Service Tier — Subagent",
 			description:
-				"Service Tier for spawned task/eval subagents. Inherit = match the main agent's live per-family tiers (tracks /fast); pick a value to apply it to whichever family the subagent's model belongs to.",
+				"Service Tier for spawned subagents. Inherit = match the main agent's live per-family tiers (tracks /fast); pick a value to apply it to whichever family the subagent's model belongs to.",
 			options: SERVICE_TIER_INHERIT_OPTIONS,
 		},
 	},
@@ -1637,17 +1636,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"startup.checkUpdate": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "interaction",
-			group: "Startup & Updates",
-			label: "Check for Updates",
-			description: "Check for omp updates on startup",
-		},
-	},
-
 	"marketplace.autoUpdate": {
 		type: "enum",
 		values: ["off", "notify", "auto"] as const,
@@ -1716,7 +1704,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "interaction",
 			group: "Magic Keywords",
 			label: "Workflow Keyword",
-			description: "Let standalone workflowz append its hidden eval workflow notice",
+			description: "Let standalone workflowz append hidden deterministic workflow guidance",
 		},
 	},
 
@@ -1792,86 +1780,37 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Collab
+	// Compatibility-only keys for dormant upstream collaboration modules.
+	// They intentionally have no UI metadata and no Pi command starts those modules.
 	"collab.relayUrl": {
 		type: "string",
 		default: DEFAULT_RELAY_URL,
-		ui: {
-			tab: "interaction",
-			group: "Collab",
-			label: "Relay URL",
-			description: "Relay used by /collab (wss://host[:port])",
-		},
 	},
 
 	"collab.webUrl": {
 		type: "string",
 		default: "",
-		ui: {
-			tab: "interaction",
-			group: "Collab",
-			label: "Web UI URL",
-			description:
-				"Browser UI used by /collab links; empty derives from collab.relayUrl; explicit http:// is localhost-only",
-		},
 	},
 
 	"collab.displayName": {
 		type: "string",
 		default: "",
-		ui: {
-			tab: "interaction",
-			group: "Collab",
-			label: "Display Name",
-			description: "Name shown to other collab participants (default: OS username)",
-		},
 	},
 
 	"share.serverUrl": {
 		type: "string",
 		default: DEFAULT_SHARE_URL,
-		ui: {
-			tab: "interaction",
-			group: "Collab",
-			label: "Share Server",
-			description:
-				"Share viewer/upload base used by /share (encrypted blob upload + viewer; links are <base>/<id>#<key>)",
-		},
 	},
 
 	"share.store": {
 		type: "enum",
 		values: ["blob", "gist"] as const,
 		default: "blob",
-		ui: {
-			tab: "interaction",
-			group: "Collab",
-			label: "Share Store",
-			description: "Where /share uploads the encrypted session blob",
-			options: [
-				{
-					value: "blob",
-					label: "Encrypted Blob",
-					description: "Upload to the share server (no GitHub account needed; avoids gist API rate limits)",
-				},
-				{
-					value: "gist",
-					label: "GitHub Gist",
-					description: "Push to a secret gist (needs authenticated gh), falling back to the share server",
-				},
-			],
-		},
 	},
 
 	"share.redactSecrets": {
 		type: "boolean",
 		default: true,
-		ui: {
-			tab: "interaction",
-			group: "Collab",
-			label: "Share Secret Redaction",
-			description: "Run the secret obfuscator over /share snapshots before upload (uses the secrets.* config)",
-		},
 	},
 
 	// Speech-to-text
@@ -2810,7 +2749,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"hindsight.retainEveryNTurns": { type: "number", default: 3 },
 	"hindsight.retainOverlapTurns": { type: "number", default: 2 },
-	"hindsight.retainContext": { type: "string", default: "omp" },
+	"hindsight.retainContext": { type: "string", default: "pi" },
 
 	"hindsight.recallBudget": {
 		type: "enum",
@@ -3403,7 +3342,7 @@ export const SETTINGS_SCHEMA = {
 					value: "write",
 					label: "Write",
 					description:
-						"Auto-approve read-only and write tools; require confirmation for exec tools such as bash, eval, browser, task, and ssh.",
+						"Auto-approve read-only and write tools; require confirmation for exec tools such as bash, browser, launch, and task.",
 				},
 				{
 					value: "yolo",
@@ -3658,7 +3597,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: "GitHub",
 			label: "GitHub View Cache",
-			description: "Cache rendered issue/PR view output in ~/.omp/cache/github-cache.db so repeated reads are free",
+			description: "Cache rendered issue/PR view output in ~/.pi/cache/github-cache.db so repeated reads are free",
 		},
 	},
 
@@ -3878,7 +3817,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Discovery & MCP",
 			label: "Essential Tools Override",
 			description:
-				"Override the always-loaded built-in tools (default: read, bash, edit, write, glob, eval). Leave empty to use defaults.",
+				"Override the always-loaded built-in tools (default: read, bash, launch, edit, write, glob). Leave empty to use defaults.",
 		},
 	},
 
@@ -4032,7 +3971,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Isolation",
 			label: "Isolation Mode",
 			description:
-				'Isolation backend for subagents. "auto" lets the native PAL pick the best available backend (CoW-aware filesystems, then overlayfs/ProjFS, then a git worktree / recursive-copy fallback).',
+				'Backend for explicit task calls with `isolated: true`. Ordinary subagents are never isolated automatically; "auto" lets the native PAL pick the best available backend.',
 			options: [
 				{ value: "none", label: "None", description: "No isolation" },
 				{ value: "auto", label: "Auto", description: "Let the PAL pick the best available backend" },
@@ -4051,11 +3990,7 @@ export const SETTINGS_SCHEMA = {
 					label: "Block clone",
 					description: "Windows FSCTL_DUPLICATE_EXTENTS_TO_FILE (NTFS/ReFS)",
 				},
-				{
-					value: "rcopy",
-					label: "Recursive copy",
-					description: "git worktree if available, otherwise recursive copy",
-				},
+				{ value: "rcopy", label: "Recursive copy", description: "Recursive filesystem copy" },
 			],
 		},
 	},
@@ -4067,11 +4002,11 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tasks",
 			group: "Isolation",
-			label: "Isolation Merge Strategy",
-			description: "How isolated task changes are integrated (patch apply or branch merge)",
+			label: "Isolation Capture Format",
+			description: "How explicit isolated-task changes are retained for a separate manual integration step",
 			options: [
-				{ value: "patch", label: "Patch", description: "Combine diffs and git apply" },
-				{ value: "branch", label: "Branch", description: "Commit per task, merge with --no-ff" },
+				{ value: "patch", label: "Patch", description: "Retain a patch artifact without applying it" },
+				{ value: "branch", label: "Branch", description: "Retain a task branch without merging it" },
 			],
 		},
 	},
@@ -4098,9 +4033,9 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "tasks",
 			group: "Isolation",
-			label: "Worktree Base Directory",
+			label: "Isolation Base Directory",
 			description:
-				"Base directory for agent-managed worktrees — task-isolation copies, `github` PR checkouts, and `omp worktree` cleanup all live here. Unset uses ~/.omp/wt. Must be an absolute or ~-relative path; relative paths are ignored. The OMP_WORKTREE_DIR env var overrides this.",
+				"Base directory for explicit isolated-task copies. Unset uses ~/.pi/wt. Must be an absolute or ~-relative path; relative paths are ignored. The PI_WORKTREE_DIR env var overrides this.",
 		},
 	},
 
@@ -4403,6 +4338,16 @@ export const SETTINGS_SCHEMA = {
 			label: "Web Search Provider",
 			description: "Preferred provider for the web_search tool",
 			options: SEARCH_PROVIDER_OPTIONS,
+		},
+	},
+	"providers.webSearchFallback": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Web Search Fallback",
+			description: "Try Pi's other web-search provider when the selected provider fails",
 		},
 	},
 	"providers.webSearchExclude": {
@@ -5073,6 +5018,146 @@ export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boo
 								? D
 								: never;
 
+type PiLockedSettingValues = {
+	[P in SettingPath]?: SettingValue<P>;
+};
+
+const EMPTY_FALLBACK_CHAINS: Record<string, string[]> = Object.freeze({});
+
+/**
+ * Whole OMP setting families whose source remains for upstream compatibility,
+ * but whose capabilities are unavailable in the Pi distribution. A family
+ * entry covers both the current children and any newly added children, keeping
+ * Settings, /settings, and `pi config` on one policy boundary.
+ */
+export const PI_DISABLED_SETTING_FAMILIES = [
+	"auth.broker",
+	"autolearn",
+	"branchSummary",
+	"collab",
+	"commit",
+	"debug",
+	"eval",
+	"github",
+	"julia",
+	"python",
+	"recap",
+	"ruby",
+	"secrets",
+	"share",
+	"snapcompact",
+	"speech",
+	"speechgen",
+	"stt",
+	"tts",
+	"ttsr",
+] as const;
+
+/** Disabled leaves whose parent namespace also contains selected Pi settings. */
+const PI_DISABLED_SETTING_PATHS: ReadonlySet<SettingPath> = new Set([
+	"commands.enableClaudeUser",
+	"commands.enableClaudeProject",
+	"commands.enableOpencodeUser",
+	"commands.enableOpencodeProject",
+	"providers.tts",
+]);
+
+function isInPiDisabledSettingFamily(path: SettingPath): boolean {
+	return PI_DISABLED_SETTING_FAMILIES.some(family => path.startsWith(`${family}.`));
+}
+
+/**
+ * OMP settings retained for source compatibility but fixed at Pi's
+ * distribution boundary. Legacy config, explicit overlays, extensions, and
+ * runtime overrides cannot reactivate these disabled capabilities.
+ */
+const PI_LOCKED_SETTINGS = {
+	"auth.broker.url": undefined,
+	"auth.broker.token": undefined,
+	doubleEscapeAction: "branch",
+	treeFilterMode: "default",
+	"contextPromotion.enabled": false,
+	"compaction.strategy": "context-full",
+	"compaction.handoffSaveToDisk": false,
+	// Provider-native compaction is part of Pi's baseline long-session path.
+	// Keep the controls locked away, but leave the internal Codex transport on;
+	// forcing these off repackages the full transcript as one giant user prompt,
+	// which the Codex backend can reject as `invalid_prompt: Request blocked`.
+	"compaction.remoteEnabled": true,
+	"compaction.remoteStreamingV2Enabled": true,
+	"compaction.autoContinue": false,
+	"compaction.remoteEndpoint": undefined,
+	"compaction.supersedeReads": false,
+	"compaction.dropUseless": false,
+	"snapcompact.systemPrompt": "none",
+	"snapcompact.toolResults": false,
+	"snapcompact.shape": "auto",
+	"branchSummary.enabled": false,
+	"branchSummary.reserveTokens": 16384,
+	"recap.enabled": false,
+	"recap.idleSeconds": 240,
+	"autolearn.enabled": false,
+	"autolearn.autoContinue": false,
+	"autolearn.minToolCalls": 5,
+	"collab.relayUrl": "",
+	"collab.webUrl": "",
+	"collab.displayName": "",
+	"share.serverUrl": "",
+	"share.store": "blob",
+	"share.redactSecrets": true,
+	"retry.modelFallback": false,
+	"retry.fallbackChains": EMPTY_FALLBACK_CHAINS,
+	"retry.fallbackRevertPolicy": "never",
+	"providers.anthropic.serverSideFallback": false,
+	"features.unexpectedStopDetection": false,
+	"providers.unexpectedStopModel": "online",
+	"secrets.enabled": false,
+	"debug.enabled": false,
+	"eval.py": false,
+	"eval.js": false,
+	"eval.rb": false,
+	"eval.jl": false,
+	"stt.enabled": false,
+	"speechgen.enabled": false,
+	"speech.enabled": false,
+	"ttsr.enabled": false,
+	"ttsr.builtinRules": false,
+	"github.enabled": false,
+	"github.cache.enabled": false,
+	"commit.mapReduceEnabled": false,
+	"commands.enableClaudeUser": false,
+	"commands.enableClaudeProject": false,
+	"commands.enableOpencodeUser": false,
+	"commands.enableOpencodeProject": false,
+} satisfies PiLockedSettingValues;
+
+export type PiLockedSetting<P extends SettingPath> = { locked: true; value: SettingValue<P> } | { locked: false };
+
+export function getPiLockedSetting<P extends SettingPath>(path: P): PiLockedSetting<P> {
+	if (!isPiLockedSetting(path)) return { locked: false };
+	if (!Object.hasOwn(PI_LOCKED_SETTINGS, path)) {
+		const defaultValue = getDefault(path);
+		return {
+			locked: true,
+			// Disabled-family booleans must fail closed even when dormant upstream
+			// source uses an enabled-by-default child toggle.
+			value: (typeof defaultValue === "boolean" ? false : defaultValue) as SettingValue<P>,
+		};
+	}
+	return {
+		locked: true,
+		value: PI_LOCKED_SETTINGS[path as keyof typeof PI_LOCKED_SETTINGS] as SettingValue<P>,
+	};
+}
+
+export function isPiLockedSetting(path: SettingPath): boolean {
+	return (
+		Object.hasOwn(PI_LOCKED_SETTINGS, path) ||
+		PI_DISABLED_SETTING_PATHS.has(path) ||
+		isInPiDisabledSettingFamily(path)
+	);
+}
+
 /** Get the default value for a setting path */
 export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
 	return SETTINGS_SCHEMA[path].default as SettingValue<P>;
@@ -5080,11 +5165,12 @@ export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
 
 /** Check if a path has UI metadata (should appear in settings panel) */
 export function hasUi(path: SettingPath): boolean {
-	return "ui" in SETTINGS_SCHEMA[path];
+	return !isPiLockedSetting(path) && "ui" in SETTINGS_SCHEMA[path];
 }
 
 /** Get UI metadata for a path (undefined if no UI) */
 export function getUi(path: SettingPath): AnyUiMetadata | undefined {
+	if (isPiLockedSetting(path)) return undefined;
 	const def = SETTINGS_SCHEMA[path];
 	return "ui" in def ? (def.ui as AnyUiMetadata) : undefined;
 }

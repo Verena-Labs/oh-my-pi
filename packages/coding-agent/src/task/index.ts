@@ -2,9 +2,9 @@
  * Task tool - Delegate tasks to specialized agents.
  *
  * Discovers agent definitions from:
- *   - Bundled agents (shipped with omp-coding-agent)
- *   - ~/.omp/agent/agents/*.md (user-level)
- *   - .omp/agents/*.md (project-level)
+ *   - Bundled Pi agents
+ *   - ~/.pi/agent/agents/*.md (user-level)
+ *   - .pi/agents/*.md (project-level)
  *
  * Supports:
  *   - Single agent spawn per call (parallelism = parallel task calls)
@@ -51,10 +51,9 @@ import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { runSubprocess } from "./executor";
 import {
-	applyEligibleNestedPatches,
+	describeManualIsolation,
 	type IsolationContext,
 	makeIsolationCommitMessage,
-	mergeIsolatedChanges,
 	prepareIsolationContext,
 	runIsolatedSubprocess,
 } from "./isolation-runner";
@@ -225,12 +224,12 @@ function createTaskModeError(text: string): AgentToolResult<TaskToolDetails> {
 /**
  * Reject fields the current configuration does not accept. `schema` is never
  * accepted (structured output comes from the agent definition's `output`
- * frontmatter, the inherited session schema, or an eval-workflow
- * `agent(..., schema)` call); `tasks`/`context` require `task.batch`.
+ * frontmatter or the inherited session schema); `tasks`/`context` require
+ * `task.batch`.
  */
 function validateShapeParams(batchEnabled: boolean, params: TaskParams): string | undefined {
 	if ((params as Record<string, unknown>).schema !== undefined) {
-		return "The task tool does not accept `schema`. Rely on the selected agent definition's `output` schema or the inherited session schema; workflows needing ad-hoc structured output use eval `agent(prompt, schema)`.";
+		return "The task tool does not accept `schema`. Rely on the selected agent definition's `output` schema or the inherited session schema.";
 	}
 	if (!batchEnabled) {
 		const disallowed = (["tasks", "context"] as const).filter(field => params[field] !== undefined);
@@ -1282,8 +1281,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const thinkingLevelOverride = effectiveAgent.thinkingLevel;
 
 		// Output schema priority: agent frontmatter > inherited parent session.
-		// The task call itself never carries a schema; workflows needing ad-hoc
-		// structured output go through eval agent(prompt, schema).
+		// The task call itself never carries a schema.
 		const effectiveOutputSchema = effectiveAgent.output ?? this.session.outputSchema;
 
 		let isolationContext: IsolationContext | null = null;
@@ -1298,14 +1296,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				};
 			}
 		}
-		const repoRoot = isolationContext?.repoRoot ?? null;
-
 		const preferredIsolationBackend = parseIsolationMode(isolationMode);
 
 		// Derive artifacts directory
 		const sessionFile = this.session.getSessionFile();
 		const artifactsDir = sessionFile ? sessionFile.slice(0, -6) : null;
-		const tempArtifactsDir = artifactsDir ? null : path.join(os.tmpdir(), `omp-task-${Snowflake.next()}`);
+		const tempArtifactsDir = artifactsDir ? null : path.join(os.tmpdir(), `pi-task-${Snowflake.next()}`);
 		const effectiveArtifactsDir = artifactsDir || tempArtifactsDir!;
 
 		const localProtocolOptions: LocalProtocolOptions = this.session.localProtocolOptions ?? {
@@ -1516,31 +1512,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 			const result = await runTask();
 
-			let mergeSummary = "";
-			let changesApplied: boolean | null = null;
-			let mergedBranchForNestedPatches = false;
-			if (isIsolated && repoRoot) {
-				const outcome = await mergeIsolatedChanges({ result, repoRoot, mergeMode });
-				mergeSummary = outcome.summary;
-				changesApplied = outcome.changesApplied;
-				mergedBranchForNestedPatches = outcome.mergedBranchForNestedPatches;
-			}
+			const mergeSummary = isIsolated ? describeManualIsolation(result) : "";
 
-			// Apply nested repo patches (separate from parent git).
-			if (isIsolated && repoRoot) {
-				mergeSummary += await applyEligibleNestedPatches({
-					result,
-					repoRoot,
-					mergeMode,
-					changesApplied,
-					mergedBranchForNestedPatches,
-					commitMessage: buildCommitMessageFn(),
-				});
-			}
-
-			// Cleanup temp directory if used
-			const shouldCleanupTempArtifacts =
-				tempArtifactsDir && (!isIsolated || changesApplied === true || changesApplied === null);
+			// Explicit isolation returns patch/branch metadata for a separate manual
+			// integration step, so its temporary artifacts must outlive this call.
+			const shouldCleanupTempArtifacts = tempArtifactsDir && (!isIsolated || !result.patchPath);
 			if (shouldCleanupTempArtifacts) {
 				await fs.rm(tempArtifactsDir, { recursive: true, force: true });
 			}

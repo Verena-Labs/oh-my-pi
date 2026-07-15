@@ -31,7 +31,7 @@ import { embeddedAddon } from "./embedded-addon.js";
  * post-build `--reset` stub) is the authoritative compiled-mode signal.
  */
 
-const SUPPORTED_PLATFORMS = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"];
+const SUPPORTED_PLATFORMS = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"];
 
 /**
  * Streaming startup marker, enabled by `PI_DEBUG_STARTUP`. Local copy of the
@@ -48,12 +48,22 @@ function startupMarker(text) {
 	}
 }
 
+/**
+ * @param {{ xdgDataHome?: string; home: string; xdgPiExists: boolean }} input
+ * @returns {string}
+ */
+export function resolveNativesDir({ xdgDataHome, home, xdgPiExists }) {
+	if (xdgDataHome && xdgPiExists) return path.join(xdgDataHome, "pi", "natives");
+	return path.join(home, ".pi", "natives");
+}
+
 function getNativesDir() {
 	const xdgDataHome = process.env.XDG_DATA_HOME;
-	if (xdgDataHome && fs.existsSync(path.join(xdgDataHome, "omp"))) {
-		return path.join(xdgDataHome, "omp", "natives");
-	}
-	return path.join(os.homedir(), ".omp", "natives");
+	return resolveNativesDir({
+		xdgDataHome,
+		home: os.homedir(),
+		xdgPiExists: Boolean(xdgDataHome && fs.existsSync(path.join(xdgDataHome, "pi"))),
+	});
 }
 
 function resolveLeafPackageDir(platformTag) {

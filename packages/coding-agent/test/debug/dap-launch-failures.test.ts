@@ -3,18 +3,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import * as dapModule from "@oh-my-pi/pi-coding-agent/dap";
-import { DapClient } from "@oh-my-pi/pi-coding-agent/dap/client";
-import { DapSessionManager } from "@oh-my-pi/pi-coding-agent/dap/session";
-import type {
-	DapCapabilities,
-	DapClientState,
-	DapEventMessage,
-	DapResolvedAdapter,
-} from "@oh-my-pi/pi-coding-agent/dap/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { DebugTool } from "@oh-my-pi/pi-coding-agent/tools/debug";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import * as dapModule from "../../src/dap";
+import { DapClient } from "../../src/dap/client";
+import { DapSessionManager } from "../../src/dap/session";
+import type { DapCapabilities, DapClientState, DapEventMessage, DapResolvedAdapter } from "../../src/dap/types";
+import { DebugTool } from "../../src/tools/debug";
 
 const TEST_ADAPTER: DapResolvedAdapter = {
 	name: "lldb-dap",

@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { disposeAllVmContexts } from "@oh-my-pi/pi-coding-agent/eval/js/context-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { EvalTool } from "@oh-my-pi/pi-coding-agent/tools/eval";
+import { disposeAllVmContexts } from "../../src/eval/js/context-manager";
+import { EvalTool } from "../../src/tools/eval";
 
 function makeSession(): ToolSession {
 	return {

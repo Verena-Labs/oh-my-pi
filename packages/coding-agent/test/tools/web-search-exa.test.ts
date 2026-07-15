@@ -5,6 +5,7 @@ import * as path from "node:path";
 import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import {
 	buildExaRequestBody,
 	ExaProvider,
@@ -12,8 +13,7 @@ import {
 	resetExaSearchThrottleForTest,
 	searchExa,
 	synthesizeAnswer,
-} from "@oh-my-pi/pi-coding-agent/web/search/providers/exa";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+} from "../../src/web/search/providers/exa";
 
 async function withLocalAuthStorage<T>(run: (authStorage: AuthStorage) => Promise<T>): Promise<T> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "web-search-exa-auth-"));

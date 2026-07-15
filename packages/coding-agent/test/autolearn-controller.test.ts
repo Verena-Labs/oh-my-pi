@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { AutoLearnController, buildAutoLearnInstructions } from "@oh-my-pi/pi-coding-agent/autolearn/controller";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AutoLearnController, buildAutoLearnInstructions } from "../src/autolearn/controller";
 
 interface CapturedNudge {
 	message: { customType: string; content: string; display?: boolean; attribution?: string };
@@ -63,7 +63,7 @@ function install(session: FakeSession, overrides: Record<string, unknown> = {}):
 	return settings;
 }
 
-describe("AutoLearnController", () => {
+describe.skip("OMP AutoLearnController behavior (dormant in Pi)", () => {
 	it("does not inject a passive nudge into the conversation prefix", () => {
 		const session = new FakeSession();
 		install(session);
@@ -247,6 +247,21 @@ describe("AutoLearnController", () => {
 		session.toolCalls(2);
 		session.agentEnd();
 		expect(session.sent).toHaveLength(1);
+	});
+});
+
+describe("Pi automatic learn policy", () => {
+	it("keeps legacy auto-learn settings locked off and never injects a capture turn", () => {
+		const session = new FakeSession();
+		const settings = install(session, {
+			"autolearn.autoContinue": true,
+			"autolearn.minToolCalls": 1,
+		});
+		expect(settings.get("autolearn.enabled")).toBe(false);
+		expect(settings.get("autolearn.autoContinue")).toBe(false);
+		session.toolCalls(5);
+		session.agentEnd();
+		expect(session.sent).toEqual([]);
 	});
 });
 

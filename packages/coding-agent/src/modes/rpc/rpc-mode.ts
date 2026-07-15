@@ -13,8 +13,6 @@
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { isZodSchema, zodToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { $env, isRecord, readJsonl, Snowflake } from "@oh-my-pi/pi-utils";
-import { reset as resetCapabilities } from "../../capability";
-import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
 	type ExtensionUIContext,
 	type ExtensionUIDialogOptions,
@@ -23,7 +21,6 @@ import {
 	getExtensionUISelectOptionLabel,
 } from "../../extensibility/extensions";
 import { buildSkillPromptMessage, parseSkillInvocation } from "../../extensibility/skills";
-import { loadSlashCommands } from "../../extensibility/slash-commands";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
@@ -32,7 +29,12 @@ import { buildAvailableSlashCommands } from "../../slash-commands/available-comm
 import type { EventBus } from "../../utils/event-bus";
 import { initializeExtensions } from "../runtime-init";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
-import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
+import {
+	isRpcHostUriResult,
+	PI_HOST_URI_SCHEME_REGISTRATION_ERROR,
+	piAllowsHostUriSchemeRegistration,
+	RpcHostUriBridge,
+} from "./host-uris";
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "./rpc-subagents";
 import type {
 	RpcCommand,
@@ -50,6 +52,10 @@ import type {
 	RpcSessionState,
 	RpcSubagentSubscriptionLevel,
 } from "./rpc-types";
+
+function piAllowsExpandedSessionExports(): boolean {
+	return false;
+}
 
 // Re-export types for consumers
 export type * from "./rpc-types";
@@ -824,12 +830,7 @@ export async function runRpcMode(
 
 	const getAvailableCommands = async () => buildAvailableSlashCommands(session);
 	const reloadPluginState = async () => {
-		const cwd = session.sessionManager.getCwd();
-		const projectPath = await resolveActiveProjectRegistryPath(cwd);
-		clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
-		resetCapabilities();
-		session.setSlashCommands(await loadSlashCommands({ cwd }));
-		await session.refreshSshTool({ activateIfAvailable: true });
+		await session.reloadPlugins();
 		await emitAvailableCommandsUpdate();
 	};
 	const emitAvailableCommandsUpdate = async () => {
@@ -976,10 +977,13 @@ export async function runRpcMode(
 				const tools = normalizeHostToolDefinitions(command.tools);
 				const rpcTools = hostToolBridge.setTools(tools);
 				await session.refreshRpcHostTools(rpcTools);
-				return success(id, "set_host_tools", { toolNames: tools.map(tool => tool.name) });
+				return success(id, "set_host_tools", { toolNames: hostToolBridge.getToolNames() });
 			}
 
 			case "set_host_uri_schemes": {
+				if (!piAllowsHostUriSchemeRegistration()) {
+					return error(id, "set_host_uri_schemes", PI_HOST_URI_SCHEME_REGISTRATION_ERROR);
+				}
 				try {
 					const schemes = hostUriBridge.setSchemes(command.schemes);
 					return success(id, "set_host_uri_schemes", { schemes });
@@ -1011,6 +1015,9 @@ export async function runRpcMode(
 			}
 
 			case "get_subagent_messages": {
+				if (!piAllowsExpandedSessionExports()) {
+					return error(id, "get_subagent_messages", "Expanded subagent transcripts are unavailable in Pi");
+				}
 				if (!subagentRegistry) {
 					return error(id, "get_subagent_messages", "Subagent event bus is unavailable");
 				}

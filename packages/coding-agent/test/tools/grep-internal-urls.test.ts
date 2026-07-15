@@ -14,10 +14,10 @@ import {
 	type ProtocolHandler,
 } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import * as sshFileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import * as sshFileTransfer from "../../src/ssh/file-transfer";
 import { GlobTool } from "../../src/tools/glob";
 import { GrepTool } from "../../src/tools/grep";
 
@@ -63,7 +63,7 @@ function registerVirtualDocs(docs: ReadonlyMap<string, string>): void {
 			};
 		},
 	};
-	InternalUrlRouter.instance().register(handler);
+	InternalUrlRouter.instance().registerForTests(handler);
 }
 
 describe("GrepTool internal URL resolution", () => {
@@ -320,31 +320,31 @@ describe("GrepTool internal URL resolution", () => {
 		);
 	});
 
-	it("expands omp:// root to grep embedded documentation files", async () => {
+	it("expands pi:// root to grep embedded documentation files", async () => {
 		const session = createSession();
 		const tool = new GrepTool(session);
 
 		const result = await tool.execute("test-call", {
 			pattern: "Grep file contents with a regex across files",
-			path: "omp://",
+			path: "pi://",
 		});
 
 		const text = getResultText(result);
-		expect(text).toContain("# omp://tools/grep.md");
+		expect(text).toContain("# pi://tools/grep.md");
 		expect(text).toContain("Grep file contents with a regex across files");
 	});
 
-	it("expands omp://docs to grep embedded documentation files", async () => {
+	it("expands pi://docs to grep embedded documentation files", async () => {
 		const session = createSession();
 		const tool = new GrepTool(session);
 
 		const result = await tool.execute("test-call", {
 			pattern: "Read files, directories, archives",
-			path: "omp://docs",
+			path: "pi://docs",
 		});
 
 		const text = getResultText(result);
-		expect(text).toContain("# omp://tools/read.md");
+		expect(text).toContain("# pi://tools/read.md");
 		expect(text).toContain("Read files, directories, archives");
 	});
 
@@ -595,7 +595,7 @@ describe("GrepTool internal URL resolution", () => {
 	it("refuses to search a directory listing that has no backing local path", async () => {
 		// A directory resource with no sourcePath (e.g. a remote ssh:// listing) must
 		// not be virtual-grepped — its listing text is not the directory's contents.
-		InternalUrlRouter.instance().register({
+		InternalUrlRouter.instance().registerForTests({
 			scheme: "dirstub",
 			immutable: true,
 			async resolve(url: InternalUrl): Promise<InternalResource> {

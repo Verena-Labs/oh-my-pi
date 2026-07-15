@@ -165,7 +165,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		expect(modelFallbackMessage).toBe('Model "missing-provider/missing-model" not found');
 	});
 
-	test("uses auth fallback when deferred subagent modelPattern resolves without working credentials", async () => {
+	test("does not replace an unauthenticated deferred modelPattern with its parent fallback", async () => {
 		const parentModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!parentModel) {
 			throw new Error("Expected bundled anthropic parent model");
@@ -199,8 +199,8 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		});
 
 		try {
-			expect(session.model?.provider).toBe(parentModel.provider);
-			expect(session.model?.id).toBe(parentModel.id);
+			expect(session.model?.provider).toBe("runtime-provider");
+			expect(session.model?.id).toBe("runtime-model");
 			expect(modelFallbackMessage).toBeUndefined();
 		} finally {
 			await session.dispose();
@@ -226,7 +226,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		}
 	});
 
-	test("installs fallback chain for remaining deferred subagent modelPattern candidates", async () => {
+	test("does not install a fallback chain for remaining deferred modelPattern candidates", async () => {
 		const { session } = await createAgentSession({
 			...(await buildSessionOptions(["runtime-provider/runtime-model", "runtime-provider/runtime-reasoning-model"])),
 			modelPatternFallbackRole: "subagent:deferred",
@@ -235,16 +235,14 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		try {
 			expect(session.model?.provider).toBe("runtime-provider");
 			expect(session.model?.id).toBe("runtime-model");
-			expect(session.settings.getModelRole("subagent:deferred")).toBe("runtime-provider/runtime-model");
-			expect(session.settings.get("retry.fallbackChains")["subagent:deferred"]).toEqual([
-				"runtime-provider/runtime-reasoning-model",
-			]);
+			expect(session.settings.getModelRole("subagent:deferred")).toBeUndefined();
+			expect(session.settings.get("retry.fallbackChains")["subagent:deferred"]).toBeUndefined();
 		} finally {
 			await session.dispose();
 		}
 	});
 
-	test("splits deferred comma-delimited modelPattern and installs fallback chain", async () => {
+	test("splits deferred comma-delimited modelPattern without installing a fallback chain", async () => {
 		const { session } = await createAgentSession({
 			...(await buildSessionOptions("runtime-provider/runtime-model,runtime-provider/runtime-reasoning-model")),
 			modelPatternFallbackRole: "subagent:deferred",
@@ -253,10 +251,8 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		try {
 			expect(session.model?.provider).toBe("runtime-provider");
 			expect(session.model?.id).toBe("runtime-model");
-			expect(session.settings.getModelRole("subagent:deferred")).toBe("runtime-provider/runtime-model");
-			expect(session.settings.get("retry.fallbackChains")["subagent:deferred"]).toEqual([
-				"runtime-provider/runtime-reasoning-model",
-			]);
+			expect(session.settings.getModelRole("subagent:deferred")).toBeUndefined();
+			expect(session.settings.get("retry.fallbackChains")["subagent:deferred"]).toBeUndefined();
 		} finally {
 			await session.dispose();
 		}

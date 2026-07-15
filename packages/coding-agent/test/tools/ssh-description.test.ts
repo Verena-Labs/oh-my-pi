@@ -2,11 +2,11 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
 import type { SourceMeta } from "@oh-my-pi/pi-coding-agent/capability/types";
 import * as discovery from "@oh-my-pi/pi-coding-agent/discovery";
-import type { SSHHostInfo } from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
-import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
-import * as sshExecutor from "@oh-my-pi/pi-coding-agent/ssh/ssh-executor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { loadSshTool } from "@oh-my-pi/pi-coding-agent/tools/ssh";
+import type { SSHHostInfo } from "../../src/ssh/connection-manager";
+import * as connectionManager from "../../src/ssh/connection-manager";
+import * as sshExecutor from "../../src/ssh/ssh-executor";
+import { loadSshTool } from "../../src/tools/ssh";
 
 const SOURCE: SourceMeta = {
 	provider: "test",

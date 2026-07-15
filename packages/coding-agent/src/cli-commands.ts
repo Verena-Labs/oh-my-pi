@@ -13,42 +13,31 @@ import { flagConsumesValue } from "./cli/flag-tables";
 
 export const commands: CommandEntry[] = [
 	{ name: "launch", load: () => import("./commands/launch").then(m => m.default) },
-	{ name: "acp", load: () => import("./commands/acp").then(m => m.default) },
-	{ name: "auth-broker", load: () => import("./commands/auth-broker").then(m => m.default) },
-	{ name: "auth-gateway", load: () => import("./commands/auth-gateway").then(m => m.default) },
 	{ name: "agents", load: () => import("./commands/agents").then(m => m.default) },
 	{ name: "bench", load: () => import("./commands/bench").then(m => m.default) },
-	{ name: "commit", load: () => import("./commands/commit").then(m => m.default) },
 	{ name: "completions", load: () => import("./commands/completions").then(m => m.default) },
 	{ name: "__complete", load: () => import("./commands/complete").then(m => m.default) },
 	{ name: "config", load: () => import("./commands/config").then(m => m.default) },
-	{ name: "dry-balance", load: () => import("./commands/dry-balance").then(m => m.default) },
 	{ name: "gc", load: () => import("./commands/gc").then(m => m.default) },
 	{ name: "grep", load: () => import("./commands/grep").then(m => m.default) },
 	{ name: "gallery", load: () => import("./commands/gallery").then(m => m.default) },
 	{ name: "grievances", load: () => import("./commands/grievances").then(m => m.default) },
 	{ name: "install", load: () => import("./commands/install").then(m => m.default) },
-	{ name: "join", load: () => import("./commands/join").then(m => m.default) },
 	{ name: "models", load: () => import("./commands/models").then(m => m.default) },
 	{ name: "plugin", load: () => import("./commands/plugin").then(m => m.default) },
-	{ name: "say", load: () => import("./commands/say").then(m => m.default) },
 	{ name: "setup", load: () => import("./commands/setup").then(m => m.default) },
 	{ name: "shell", load: () => import("./commands/shell").then(m => m.default) },
 	{ name: "read", load: () => import("./commands/read").then(m => m.default) },
-	{ name: "ssh", load: () => import("./commands/ssh").then(m => m.default) },
 	{ name: "stats", load: () => import("./commands/stats").then(m => m.default) },
-	{ name: "update", load: () => import("./commands/update").then(m => m.default) },
 	{ name: "usage", load: () => import("./commands/usage").then(m => m.default) },
 	{ name: "tiny-models", load: () => import("./commands/tiny-models").then(m => m.default) },
-	{ name: "token", load: () => import("./commands/token").then(m => m.default) },
-	{ name: "ttsr", load: () => import("./commands/ttsr").then(m => m.default) },
 	{ name: "worktree", load: () => import("./commands/worktree").then(m => m.default), aliases: ["wt"] },
 	{ name: "search", load: () => import("./commands/web-search").then(m => m.default), aliases: ["q"] },
 ];
 
 // Documented-looking plugin-management verbs that are NOT registered top-level
-// commands. Without a guard `resolveCliArgv` rewrites e.g. `omp list` to
-// `omp launch list`, silently forwarding the bare verb to the model as a prompt
+// commands. Without a guard `resolveCliArgv` rewrites e.g. `pi list` to
+// `pi launch list`, silently forwarding the bare verb to the model as a prompt
 // instead of managing plugins (#2935; same class as the `install` leak fixed in
 // #1496/#1498). A bare (single-arg) use gets a hint pointing at the real
 // `omp plugin <action>` command; multi-word invocations still fall through to
@@ -56,16 +45,30 @@ export const commands: CommandEntry[] = [
 const RESERVED_TOP_LEVEL_WORDS = new Map<string, string>([
 	[
 		"extensions",
-		'`omp extensions` is not a management command. Use `omp plugin list` / `omp plugin install`, or run `omp launch extensions` if you meant to send "extensions" as a prompt.',
+		'`pi extensions` is not a management command. Use `pi plugin list` / `pi plugin install`, or run `pi launch extensions` if you meant to send "extensions" as a prompt.',
 	],
 	[
 		"list",
-		'`omp list` is not a top-level command. Use `omp plugin list` to list installed plugins, or run `omp launch list` if you meant to send "list" as a prompt.',
+		'`pi list` is not a top-level command. Use `pi plugin list` to list installed plugins, or run `pi launch list` if you meant to send "list" as a prompt.',
 	],
 	[
 		"remove",
-		'`omp remove` is not a top-level command. Use `omp plugin uninstall <name>` to remove a plugin, or run `omp launch remove` if you meant to send "remove" as a prompt.',
+		'`pi remove` is not a top-level command. Use `pi plugin uninstall <name>` to remove a plugin, or run `pi launch remove` if you meant to send "remove" as a prompt.',
 	],
+]);
+
+const DISABLED_TOP_LEVEL_WORDS = new Map<string, string>([
+	["acp", "ACP is not available in Pi."],
+	["auth-broker", "Remote credential brokers are not available in Pi."],
+	["auth-gateway", "Remote credential gateways are not available in Pi."],
+	["commit", "The agentic commit wrapper is not available in Pi."],
+	["dry-balance", "Credential-pool balancing is not available in Pi."],
+	["join", "Live collaboration is not available in Pi."],
+	["say", "Text-to-speech narration is not available in Pi."],
+	["ssh", "Dedicated SSH commands are not available in Pi; ssh:// resources remain supported."],
+	["token", "Credential-pool token selection is not available in Pi."],
+	["ttsr", "TTSR rule forging is not available in Pi."],
+	["update", "Pi executable updates are owned by the pi-dotfiles repository."],
 ]);
 
 export function reservedTopLevelWordMessage(first: string | undefined, argc = 1): string | undefined {
@@ -103,6 +106,17 @@ function leadingSubcommandIndex(argv: string[]): number {
 	return -1;
 }
 
+/** Find the first positional command word without mistaking an option value for one. */
+function leadingCommandWord(argv: string[]): string | undefined {
+	for (let index = 0; index < argv.length; index += 1) {
+		const arg = argv[index];
+		if (arg === "--") return undefined;
+		if (!arg.startsWith("-")) return arg;
+		if (flagConsumesValue(arg, argv[index + 1])) index += 1;
+	}
+	return undefined;
+}
+
 /**
  * Decide what the CLI runner should do with raw argv: reject bare reserved
  * management words, pass help/version through untouched, route a recognized
@@ -112,6 +126,8 @@ function leadingSubcommandIndex(argv: string[]): number {
  */
 export function resolveCliArgv(argv: string[]): ResolvedCliArgv {
 	const first = argv[0];
+	const disabledMessage = DISABLED_TOP_LEVEL_WORDS.get(leadingCommandWord(argv) ?? "");
+	if (disabledMessage) return { error: disabledMessage };
 	const reservedMessage = reservedTopLevelWordMessage(first, argv.length);
 	if (reservedMessage) return { error: reservedMessage };
 	if (first === "--help" || first === "-h" || first === "--version" || first === "-v" || first === "help") {
@@ -119,7 +135,7 @@ export function resolveCliArgv(argv: string[]): ResolvedCliArgv {
 	}
 	if (isSubcommand(first)) return { argv };
 	// A subcommand can hide behind leading global option flags
-	// (`omp --approval-mode=yolo acp`). `run` dispatches strictly on argv[0], so
+	// (`pi --approval-mode=yolo models`). `run` dispatches strictly on argv[0], so
 	// hoist the subcommand to the front and keep the leading flags as its own
 	// argv; the command's parser then applies them. Genuine launch prompts (no
 	// trailing subcommand) are untouched.

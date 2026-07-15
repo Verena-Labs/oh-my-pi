@@ -25,7 +25,8 @@ function makeSessions(count: number): SessionInfo[] {
 	}));
 }
 
-describe("issue #3283: /resume picker scrolls down after deleting a session", () => {
+// Retained for OMP parity; the delete dialog cannot open in Pi's selector.
+describe.skip("OMP /resume delete-dialog scroll stability (unavailable in Pi)", () => {
 	it("keeps the picker header pinned at the same viewport row before and after a delete", async () => {
 		const term = new VirtualTerminal(80, 24, 4096);
 		const scheduler = new StressRenderScheduler();

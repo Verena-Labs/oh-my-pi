@@ -135,8 +135,8 @@ export const KEYBINDINGS = {
 		description: "Send follow-up message",
 	},
 	"app.retry": {
-		defaultKeys: "alt+r",
-		description: "Retry last failed assistant turn",
+		defaultKeys: [],
+		description: "Retry last failed assistant turn (unavailable in Pi)",
 	},
 	"app.message.dequeue": {
 		defaultKeys: "alt+up",
@@ -164,7 +164,7 @@ export const KEYBINDINGS = {
 	},
 	"app.session.tree": {
 		defaultKeys: [],
-		description: "Show session tree",
+		description: "Show session tree (unavailable in Pi)",
 	},
 	"app.session.fork": {
 		defaultKeys: [],

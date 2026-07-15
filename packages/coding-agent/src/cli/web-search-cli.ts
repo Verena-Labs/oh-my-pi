@@ -131,7 +131,7 @@ ${chalk.bold("Options:")}
   -h, --help          Show this help
 
 ${chalk.bold("Examples:")}
-  ${APP_NAME} q --provider=exa "what's the color of the sky"
-  ${APP_NAME} q --provider=brave --recency=week "latest TypeScript 5.7 changes"
+  ${APP_NAME} q --provider=duckduckgo "what's the color of the sky"
+  ${APP_NAME} q --provider=codex --recency=week "latest TypeScript changes"
 `);
 }

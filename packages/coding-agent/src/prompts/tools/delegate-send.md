@@ -1,4 +1,4 @@
-Sends a message to one of your worker sessions (by id from `vibe_spawn` / `vibe_list`). The session keeps its full conversation history — refer to earlier work naturally ("now do the same for the other module").
+Sends a message to one of your worker sessions (by id from `delegate_spawn` / `delegate_list`). The session keeps its full conversation history — refer to earlier work naturally ("now do the same for the other module").
 
 Returns immediately with an ack telling you how the message landed:
 

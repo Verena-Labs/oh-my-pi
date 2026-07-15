@@ -39,7 +39,7 @@ export interface ExportOptions {
 	outputPath?: string;
 	/**
 	 * Which color palette the export ships with.
-	 * - `"web"` (default) — the omp brand identity (collab-web pink/purple),
+	 * - `"web"` — the optional web palette retained for upstream compatibility.
 	 *   so public HTML exports and the `/s/<id>` share viewer match the live
 	 *   `my.omp.sh` client. See `web-palette.ts`.
 	 * - `"theme"` — derive from `themeName` (or the active TUI theme), preserving
@@ -51,7 +51,7 @@ export interface ExportOptions {
 	 * default `"web"` palette. Resolves to the active TUI theme when omitted.
 	 */
 	themeName?: string;
-	/** Embed subagent session transcripts found next to the session file (default true). */
+	/** Compatibility-only upstream option. Pi exports never embed subagent transcripts. */
 	includeSubSessions?: boolean;
 }
 
@@ -184,11 +184,15 @@ export interface SessionData {
 export function buildSessionData(sm: SessionManager, state?: AgentState): SessionData {
 	return {
 		header: sm.getHeader(),
-		entries: sm.getEntries(),
+		entries: sm.getBranch(),
 		leafId: sm.getLeafId(),
 		systemPrompt: state?.systemPrompt.join("\n\n"),
 		tools: state?.tools?.map(t => ({ name: t.name, description: t.description })),
 	};
+}
+
+function piIncludesSubSessions(_options: ExportOptions): boolean {
+	return false;
 }
 
 /**
@@ -199,7 +203,7 @@ export function buildSessionData(sm: SessionManager, state?: AgentState): Sessio
  * returned record are slash-joined ids relative to the main session ("ToolAsk", "ToolAsk/Helper").
  * Corrupt or empty files are skipped silently.
  */
-export async function collectSubSessions(sessionFile: string): Promise<Record<string, SubSession>> {
+async function collectSubSessions(sessionFile: string): Promise<Record<string, SubSession>> {
 	const result: Record<string, SubSession> = {};
 	if (!sessionFile.endsWith(".jsonl")) return result;
 	await collectSubSessionsFromDir(sessionFile.slice(0, -6), null, result);
@@ -264,12 +268,12 @@ export async function exportSessionToHtml(
 	if (!sessionFile) throw new Error("Cannot export in-memory session to HTML");
 
 	const sessionData = buildSessionData(sm, state);
-	if (opts.includeSubSessions !== false) {
+	if (piIncludesSubSessions(opts)) {
 		const subSessions = await collectSubSessions(sessionFile);
 		if (Object.keys(subSessions).length > 0) sessionData.subSessions = subSessions;
 	}
 
-	const palette = opts.palette ?? (opts.themeName ? "theme" : "web");
+	const palette = opts.palette ?? "theme";
 	const html = await generateHtml(sessionData, palette, opts.themeName);
 	const outputPath = opts.outputPath || `${APP_NAME}-session-${path.basename(sessionFile, ".jsonl")}.html`;
 
@@ -291,15 +295,15 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 
 	const sessionData: SessionData = {
 		header: sm.getHeader(),
-		entries: sm.getEntries(),
+		entries: sm.getBranch(),
 		leafId: sm.getLeafId(),
 	};
-	if (opts.includeSubSessions !== false) {
+	if (piIncludesSubSessions(opts)) {
 		const subSessions = await collectSubSessions(inputPath);
 		if (Object.keys(subSessions).length > 0) sessionData.subSessions = subSessions;
 	}
 
-	const palette = opts.palette ?? (opts.themeName ? "theme" : "web");
+	const palette = opts.palette ?? "theme";
 	const html = await generateHtml(sessionData, palette, opts.themeName);
 	const outputPath = opts.outputPath || `${APP_NAME}-session-${path.basename(inputPath, ".jsonl")}.html`;
 

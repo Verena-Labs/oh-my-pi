@@ -3,9 +3,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
-import { type AuthBrokerServerHandle, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
-import { runAuthBrokerCommand } from "@oh-my-pi/pi-coding-agent/cli/auth-broker-cli";
 import { getAgentDbPath, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import { type AuthBrokerServerHandle, startAuthBroker } from "../../ai/src/auth-broker";
+import { runAuthBrokerCommand } from "../src/cli/auth-broker-cli";
 
 const ORIGINAL_STDOUT_WRITE = process.stdout.write.bind(process.stdout);
 
@@ -18,7 +18,7 @@ function silenceStdout(): () => string {
 	return () => captured;
 }
 
-describe("auth-broker import (CLIProxyAPI)", () => {
+describe("local CLIProxyAPI credential import (retained in Pi)", () => {
 	let agentDir = "";
 	let cliproxyDir = "";
 	let originalAgentDir: string | undefined;
@@ -187,7 +187,7 @@ describe("auth-broker import (CLIProxyAPI)", () => {
 	});
 });
 
-describe("auth-broker import (broker-routed)", () => {
+describe.skip("dormant OMP auth-broker import routing (disabled in Pi)", () => {
 	let agentDir = "";
 	let brokerAgentDir = "";
 	let cliproxyDir = "";

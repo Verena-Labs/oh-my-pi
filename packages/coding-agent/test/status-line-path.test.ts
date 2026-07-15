@@ -33,7 +33,7 @@ function createPathContext(): SegmentContext {
 		loopMode: null,
 		prewalk: null,
 		goalMode: null,
-		vibeMode: null,
+		delegateMode: null,
 		collab: null,
 		usageStats: {
 			input: 0,

@@ -116,6 +116,7 @@ describe("runSubprocess yield reminders", () => {
 		id: "subagent-1",
 		settings: Settings.isolated(),
 		modelRegistry: {
+			authStorage: { enforceSingleCredentialPolicy: () => {} },
 			refresh: async () => {},
 		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry,
 		enableLsp: false,
@@ -191,6 +192,7 @@ describe("runSubprocess yield reminders", () => {
 		});
 		const createAgentSessionSpy = mockCreateAgentSession(session);
 		const modelRegistry = {
+			authStorage: { enforceSingleCredentialPolicy: () => {} },
 			refresh: async () => {},
 		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry;
 		const refreshSpy = vi.spyOn(modelRegistry, "refresh");
@@ -450,6 +452,7 @@ describe("runSubprocess yield reminders", () => {
 		const createAgentSessionSpy = mockCreateAgentSession(session);
 
 		const modelRegistry = {
+			authStorage: { enforceSingleCredentialPolicy: () => {} },
 			refresh: async () => {},
 			getAvailable: () => [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
 		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry;
@@ -571,7 +574,10 @@ describe("runSubprocess yield reminders", () => {
 			});
 		});
 		const createAgentSessionSpy = mockCreateAgentSession(session);
-		const fakeAuthStorage = { sentinel: "registry-storage" } as unknown as AuthStorage;
+		const fakeAuthStorage = {
+			sentinel: "registry-storage",
+			enforceSingleCredentialPolicy: () => {},
+		} as unknown as AuthStorage;
 		const modelRegistry = {
 			authStorage: fakeAuthStorage,
 			refresh: async () => {},
@@ -586,8 +592,14 @@ describe("runSubprocess yield reminders", () => {
 	it("rejects when options.authStorage and options.modelRegistry.authStorage are different instances", async () => {
 		// Mismatch fails via runSubprocess's standard catch path (exitCode=1 + stderr), not a thrown promise.
 		const createAgentSessionSpy = vi.spyOn(sdkModule, "createAgentSession");
-		const registryStorage = { sentinel: "registry" } as unknown as AuthStorage;
-		const otherStorage = { sentinel: "other" } as unknown as AuthStorage;
+		const registryStorage = {
+			sentinel: "registry",
+			enforceSingleCredentialPolicy: () => {},
+		} as unknown as AuthStorage;
+		const otherStorage = {
+			sentinel: "other",
+			enforceSingleCredentialPolicy: () => {},
+		} as unknown as AuthStorage;
 		const modelRegistry = {
 			authStorage: registryStorage,
 			refresh: async () => {},
@@ -662,6 +674,7 @@ describe("runSubprocess telemetry propagation", () => {
 		id: "subagent-telemetry",
 		settings: Settings.isolated(),
 		modelRegistry: {
+			authStorage: { enforceSingleCredentialPolicy: () => {} },
 			refresh: async () => {},
 		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry,
 		enableLsp: false,

@@ -89,19 +89,23 @@ describe("job list snapshot", () => {
 		// Task-style spawn: job id == agent id.
 		manager.register("task", "AgentA", neverResolves, { id: "AgentA", agentId: "AgentA", ownerId: "Main" });
 		registerRunningSub(registry, "AgentA");
-		// Vibe-style turn job: job id differs from the agent id; linkage via agentId.
-		manager.register("task", "vibe turn", neverResolves, { id: "vibe-1-t1", agentId: "vibe-1", ownerId: "Main" });
-		registerRunningSub(registry, "vibe-1");
+		// Delegate-style turn job: job id differs from the agent id; linkage via agentId.
+		manager.register("task", "delegate turn", neverResolves, {
+			id: "delegate-1-t1",
+			agentId: "delegate-1",
+			ownerId: "Main",
+		});
+		registerRunningSub(registry, "delegate-1");
 		// Woken via irc: running agent with no job at all.
 		registerRunningSub(registry, "Loner");
 		const tool = new JobTool(createToolSession({ manager, registry, agentId: "Main" }));
 
 		const result = await tool.execute("call", { list: true });
 
-		expect(result.details?.jobs.map(job => job.id).sort()).toEqual(["AgentA", "vibe-1-t1"]);
+		expect(result.details?.jobs.map(job => job.id).sort()).toEqual(["AgentA", "delegate-1-t1"]);
 		expect(result.details?.agents?.map(agent => agent.id)).toEqual(["Loner"]);
 		manager.cancel("AgentA");
-		manager.cancel("vibe-1-t1");
+		manager.cancel("delegate-1-t1");
 	});
 
 	test("a settled job in retention does not hide its re-woken agent", async () => {

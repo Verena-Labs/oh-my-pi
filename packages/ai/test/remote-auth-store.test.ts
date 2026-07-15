@@ -3,6 +3,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AuthStorage, REMOTE_REFRESH_SENTINEL, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
+import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
+import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai/usage";
+import { type } from "arktype";
+import { removeWithRetries } from "../../utils/src/temp";
 import {
 	AuthBrokerClient,
 	type AuthBrokerServerHandle,
@@ -11,12 +15,8 @@ import {
 	RemoteAuthCredentialStore,
 	type SnapshotResponse,
 	startAuthBroker,
-} from "@oh-my-pi/pi-ai/auth-broker";
-import { snapshotResponseSchema } from "@oh-my-pi/pi-ai/auth-broker/wire-schemas";
-import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
-import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai/usage";
-import { type } from "arktype";
-import { removeWithRetries } from "../../utils/src/temp";
+} from "../src/auth-broker";
+import { snapshotResponseSchema } from "../src/auth-broker/wire-schemas";
 
 function requireLimit(report: UsageReport, id: string): UsageLimit {
 	const limit = report.limits.find(candidate => candidate.id === id);
@@ -27,7 +27,7 @@ function requireLimit(report: UsageReport, id: string): UsageLimit {
 const ANTHROPIC_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"] as const;
 const savedEnv: Partial<Record<(typeof ANTHROPIC_ENV)[number], string | undefined>> = {};
 
-describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
+describe.skip("dormant OMP RemoteAuthCredentialStore routing (disabled in Pi)", () => {
 	let tempDir = "";
 	let serverStore: SqliteAuthCredentialStore | undefined;
 	let serverStorage: AuthStorage | undefined;

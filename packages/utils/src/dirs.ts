@@ -1,12 +1,13 @@
 /**
- * Centralized path helpers for omp config directories.
+ * Centralized path helpers for downstream Pi config directories.
  *
- * Uses PI_CONFIG_DIR (default ".omp") for the config root and
- * PI_CODING_AGENT_DIR to override the agent directory.
+ * Pi uses one config root (`~/.pi`) and one agent directory (`~/.pi/agent`).
+ * Legacy OMP profile and alternate-home environment variables are retained as
+ * dormant compatibility inputs but never select runtime state.
  *
  * On Linux, if XDG_DATA_HOME / XDG_STATE_HOME / XDG_CACHE_HOME environment
- * variables are set, paths are redirected to XDG-compliant locations under
- * $XDG_*_HOME/omp/. This requires running `omp config migrate` first to
+ * variables are set, paths are redirected to XDG-compliant Pi locations.
+ * This requires running `pi config migrate` first to
  * move data to the new locations. No filesystem existence checks are performed
  * — if the env var is set, omp trusts that the migration has been done.
  */
@@ -16,17 +17,23 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { engines, version } from "../package.json" with { type: "json" };
 
-/** App name (e.g. "omp") */
-export const APP_NAME: string = "omp";
+/** Public downstream product name. */
+export const APP_NAME: string = "pi";
 
-/** Config directory name (e.g. ".omp") */
-export const CONFIG_DIR_NAME: string = ".omp";
+/** Single default config root below the user's home directory. */
+export const CONFIG_DIR_NAME: string = ".pi";
 
 /** Ordered main settings filenames: canonical write target first, legacy-compatible YAML fallback second. */
 export const MAIN_CONFIG_FILENAMES = ["config.yml", "config.yaml"] as const;
 
 /** Version (e.g. "1.0.0") */
 export const VERSION: string = version;
+
+/** Immutable upstream OMP snapshot carried by this downstream build. */
+export const OMP_BASE_SNAPSHOT = "3047c27c33";
+
+/** Public build identity: downstream product version plus its OMP base pin. */
+export const DISTRIBUTION_VERSION = `${VERSION}+pi.base.${OMP_BASE_SNAPSHOT}`;
 
 /** Minimum Bun version */
 export const MIN_BUN_VERSION: string = engines.bun.replace(/[^0-9.]/g, "");
@@ -63,7 +70,7 @@ export function normalizeProfileName(profile: string | undefined): string | unde
 		WINDOWS_RESERVED_BASENAME_RE.test(normalized)
 	) {
 		throw new Error(
-			`Invalid OMP profile "${profile}". Profile names must match ${PROFILE_NAME_RE.source}, ` +
+			`Invalid Pi profile "${profile}". Profile names must match ${PROFILE_NAME_RE.source}, ` +
 				`cannot be "." or "..", cannot end with ".", and cannot be a Windows reserved device name ` +
 				`(CON, PRN, AUX, NUL, COM0-9, LPT0-9, or any of those with an extension).`,
 		);
@@ -93,8 +100,9 @@ function getProfileFromEnv(): string | undefined {
  * crash a bare `import` of this module with an uncaught stack trace before the
  * CLI's error handling is in scope. The default profile is used instead; the
  * CLI re-validates the env (see `runCli` in coding-agent/src/cli.ts) so the
- * user still gets a clean "Invalid OMP profile" message.
+ * user still gets a clean "Invalid Pi profile" message.
  */
+// biome-ignore lint/correctness/noUnusedVariables: retained dormant OMP profile parser for upstream replay compatibility.
 function readProfileFromEnvSafe(): string | undefined {
 	try {
 		return getProfileFromEnv();
@@ -202,9 +210,9 @@ export async function directoryExists(dir: string): Promise<boolean> {
 	}
 }
 
-/** Get the config directory name relative to home (e.g. ".omp" or PI_CONFIG_DIR override). */
+/** Get Pi's single config directory name relative to home. */
 export function getConfigDirName(): string {
-	return process.env.PI_CONFIG_DIR || CONFIG_DIR_NAME;
+	return CONFIG_DIR_NAME;
 }
 
 /** Get the config agent directory name relative to home (e.g. ".omp/agent" or PI_CONFIG_DIR + "/agent"). */
@@ -340,7 +348,10 @@ function resolvePreProfileAgentDir(
 	return isProfileDerivedAgentDir(profile ?? profileAgentDirSource, agentDirEnv) ? undefined : agentDirEnv;
 }
 
-let activeProfile = readProfileFromEnvSafe();
+// Named profiles are not part of Pi. Never adopt inherited OMP_PROFILE or
+// PI_PROFILE during module loading; the CLI reports those inputs cleanly and
+// SDK/direct imports remain pinned to the default Pi state root.
+let activeProfile: string | undefined;
 
 /**
  * Resolve the agent-dir override for the current `activeProfile` from the live
@@ -350,9 +361,7 @@ let activeProfile = readProfileFromEnvSafe();
  * {@link refreshDirsFromEnv} so both apply identical logic.
  */
 function resolveActiveAgentDirOverride(): string | undefined {
-	return activeProfile
-		? undefined
-		: resolvePreProfileAgentDir(undefined, process.env.PI_CODING_AGENT_DIR, readPiProfileFromEnvSafe());
+	return undefined;
 }
 
 let dirs = new DirResolver({
@@ -370,6 +379,7 @@ let dirs = new DirResolver({
  * — and refreshed on `setAgentDir`, since that call is the user explicitly
  * redefining the baseline.
  */
+// biome-ignore lint/correctness/noUnusedVariables: retained dormant OMP profile snapshot for upstream replay compatibility.
 let preProfileAgentDirEnv: string | undefined = resolvePreProfileAgentDir(
 	activeProfile,
 	process.env.PI_CODING_AGENT_DIR,
@@ -392,10 +402,7 @@ const RESOLVER_HOME = os.homedir();
  * `preProfileAgentDirEnv` snapshot is intentionally left untouched.
  */
 export function refreshDirsFromEnv(): void {
-	dirs = new DirResolver({
-		agentDirOverride: resolveActiveAgentDirOverride(),
-		profile: activeProfile,
-	});
+	dirs = new DirResolver();
 }
 
 // =============================================================================
@@ -409,10 +416,27 @@ export function getConfigRootDir(): string {
 
 /** Set the coding agent directory. Creates a fresh resolver, invalidating all cached paths. */
 export function setAgentDir(dir: string): void {
+	const expected = path.join(os.homedir(), CONFIG_DIR_NAME, "agent");
+	// OMP's test suite isolates state through this API. Keep that seam available
+	// only inside an actual Bun test-file process; normal SDK/direct imports stay
+	// pinned to Pi's one permanent agent directory.
+	const isBunTestProcess =
+		process.env.NODE_ENV === "test" && process.argv.some(arg => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(arg));
+	if (isBunTestProcess) {
+		activeProfile = undefined;
+		dirs = new DirResolver({ agentDirOverride: dir });
+		process.env.PI_CODING_AGENT_DIR = dir;
+		preProfileAgentDirEnv = dir;
+		for (const key of PROFILE_ENV_KEYS) delete process.env[key];
+		return;
+	}
+	if (normalizePathForComparison(dir) !== normalizePathForComparison(expected)) {
+		throw new Error(`Pi uses one agent directory at ${expected}; alternate agent directories are unavailable.`);
+	}
 	activeProfile = undefined;
-	dirs = new DirResolver({ agentDirOverride: dir });
-	process.env.PI_CODING_AGENT_DIR = dir;
-	preProfileAgentDirEnv = dir;
+	dirs = new DirResolver();
+	process.env.PI_CODING_AGENT_DIR = expected;
+	preProfileAgentDirEnv = expected;
 	for (const key of PROFILE_ENV_KEYS) {
 		delete process.env[key];
 	}
@@ -441,7 +465,7 @@ export function __resetProfileSnapshotForTests(): void {
  * back.
  */
 export function __resetDirsFromEnvForTests(): void {
-	activeProfile = readProfileFromEnvSafe();
+	activeProfile = undefined;
 	__resetProfileSnapshotForTests();
 	refreshDirsFromEnv();
 }
@@ -449,35 +473,14 @@ export function __resetDirsFromEnvForTests(): void {
 /** Activate a named profile. Passing undefined or "default" returns to the default profile. */
 export function setProfile(profile: string | undefined): void {
 	const next = normalizeProfileName(profile);
-	if (next && !activeProfile) {
-		// First activation of a named profile in this process: snapshot the
-		// current PI_CODING_AGENT_DIR so a later reset can restore the user's
-		// explicit override. Subsequent profile switches keep the original
-		// snapshot — the "pre-profile" baseline is the state before profiles
-		// entered the picture, not the state between two activations.
-		preProfileAgentDirEnv = resolvePreProfileAgentDir(
-			undefined,
-			process.env.PI_CODING_AGENT_DIR,
-			readPiProfileFromEnvSafe(),
-		);
+	if (next) {
+		throw new Error("Named profiles are unavailable in Pi.");
 	}
-	activeProfile = next;
-	if (activeProfile) {
-		dirs = new DirResolver({ profile: activeProfile });
-		process.env.OMP_PROFILE = activeProfile;
-		process.env.PI_PROFILE = activeProfile;
-		process.env.PI_CODING_AGENT_DIR = dirs.agentDir;
-	} else {
-		for (const key of PROFILE_ENV_KEYS) {
-			delete process.env[key];
-		}
-		if (preProfileAgentDirEnv === undefined) {
-			delete process.env.PI_CODING_AGENT_DIR;
-		} else {
-			process.env.PI_CODING_AGENT_DIR = preProfileAgentDirEnv;
-		}
-		dirs = new DirResolver({ agentDirOverride: preProfileAgentDirEnv });
-	}
+	activeProfile = undefined;
+	for (const key of PROFILE_ENV_KEYS) delete process.env[key];
+	delete process.env.PI_CODING_AGENT_DIR;
+	dirs = new DirResolver();
+	preProfileAgentDirEnv = undefined;
 }
 
 /** Get the active named profile. Undefined means the default profile. */
@@ -487,7 +490,9 @@ export function getActiveProfile(): string | undefined {
 
 /** Resolve the config root that backs a profile without activating it. */
 export function getProfileRootDir(profile: string | undefined): string {
-	return getProfileConfigRoot(normalizeProfileName(profile));
+	const normalized = normalizeProfileName(profile);
+	if (normalized) throw new Error("Named profiles are unavailable in Pi.");
+	return getProfileConfigRoot(undefined);
 }
 /** Get the agent config directory (~/.omp/agent). */
 export function getAgentDir(): string {
@@ -577,9 +582,9 @@ let worktreesDirOverride: string | undefined;
 
 /**
  * Relocate the base directory for agent-managed worktrees (PR checkouts, task
- * isolation, and `omp worktree` cleanup all read the same base). Driven by the
+ * isolation, and `pi worktree` cleanup all read the same base). Driven by the
  * `worktree.base` setting in coding-agent; pass `undefined`/empty to clear and
- * fall back to `OMP_WORKTREE_DIR` or the `~/.omp/wt` default.
+ * fall back to `PI_WORKTREE_DIR` or the `~/.pi/wt` default.
  *
  * `~` is expanded and a relative path is rejected (see {@link resolveWorktreeBase}).
  * Returns the absolute path that took effect, or `undefined` if the input was
@@ -593,13 +598,13 @@ export function setWorktreesDir(dir: string | undefined): string | undefined {
 
 /**
  * Get the agent-managed worktrees directory. Resolution order: the
- * `OMP_WORKTREE_DIR` env var, then the {@link setWorktreesDir} override (the
- * `worktree.base` setting), then the `~/.omp/wt` default. The env var and the
+ * `PI_WORKTREE_DIR` env var, then the {@link setWorktreesDir} override (the
+ * `worktree.base` setting), then the `~/.pi/wt` default. The env var and the
  * override are both `~`-expanded and must be absolute; a relative value is
  * ignored and resolution falls through.
  */
 export function getWorktreesDir(): string {
-	return resolveWorktreeBase(process.env.OMP_WORKTREE_DIR) ?? worktreesDirOverride ?? dirs.rootSubdir("wt", "data");
+	return resolveWorktreeBase(process.env.PI_WORKTREE_DIR) ?? worktreesDirOverride ?? dirs.rootSubdir("wt", "data");
 }
 
 /** Get the SSH control socket directory (~/.omp/ssh-control). */
@@ -640,7 +645,7 @@ export function getAutoQaDbDir(): string {
  * Stable 7-character hex digest of an absolute filesystem path.
  *
  * Used to pack the project identity into a single short fs-safe segment
- * (e.g. PR-checkout and task-isolation worktree dirs under `~/.omp/wt/`).
+ * (e.g. task-isolation worktree dirs under `~/.pi/wt/`).
  * Bun.hash is non-cryptographic — collision space is ~2^28, which is fine
  * for naming a handful of repos on a single machine. Same input on the
  * same Bun runtime yields the same output.
@@ -649,7 +654,7 @@ export function hashPath(absPath: string): string {
 	return Bun.hash(path.resolve(absPath)).toString(16).padStart(16, "0").slice(-7);
 }
 
-/** Get the path to a single worktree directory (~/.omp/wt/<segment>). */
+/** Get the path to a single worktree directory (~/.pi/wt/<segment>). */
 export function getWorktreeDir(segment: string): string {
 	return path.join(getWorktreesDir(), segment);
 }
@@ -802,7 +807,7 @@ export function getTerminalSessionsDir(agentDir?: string): string {
 
 /** Get the crash log path (~/.omp/agent/omp-crash.log). */
 export function getCrashLogPath(agentDir?: string): string {
-	return dirs.agentSubdir(agentDir, "omp-crash.log", "state");
+	return dirs.agentSubdir(agentDir, "pi-crash.log", "state");
 }
 
 /** Get the debug log path (~/.omp/agent/omp-debug.log). */

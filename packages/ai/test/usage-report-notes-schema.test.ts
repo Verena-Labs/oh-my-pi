@@ -11,8 +11,8 @@
 
 import { describe, expect, it } from "bun:test";
 import { usageReportSchema } from "@oh-my-pi/pi-ai";
-import { usageResponseSchema } from "@oh-my-pi/pi-ai/auth-broker/wire-schemas";
 import { type } from "arktype";
+import { usageResponseSchema } from "../src/auth-broker/wire-schemas";
 
 const DISCLAIMER = "OMP-observed spend only; OpenCode usage outside OMP is not included.";
 

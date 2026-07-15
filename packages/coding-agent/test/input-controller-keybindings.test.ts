@@ -57,6 +57,7 @@ async function createContext() {
 	let editorText = "";
 	const keyMap: Record<string, string[]> = {
 		"app.display.reset": ["ctrl+l"],
+		"app.history.search": ["ctrl+r"],
 		"app.model.selectTemporary": ["ctrl+y"],
 		"app.model.select": ["alt+m"],
 		"app.retry": ["alt+r"],
@@ -228,6 +229,20 @@ async function createContext() {
 }
 
 describe("InputController keybinding setup", () => {
+	it("routes the configured history-search action to the prompt-history picker", async () => {
+		const { InputController, ctx, editor, spies } = await createContext();
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+
+		expect(spies.setActionKeys).toHaveBeenCalledWith("app.history.search", ["ctrl+r"]);
+		expect(editor.onHistorySearch).toBeDefined();
+
+		editor.onHistorySearch?.();
+
+		expect(ctx.showHistorySearch).toHaveBeenCalledTimes(1);
+	});
+
 	it("registers model selector and display reset actions separately", async () => {
 		const { InputController, ctx, editor, spies } = await createContext();
 		const controller = new InputController(ctx);

@@ -3,15 +3,15 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AuthStorage, REMOTE_REFRESH_SENTINEL, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
+import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
+import { removeWithRetries } from "../../utils/src/temp";
 import {
 	AuthBrokerClient,
 	type AuthBrokerServerHandle,
 	AuthBrokerStreamUnsupportedError,
 	type SnapshotStreamEvent,
 	startAuthBroker,
-} from "@oh-my-pi/pi-ai/auth-broker";
-import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
-import { removeWithRetries } from "../../utils/src/temp";
+} from "../src/auth-broker";
 
 const ANTHROPIC_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"] as const;
 const savedEnv: Partial<Record<(typeof ANTHROPIC_ENV)[number], string | undefined>> = {};
@@ -27,7 +27,7 @@ function mintOAuthCredential(suffix: string, expires: number) {
 	};
 }
 
-describe("auth-broker wire surface", () => {
+describe.skip("dormant OMP auth-broker wire surface (disabled in Pi)", () => {
 	let tempDir = "";
 	let store: SqliteAuthCredentialStore | undefined;
 	let storage: AuthStorage | undefined;

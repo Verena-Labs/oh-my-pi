@@ -45,6 +45,12 @@ describe("buildAvailableSlashCommands", () => {
 			usage: "[account|active]",
 		});
 		expect(byName["reset-usage"]).toBeUndefined();
+		for (const disabled of ["share", "collab", "join", "leave"]) {
+			expect(byName[disabled]).toBeUndefined();
+		}
+		for (const retained of ["export", "plugins", "marketplace", "usage"]) {
+			expect(byName[retained]).toBeDefined();
+		}
 
 		expect(byName.fast.description).toBe("Toggle fast mode");
 		expect(byName["ext:hello"].description).toBe("Extension hello");
@@ -81,7 +87,7 @@ describe("buildAvailableSlashCommands", () => {
 		expect(commands.find(command => command.name === "notes")?.source).toBe("file");
 	});
 
-	test("classifies MCP prompts by path and bundled custom commands as custom", async () => {
+	test("classifies MCP prompts by path and retained bundled custom commands as custom", async () => {
 		const commands = await buildAvailableSlashCommands(
 			{
 				customCommands: [
@@ -92,10 +98,10 @@ describe("buildAvailableSlashCommands", () => {
 						command: { name: "server:prompt", description: "MCP prompt" },
 					},
 					{
-						path: "green.md",
-						resolvedPath: "green.md",
+						path: "bundled-example.md",
+						resolvedPath: "bundled-example.md",
 						source: "bundled",
-						command: { name: "green", description: "Bundled custom command" },
+						command: { name: "bundled-example", description: "Bundled custom command" },
 					},
 				],
 				skills: [],
@@ -107,7 +113,7 @@ describe("buildAvailableSlashCommands", () => {
 
 		const byName = Object.fromEntries(commands.map(command => [command.name, command]));
 		expect(byName["server:prompt"].source).toBe("mcp_prompt");
-		expect(byName.green.source).toBe("custom");
+		expect(byName["bundled-example"].source).toBe("custom");
 	});
 
 	test("keeps legacy custom command fixtures without a path classified as custom", async () => {
@@ -122,5 +128,59 @@ describe("buildAvailableSlashCommands", () => {
 		);
 
 		expect(commands.find(command => command.name === "legacy")?.source).toBe("custom");
+	});
+
+	test("filters Pi-disabled names across extension, custom, MCP prompt, and file sources", async () => {
+		let adoptedFileCommands: Array<{ name: string }> = [];
+		const commands = await buildAvailableSlashCommands(
+			{
+				extensionRunner: {
+					getRegisteredCommands: () => [
+						{ name: "retry", description: "disabled extension" },
+						{ name: "ssh:connect", description: "disabled namespaced extension" },
+						{ name: "autoresearch", description: "disabled autoresearch extension" },
+						{ name: "ext:allowed", description: "allowed extension" },
+					],
+				},
+				customCommands: [
+					{ command: { name: "shake", description: "disabled custom" } },
+					{ command: { name: "green", description: "disabled CI-green custom command" } },
+					{ path: "mcp:ssh/prompt", command: { name: "ssh:prompt", description: "disabled MCP prompt" } },
+					{
+						path: "mcp:green/loop",
+						command: { name: "green:loop", description: "disabled namespaced MCP prompt" },
+					},
+					{ command: { name: "custom:allowed", description: "allowed custom" } },
+				],
+				skills: [],
+				sessionManager: { getCwd: () => process.cwd() },
+				setSlashCommands(fileCommands: Array<{ name: string }>) {
+					adoptedFileCommands = fileCommands;
+				},
+			} as never,
+			async () => [
+				{ name: "move", description: "disabled file", content: "disabled", source: "test" },
+				{ name: "autoresearch:run", description: "disabled file", content: "disabled", source: "test" },
+				{ name: "file:allowed", description: "allowed file", content: "allowed", source: "test" },
+			],
+		);
+
+		expect(commands.map(command => command.name)).toContain("ext:allowed");
+		expect(commands.map(command => command.name)).toContain("custom:allowed");
+		expect(commands.map(command => command.name)).toContain("file:allowed");
+		for (const disabled of [
+			"retry",
+			"ssh:connect",
+			"autoresearch",
+			"shake",
+			"green",
+			"ssh:prompt",
+			"green:loop",
+			"move",
+			"autoresearch:run",
+		]) {
+			expect(commands.map(command => command.name)).not.toContain(disabled);
+		}
+		expect(adoptedFileCommands.map(command => command.name)).toEqual(["file:allowed"]);
 	});
 });

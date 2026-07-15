@@ -35,7 +35,7 @@ function createMoveContext(sourceDir: string) {
 	return { ctx, state, present };
 }
 
-describe("CommandController /move", () => {
+describe.skip("CommandController /move (dormant OMP behavior; disabled by Pi policy)", () => {
 	beforeAll(async () => {
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("Expected dark theme");

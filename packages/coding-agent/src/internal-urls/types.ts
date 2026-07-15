@@ -1,12 +1,28 @@
 /**
  * Types for the internal URL routing system.
  *
- * Internal URLs (`agent://`, `artifact://`, `history://`, `issue://`, `local://`, `mcp://`, `memory://`, `omp://`, `pr://`, `rule://`, `skill://`, `ssh://`, and `vault://`) are resolved by tools like read,
+ * Internal URLs (`agent://`, `artifact://`, `history://`, `local://`, `mcp://`, `memory://`, `pi://`, `skill://`, `ssh://`, and `vault://`) are resolved by tools like read,
  * providing access to agent outputs and server resources without exposing filesystem paths.
  */
 
 import type { Skill } from "../extensibility/skills";
 import type { LocalProtocolOptions } from "./local-protocol";
+
+/** The complete internal-resource protocol surface supported by Pi. */
+export const PI_INTERNAL_PROTOCOL_SCHEMES = [
+	"pi",
+	"agent",
+	"artifact",
+	"memory",
+	"local",
+	"vault",
+	"skill",
+	"mcp",
+	"history",
+	"ssh",
+] as const;
+
+export type PiInternalProtocolScheme = (typeof PI_INTERNAL_PROTOCOL_SCHEMES)[number];
 
 /**
  * Raw resource payload returned by protocol handlers. The `immutable` flag is
@@ -83,7 +99,7 @@ export interface InternalUrl extends URL {
 export interface ResolveContext {
 	/** Working directory of the calling session. */
 	cwd?: string;
-	/** Settings of the calling session (used by `issue://`/`pr://` for cache TTLs). */
+	/** Settings of the calling session. */
 	settings?: unknown;
 	/** Caller's abort signal. */
 	signal?: AbortSignal;
@@ -170,7 +186,7 @@ export interface ProtocolHandler {
 	 * host/path portion of a `scheme://` URL while the user composes a prompt.
 	 *
 	 * Implementations **MUST** be fast and local — this runs on every keystroke.
-	 * Schemes backed by network or external CLIs (issue://, pr://, vault://,
+	 * Schemes backed by network or external CLIs (vault://,
 	 * mcp://) omit it. The caller fuzzy-filters the returned set against the
 	 * partially typed `query`, so handlers return their full (bounded) candidate
 	 * list; `query` is provided only so handlers can scope expensive enumeration.

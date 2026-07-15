@@ -433,9 +433,9 @@ function handle(frame) {
 		await expect(client.setSubagentSubscription("events")).resolves.toBe("events");
 		await client.promptAndWait("Trigger subagent frames");
 		expect(await client.getSubagents()).toHaveLength(1);
-		expect(await client.getSubagentMessages({ sessionFile: "/tmp/subagent.jsonl" })).toMatchObject({
-			sessionFile: "/tmp/subagent.jsonl",
-		});
+		await expect(client.getSubagentMessages({ sessionFile: "/tmp/subagent.jsonl" })).rejects.toThrow(
+			"unavailable in Pi",
+		);
 
 		expect(lifecycleIds).toEqual(["SubagentA"]);
 		expect(progressTasks).toEqual(["Do work"]);

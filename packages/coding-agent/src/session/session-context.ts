@@ -18,6 +18,10 @@ const LEGACY_SNAPCOMPACT_FRAME_COUNT_GUARD = 16;
 const LEGACY_SNAPCOMPACT_ARCHIVE_TEXT_GUARD = 250_000;
 const LEGACY_SNAPCOMPACT_TRUNCATED_CHARS_GUARD = 1_000_000;
 
+function piAllowsExpandedCompactionPayloads(): boolean {
+	return false;
+}
+
 function hasLegacySnapcompactFrames(archive: snapcompact.Archive): boolean {
 	return archive.frames.some(frame => frame.font === undefined && frame.variant === undefined);
 }
@@ -150,6 +154,7 @@ function snapcompactHistoryBlocksForContext(
 	archive: snapcompact.Archive | undefined,
 	options: BuildSessionContextOptions | undefined,
 ) {
+	if (!piAllowsExpandedCompactionPayloads()) return undefined;
 	if (!archive) return undefined;
 	if (options?.transcript && options.collapseCompactedHistory) return undefined;
 	return snapcompact.historyBlocks(archive, snapcompactHistoryBlockOptions(archive, options));
@@ -372,6 +377,7 @@ export function buildSessionContext(
 		}
 	} else if (compaction) {
 		const providerPayload: ProviderPayload | undefined = (() => {
+			if (!piAllowsExpandedCompactionPayloads()) return undefined;
 			const candidate = compaction.preserveData?.openaiRemoteCompaction;
 			if (!candidate || typeof candidate !== "object") return undefined;
 			const remote = candidate as { provider?: unknown; replacementHistory?: unknown };

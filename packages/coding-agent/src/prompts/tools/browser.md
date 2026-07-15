@@ -37,7 +37,7 @@ Drives real Chromium tab; full puppeteer access via JS.
 - MUST `open` before `run` — `run` never creates a tab.
 - Default to `tab.observe()` for page state — structured data, actionable ids. Screenshot ONLY when appearance matters.
 - Navigation invalidates element ids — re-observe before use.
-- `code` runs with full Node access. Treat as your code, not sandboxed.
+- `code` runs in the browser-only host scope: `page`, `browser`, `tab`, `display`, `print`, `console`, `assert`, and `wait`. Eval helpers (`tool`, `completion`, `agent`, `parallel`, `pipeline`, `read`, `write`, `env`, etc.) and host Node/Bun access (`process`, `Bun`, `require`, imports, `fs`, host `fetch`/workers/sockets, `eval`, `Function`) are unavailable. Use `page`/`tab` Puppeteer APIs; `tab.evaluate`/`page.evaluate` run their callback in the page realm.
 </critical>
 
 <output>

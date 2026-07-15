@@ -11,6 +11,7 @@ import { EventLoopKeepalive } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
 	$env,
+	DISTRIBUTION_VERSION,
 	directoryExists,
 	getLogPath,
 	getProjectDir,
@@ -68,10 +69,8 @@ import {
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
 import type { AuthStorage } from "./session/auth-storage";
-import { describePendingToolCalls } from "./session/exit-diagnostics";
 import { resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { SessionManager } from "./session/session-manager";
-import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
 import { shouldShowStartupSplash } from "./startup-splash";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
@@ -87,7 +86,6 @@ import {
 	writeLastChangelogVersion,
 } from "./utils/changelog";
 import { EventBus } from "./utils/event-bus";
-import { withTimeoutSignal } from "./utils/fetch-timeout";
 
 type RunAcpMode = (createSession: AcpSessionFactory) => Promise<never>;
 type RunPrintMode = (session: AgentSession, options: PrintModeOptions) => Promise<void>;
@@ -99,29 +97,6 @@ type RunRpcMode = (
 
 export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string): void {
 	(parsedArgs.mode === "json" ? process.stderr : process.stdout).write(text);
-}
-
-async function checkForNewVersion(currentVersion: string): Promise<string | undefined> {
-	if (!settings.get("startup.checkUpdate")) {
-		return;
-	}
-	try {
-		const response = await fetch("https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/latest", {
-			signal: withTimeoutSignal(5_000),
-		});
-		if (!response.ok) return undefined;
-
-		const data = (await response.json()) as { version?: string };
-		const latestVersion = data.version;
-
-		if (latestVersion && Bun.semver.order(latestVersion, currentVersion) > 0) {
-			return latestVersion;
-		}
-
-		return undefined;
-	} catch {
-		return undefined;
-	}
 }
 
 // Todo settings are caller-controlled in protocol modes. Do not host-default them:
@@ -400,7 +375,6 @@ async function runInteractiveMode(
 	version: string,
 	changelogMarkdown: string | undefined,
 	notifs: (InteractiveModeNotify | null)[],
-	versionCheckPromise: Promise<string | undefined>,
 	initialMessages: string[],
 	setExtensionUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
 	lspServers: LspStartupServerInfo[] | undefined,
@@ -411,7 +385,6 @@ async function runInteractiveMode(
 	eventBus?: EventBus,
 	initialMessage?: string,
 	initialImages?: ImageContent[],
-	joinLink?: string,
 ): Promise<void> {
 	const mode = new InteractiveMode(
 		session,
@@ -456,17 +429,6 @@ async function runInteractiveMode(
 		await setupWizard.runSetupWizard(mode, setupScenes);
 	}
 
-	versionCheckPromise
-		.then(newVersion => {
-			if (!settings.get("startup.checkUpdate")) {
-				return;
-			}
-			if (newVersion) {
-				mode.showNewVersionNotification(newVersion);
-			}
-		})
-		.catch(() => {});
-
 	// Cold-launch cleanup: the first paint already clears native history, and this
 	// replay replaces the welcome/startup frame with the resumed/new transcript.
 	// Every in-process session load also uses `clearTerminalHistory`; cold launch
@@ -485,12 +447,6 @@ async function runInteractiveMode(
 		} else if (notify.kind === "info") {
 			mode.showStatus(notify.message);
 		}
-	}
-
-	// `omp join <link>`: dispatch through the same builtin path as a typed
-	// `/join` so collab guards and error rendering stay in one place.
-	if (joinLink !== undefined) {
-		await executeBuiltinSlashCommand(`/join ${joinLink}`, { ctx: mode });
 	}
 
 	if (initialMessage !== undefined) {
@@ -571,6 +527,10 @@ export class SessionResolutionError extends Error {
 	}
 }
 
+function piAllowsExtraSessionOperations(): boolean {
+	return false;
+}
+
 type MissingCwdMoveResult =
 	| { status: "not-needed" }
 	| { status: "declined" }
@@ -649,14 +609,11 @@ export async function createSessionManager(
 			throw new SessionResolutionError("--fork requires session persistence");
 		}
 		const forkSource = parsed.fork;
-		if (forkSource.includes("/") || forkSource.includes("\\") || forkSource.endsWith(".jsonl")) {
-			return await SessionManager.forkFrom(forkSource, cwd, parsed.sessionDir);
-		}
 		const match = await resolveResumableSession(forkSource, cwd, parsed.sessionDir);
 		if (!match) {
 			throw new SessionResolutionError(
 				`Session "${forkSource}" not found.`,
-				"Run `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one.",
+				"Run `pi --resume` without an argument to pick from recent sessions, or `pi` to start a new one.",
 			);
 		}
 		return await SessionManager.forkFrom(match.session.path, cwd, parsed.sessionDir);
@@ -667,17 +624,22 @@ export async function createSessionManager(
 	}
 	if (typeof parsed.resume === "string") {
 		const sessionArg = parsed.resume;
-		if (sessionArg.includes("/") || sessionArg.includes("\\") || sessionArg.endsWith(".jsonl")) {
-			return await SessionManager.open(sessionArg, parsed.sessionDir);
-		}
 		const match = await resolveResumableSession(sessionArg, cwd, parsed.sessionDir);
 		if (!match) {
 			throw new SessionResolutionError(
 				`Session "${sessionArg}" not found.`,
-				"Run `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one.",
+				"Run `pi --resume` without an argument to pick from recent sessions, or `pi` to start a new one.",
 			);
 		}
-		if (match.scope === "local") {
+		const normalizedCwd = normalizePathForComparison(cwd);
+		const normalizedMatchCwd = normalizePathForComparison(match.session.cwd || cwd);
+		if (!piAllowsExtraSessionOperations() && (match.scope === "global" || normalizedCwd !== normalizedMatchCwd)) {
+			throw new SessionResolutionError(
+				`Session "${sessionArg}" not found in the current project.`,
+				"Run `pi --resume` without an argument to pick from this project's sessions.",
+			);
+		}
+		if (match.scope === "local" && piAllowsExtraSessionOperations()) {
 			const moveResult = await moveMissingCwdSessionIfNeeded(
 				sessionArg,
 				match.session,
@@ -693,8 +655,6 @@ export async function createSessionManager(
 			}
 		}
 		if (match.scope === "global") {
-			const normalizedCwd = normalizePathForComparison(cwd);
-			const normalizedMatchCwd = normalizePathForComparison(match.session.cwd || cwd);
 			if (normalizedCwd !== normalizedMatchCwd) {
 				const moveResult = await moveMissingCwdSessionIfNeeded(
 					sessionArg,
@@ -751,7 +711,7 @@ export async function createSessionManager(
 
 /** Discover SYSTEM.md file if no CLI system prompt was provided */
 function discoverSystemPromptFile(): string | undefined {
-	// Check project-local first (.omp/SYSTEM.md, .pi/SYSTEM.md legacy)
+	// Check project-local .pi/SYSTEM.md first.
 	const projectPath = findConfigFile("SYSTEM.md", { user: false });
 	if (projectPath) {
 		return projectPath;
@@ -1040,6 +1000,11 @@ export async function runRootCommand(
 	rawArgs: string[],
 	deps: RunRootCommandDependencies = DEFAULT_RUN_ROOT_DEPENDENCIES,
 ): Promise<void> {
+	if (parsed.mode === "acp" || parsed.join) {
+		process.stderr.write("Error: ACP and live collaboration are not available in Pi.\n");
+		process.exitCode = 2;
+		return;
+	}
 	logger.startTiming();
 	startStartupWatchdog();
 
@@ -1057,7 +1022,7 @@ export async function runRootCommand(
 	const modelRegistry = logger.time("modelRegistry:init", () => new ModelRegistry(authStorage));
 
 	if (parsedArgs.version) {
-		writeStartupNotice(parsedArgs, `${VERSION}\n`);
+		writeStartupNotice(parsedArgs, `${DISTRIBUTION_VERSION}\n`);
 		process.exit(0);
 	}
 
@@ -1224,24 +1189,13 @@ export async function runRootCommand(
 	// Handle --resume (no value): show session picker
 	if (parsedArgs.resume === true && !parsedArgs.fork) {
 		const folderSessions = await logger.time("SessionManager.list", SessionManager.list, cwd, parsedArgs.sessionDir);
-		let preloadedAllSessions: SessionInfo[] | undefined;
 		if (folderSessions.length === 0) {
-			// Probe globally so we can exit fast when the user has no sessions at
-			// all, but never auto-switch the picker into all-projects scope — that
-			// silently surfaced other projects' history when the cwd was empty
-			// (issue #3099). The preloaded list also makes the user's Tab switch
-			// instant on the way in.
-			preloadedAllSessions = await logger.time("SessionManager.listAll", SessionManager.listAll);
-			if (preloadedAllSessions.length === 0) {
-				writeStartupNotice(parsedArgs, `${chalk.dim("No sessions found")}\n`);
-				stopStartupWatchdog();
-				process.exit(0);
-			}
+			writeStartupNotice(parsedArgs, `${chalk.dim("No sessions found in this project")}\n`);
+			stopStartupWatchdog();
+			process.exit(0);
 		}
 		pauseStartupWatchdog();
-		const selected = await logger.time("selectSession", deps.selectSession ?? selectSession, folderSessions, {
-			allSessions: preloadedAllSessions,
-		});
+		const selected = await logger.time("selectSession", deps.selectSession ?? selectSession, folderSessions);
 		resumeStartupWatchdog();
 		if (!selected) {
 			writeStartupNotice(parsedArgs, `${chalk.dim("No session selected")}\n`);
@@ -1278,21 +1232,6 @@ export async function runRootCommand(
 			await settingsInstance.reloadForCwd(cwd);
 		}
 		sessionManager = await SessionManager.open(selected.path);
-	}
-
-	if (sessionManager && (parsedArgs.continue || parsedArgs.resume || parsedArgs.fork)) {
-		const pendingToolWarning = describePendingToolCalls(sessionManager.getBranch());
-		if (pendingToolWarning) {
-			logger.warn("Resumed session has pending tool calls", {
-				sessionId: sessionManager.getSessionId(),
-				sessionFile: sessionManager.getSessionFile(),
-			});
-			if (isInteractive) {
-				notifs.push({ kind: "warn", message: pendingToolWarning });
-			} else {
-				process.stderr.write(`${chalk.yellow(`${pendingToolWarning}\n`)}`);
-			}
-		}
 	}
 
 	await pluginPreloadPromise;
@@ -1477,7 +1416,6 @@ export async function runRootCommand(
 			stopStartupWatchdog();
 			await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, eventBus);
 		} else if (isInteractive) {
-			const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
 			const changelogMarkdown = await logger.time("main:getChangelogForDisplay", getChangelogForDisplay, parsedArgs);
 
 			const modelScopeNotification = buildModelScopeNotification(
@@ -1505,7 +1443,6 @@ export async function runRootCommand(
 				VERSION,
 				changelogMarkdown,
 				notifs,
-				versionCheckPromise,
 				initialArgs.messages,
 				setToolUIContext,
 				lspServers,
@@ -1516,7 +1453,6 @@ export async function runRootCommand(
 				eventBus,
 				initialMessage,
 				initialImages,
-				parsedArgs.join,
 			);
 		} else {
 			// Branch-only single-shot runner: keep print-mode code out of normal interactive startup.

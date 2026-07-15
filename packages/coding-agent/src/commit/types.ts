@@ -1,5 +1,5 @@
 /**
- * Types for the omp commit pipeline.
+ * Shared commit message and diff-analysis types retained by Pi.
  */
 export type CommitType =
 	| "feat"

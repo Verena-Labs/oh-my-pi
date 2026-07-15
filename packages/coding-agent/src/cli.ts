@@ -14,18 +14,12 @@ try {
  * CLI entry point — registers all commands explicitly and delegates to the
  * lightweight CLI runner from pi-utils.
  */
+import * as os from "node:os";
+import * as path from "node:path";
 import { parentPort } from "node:worker_threads";
 import type { CliConfig } from "@oh-my-pi/pi-utils/cli";
-import {
-	APP_NAME,
-	getActiveProfile,
-	MIN_BUN_VERSION,
-	resolveProfileEnv,
-	setProfile,
-	VERSION,
-} from "@oh-my-pi/pi-utils/dirs";
+import { APP_NAME, CONFIG_DIR_NAME, DISTRIBUTION_VERSION, MIN_BUN_VERSION, setProfile } from "@oh-my-pi/pi-utils/dirs";
 import { declareWorkerHostEntry, installWorkerInbox } from "@oh-my-pi/pi-utils/worker-host";
-import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
 
@@ -267,42 +261,34 @@ async function runTinyWorker(): Promise<void> {
 	await runIpcSubprocessWorker(startTinyTitleWorker);
 }
 
+function assertSinglePiStateRoot(): void {
+	const configDir = process.env.PI_CONFIG_DIR;
+	if (configDir !== undefined && configDir !== CONFIG_DIR_NAME) {
+		throw new Error(`Pi uses one state root at ~/${CONFIG_DIR_NAME}; PI_CONFIG_DIR cannot select another home.`);
+	}
+	const agentDir = process.env.PI_CODING_AGENT_DIR;
+	const expectedAgentDir = path.join(os.homedir(), CONFIG_DIR_NAME, "agent");
+	if (agentDir !== undefined && path.resolve(agentDir) !== expectedAgentDir) {
+		throw new Error(
+			`Pi uses one state root at ~/${CONFIG_DIR_NAME}; PI_CODING_AGENT_DIR must resolve to ${expectedAgentDir}.`,
+		);
+	}
+}
+
 /** Run the CLI with the given argv (no `process.argv` prefix). */
 export async function runCli(argv: string[]): Promise<void> {
 	let resolvedArgv = argv;
 	try {
 		const extracted = extractProfileFlags(resolvedArgv);
 		resolvedArgv = extracted.argv;
-		if (extracted.profile !== undefined) {
-			setProfile(extracted.profile);
-		} else {
-			// No explicit --profile: activate any OMP_PROFILE/PI_PROFILE inherited
-			// from the environment. Module-load resolution deliberately swallows an
-			// invalid value to avoid an uncaught throw before this try/catch is in
-			// scope (see `readProfileFromEnvSafe` in dirs.ts), and callers may set
-			// OMP_PROFILE after importing this module (profile aliases/tests). Surfacing
-			// validation here turns `OMP_PROFILE=.. omp --version` into a clean error;
-			// calling setProfile keeps every later path helper on the env-selected
-			// profile instead of the default agent directory.
-			setProfile(resolveProfileEnv(process.env.OMP_PROFILE, process.env.PI_PROFILE));
+		const profileEnvSelected = [process.env.OMP_PROFILE, process.env.PI_PROFILE].some(
+			value => value !== undefined && value.trim().length > 0,
+		);
+		if (extracted.profile !== undefined || extracted.aliasName !== undefined || profileEnvSelected) {
+			throw new Error("Named profiles and profile aliases are not available in Pi.");
 		}
-		if (extracted.aliasName !== undefined) {
-			const profile = extracted.profile ?? getActiveProfile();
-			if (!profile) {
-				throw new Error("--alias requires --profile <name> or OMP_PROFILE");
-			}
-			const result = await installProfileAlias({
-				profile,
-				aliasName: extracted.aliasName,
-				command: resolveProfileAliasCommandFromProcess(),
-			});
-			process.stdout.write(
-				`Created ${result.aliasName} for profile ${result.profile} in ${result.configPath}\n` +
-					`Restart your shell or run: ${result.reloadedWith}\n` +
-					`Then use: ${result.aliasName} update, ${result.aliasName} --version, or ${result.aliasName}\n`,
-			);
-			return;
-		}
+		assertSinglePiStateRoot();
+		setProfile(undefined);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		process.stderr.write(`Error: ${message}\n`);
@@ -347,7 +333,7 @@ export async function runCli(argv: string[]): Promise<void> {
 		process.exitCode = 1;
 		return;
 	}
-	return run({ bin: APP_NAME, version: VERSION, argv: resolved.argv, commands, help: showHelp });
+	return run({ bin: APP_NAME, version: DISTRIBUTION_VERSION, argv: resolved.argv, commands, help: showHelp });
 }
 
 // Floating call instead of top-level await: TLA forces `--bytecode` (CJS

@@ -50,17 +50,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function bindingForSubpath(identifier: string, subpath: string): string {
-	const segments = subpath
-		.split("/")
-		.filter(Boolean)
-		.map(segment =>
-			segment
-				.split(/[-_]/)
-				.filter(Boolean)
-				.map(part => part.charAt(0).toUpperCase() + part.slice(1))
-				.join(""),
-		);
-	return `bundled${identifier}${segments.join("")}`;
+	const encodedSubpath = [...subpath]
+		.map(character => (/^[A-Za-z0-9]$/.test(character) ? character : `_u${character.codePointAt(0)?.toString(16)}_`))
+		.join("");
+	return `bundled${identifier}${encodedSubpath}`;
 }
 
 function isSafeWildcardBasename(basename: string): boolean {
@@ -127,6 +120,7 @@ export async function collectBundledPiEntries(): Promise<BundledPiEntry[]> {
 
 		for (const exportKey in exportsField) {
 			if (!exportKey.startsWith("./") || exportKey === "." || exportKey.includes("*")) continue;
+			if (!exportImportTarget(exportsField[exportKey])) continue;
 			const subpath = exportKey.slice(2);
 			const key = `${manifest.name}/${subpath}`;
 			addEntry(key, bindingForSubpath(pkg.identifier, subpath), key);
@@ -153,6 +147,9 @@ export async function collectBundledPiEntries(): Promise<BundledPiEntry[]> {
 					const basename = match.slice(0, match.length - pattern.sourceSuffix.length);
 					if (!isSafeWildcardBasename(basename) || basename.includes("/")) continue;
 					const subpath = `${pattern.exportPrefix}${basename}${pattern.exportSuffix}`;
+					const exactExportKey = `./${subpath}`;
+					if (Object.hasOwn(exportsField, exactExportKey) && !exportImportTarget(exportsField[exactExportKey]))
+						continue;
 					const key = `${manifest.name}/${subpath}`;
 					addEntry(key, bindingForSubpath(pkg.identifier, subpath), key);
 				}

@@ -8,10 +8,11 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { loadCapability } from "@oh-my-pi/pi-coding-agent/discovery";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { addSSHHost, removeSSHHost, updateSSHHost } from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
-import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
-import { loadSshTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { getSSHConfigPath, TempDir } from "@oh-my-pi/pi-utils";
+import { addSSHHost, removeSSHHost, updateSSHHost } from "../src/ssh/config-writer";
+import * as connectionManager from "../src/ssh/connection-manager";
+import { loadSshTool } from "../src/tools/ssh";
 
 function createModel(): Model<"openai-responses"> {
 	return buildModel({

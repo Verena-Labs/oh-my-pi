@@ -1,5 +1,5 @@
 /**
- * Contracts: vibe worker-session registry lifecycle.
+ * Contracts: delegate worker-session registry lifecycle.
  *
  * 1. `spawn` returns immediately (session id + turn job id) while the turn
  *    runs in the background; the settled turn self-delivers a result carrying
@@ -19,13 +19,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { DelegateSessionRegistry } from "@oh-my-pi/pi-coding-agent/delegate/runtime";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentProgress, SingleResult } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { VibeSessionRegistry } from "@oh-my-pi/pi-coding-agent/vibe/runtime";
 
 function createSession(options: { manager?: AsyncJobManager } = {}): ToolSession {
 	return {
@@ -169,7 +169,7 @@ function progressSnapshot(id: string, overrides: Partial<AgentProgress> = {}): A
 	};
 }
 
-describe("vibe session registry", () => {
+describe("delegate session registry", () => {
 	const managers: AsyncJobManager[] = [];
 
 	function createManager(): AsyncJobManager {
@@ -181,7 +181,7 @@ describe("vibe session registry", () => {
 	beforeEach(() => {
 		AgentRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
-		VibeSessionRegistry.resetGlobalForTests();
+		DelegateSessionRegistry.resetGlobalForTests();
 	});
 
 	afterEach(async () => {
@@ -189,7 +189,7 @@ describe("vibe session registry", () => {
 		for (const manager of managers.splice(0)) {
 			await manager.dispose({ timeoutMs: 1000 });
 		}
-		VibeSessionRegistry.resetGlobalForTests();
+		DelegateSessionRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
 	});
@@ -223,7 +223,7 @@ describe("vibe session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = VibeSessionRegistry.global();
+		const registry = DelegateSessionRegistry.global();
 
 		const { id, jobId } = await registry.spawn(session, { cli: "fast", name: "Fast", prompt: "Build the widget." });
 		expect(id).toBe("Fast");
@@ -239,7 +239,7 @@ describe("vibe session registry", () => {
 		expect(job.status).toBe("completed");
 		const text = job.resultText ?? "";
 		// Envelope + summarized activity (compressed tool trace, oldest first) + response.
-		expect(text).toContain('<vibe-turn session="Fast" cli="fast" turn="1" status="completed"');
+		expect(text).toContain('<delegate-turn session="Fast" cli="fast" turn="1" status="completed"');
 		expect(text).toContain('model="prov/fast-model"');
 		expect(text.indexOf("read(src/foo.ts)")).toBeGreaterThan(-1);
 		expect(text.indexOf("read(src/foo.ts)")).toBeLessThan(text.indexOf("bash(bun test)"));
@@ -274,7 +274,7 @@ describe("vibe session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = VibeSessionRegistry.global();
+		const registry = DelegateSessionRegistry.global();
 		const { jobId } = await registry.spawn(session, { cli: "good", name: "Good", prompt: "Design it." });
 		await pollUntil(() => AgentRegistry.global().get("Good") !== undefined);
 
@@ -325,7 +325,7 @@ describe("vibe session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = VibeSessionRegistry.global();
+		const registry = DelegateSessionRegistry.global();
 		const spawn = await registry.spawn(session, { cli: "fast", name: "Fast", prompt: "First task." });
 		gate.resolve();
 		await manager.getJob(spawn.jobId)!.promise;
@@ -396,7 +396,7 @@ describe("vibe session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = VibeSessionRegistry.global();
+		const registry = DelegateSessionRegistry.global();
 		const fast = await registry.spawn(session, { cli: "fast", name: "Fast", prompt: "Task A." });
 		const good = await registry.spawn(session, { cli: "good", name: "Good", prompt: "Task B." });
 		await pollUntil(() => gates.size === 2);
@@ -440,7 +440,7 @@ describe("vibe session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = VibeSessionRegistry.global();
+		const registry = DelegateSessionRegistry.global();
 		const { jobId } = await registry.spawn(session, { cli: "fast", name: "Fast", prompt: "Task A." });
 		await pollUntil(() => AgentRegistry.global().get("Fast") !== undefined);
 
@@ -483,7 +483,7 @@ describe("vibe session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = VibeSessionRegistry.global();
+		const registry = DelegateSessionRegistry.global();
 		const { jobId } = await registry.spawn(session, { cli: "fast", name: "Doomed", prompt: "Never mind." });
 		await pollUntil(() => AgentRegistry.global().get("Doomed") !== undefined);
 
@@ -517,7 +517,7 @@ describe("vibe session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = VibeSessionRegistry.global();
+		const registry = DelegateSessionRegistry.global();
 		await registry.spawn(session, { cli: "fast", name: "One", prompt: "A." });
 		await registry.spawn(session, { cli: "good", name: "Two", prompt: "B." });
 		await pollUntil(() => gates.size === 2);

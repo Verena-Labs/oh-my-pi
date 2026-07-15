@@ -32,11 +32,11 @@ describe("discoverAgents — claude-plugins disabled provider", () => {
 		fs.mkdirSync(agentsDir, { recursive: true });
 		fs.writeFileSync(path.join(agentsDir, "simplifier.md"), PLUGIN_AGENT_MD);
 
-		// Register the plugin in the Claude registry so listClaudePluginRoots picks it up.
-		const claudePluginsDir = path.join(tempHome, ".claude", "plugins");
-		fs.mkdirSync(claudePluginsDir, { recursive: true });
+		// Register the Claude-compatible plugin in Pi's owned marketplace registry.
+		const piPluginsDir = path.join(tempHome, ".pi", "plugins");
+		fs.mkdirSync(piPluginsDir, { recursive: true });
 		fs.writeFileSync(
-			path.join(claudePluginsDir, "installed_plugins.json"),
+			path.join(piPluginsDir, "installed_plugins.json"),
 			JSON.stringify({
 				version: 2,
 				plugins: {

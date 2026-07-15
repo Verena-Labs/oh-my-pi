@@ -5,15 +5,15 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Context, Message } from "@oh-my-pi/pi-ai";
+import { type } from "arktype";
 import {
 	deobfuscateAgentMessages,
 	deobfuscateToolArguments,
 	obfuscateMessages,
 	obfuscateProviderContext,
 	SecretObfuscator,
-} from "@oh-my-pi/pi-coding-agent/secrets/obfuscator";
-import { compileSecretRegex } from "@oh-my-pi/pi-coding-agent/secrets/regex";
-import { type } from "arktype";
+} from "../src/secrets/obfuscator";
+import { compileSecretRegex } from "../src/secrets/regex";
 
 describe("compileSecretRegex", () => {
 	it("adds global flag when not provided", () => {

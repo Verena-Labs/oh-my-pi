@@ -8,11 +8,12 @@ import * as util from "node:util";
 
 import { logger } from "@oh-my-pi/pi-utils";
 
+import { BrowserRealm } from "./browser-realm";
 import { createHelpers, type HelperBundle } from "./helpers";
 import { awaitMaybePromise, indirectEval } from "./indirect-eval";
 import { LocalModuleLoader } from "./local-module-loader";
 import { JAVASCRIPT_PRELUDE_SOURCE } from "./prelude";
-import { wrapCode } from "./rewrite-imports";
+import { wrapBrowserCode, wrapCode } from "./rewrite-imports";
 import type { JsDisplayOutput, JsStatusEvent } from "./types";
 
 /**
@@ -22,7 +23,7 @@ import type { JsDisplayOutput, JsStatusEvent } from "./types";
 export interface RuntimeHooks {
 	onText(chunk: string): void;
 	onDisplay(output: JsDisplayOutput): void;
-	callTool(name: string, args: unknown): Promise<unknown>;
+	callTool?(name: string, args: unknown): Promise<unknown>;
 }
 
 export interface RunContext {
@@ -36,6 +37,8 @@ export interface RunContext {
 export interface RuntimeOptions {
 	initialCwd: string;
 	sessionId: string;
+	/** Selects which user-facing globals are installed. Defaults to the full eval prelude. */
+	profile?: "eval" | "browser";
 	/**
 	 * Extra globals installed alongside `__omp_helpers__` / prelude. Use for stable, lifetime-
 	 * of-the-worker bindings (e.g. browser's `page`, `browser`). Per-run scope should be set
@@ -74,6 +77,8 @@ const PRELUDE_GLOBAL_KEYS = [
 	"write",
 	"env",
 ];
+
+const BROWSER_RUN_SCOPE_KEYS = new Set(["page", "browser", "tab", "assert", "wait"]);
 
 function isStrictBase64(s: string): boolean {
 	if (s.length === 0 || s.length % 4 !== 0) return false;
@@ -161,28 +166,34 @@ export class JsRuntime {
 		activateGlobalOwner(this.#globalOwner, this.#ownedGlobalKeys, action);
 	}
 
-	readonly helpers: HelperBundle;
+	readonly helpers: HelperBundle | undefined;
+	readonly #profile: "eval" | "browser";
 	#cwd: string;
 	#session: { cwd: string; sessionId: string };
 	readonly sessionId: string;
-	#env: Map<string, string>;
+	#env: Map<string, string> | undefined;
 	#als = new AsyncLocalStorage<RunContext>();
-	#moduleLoader: LocalModuleLoader;
+	#moduleLoader: LocalModuleLoader | undefined;
 	#localRoots: Record<string, string>;
+	#browserRealm: BrowserRealm | undefined;
 
 	constructor(opts: RuntimeOptions) {
+		this.#profile = opts.profile ?? "eval";
 		this.#cwd = opts.initialCwd;
 		this.#session = { cwd: opts.initialCwd, sessionId: opts.sessionId };
 		this.sessionId = opts.sessionId;
-		this.#env = new Map();
-		this.#moduleLoader = new LocalModuleLoader(this.sessionId);
+		this.#env = this.#profile === "eval" ? new Map() : undefined;
+		this.#moduleLoader = this.#profile === "eval" ? new LocalModuleLoader(this.sessionId) : undefined;
 		this.#localRoots = opts.localRoots ?? {};
-		this.helpers = createHelpers({
-			cwd: () => this.#activeCwd(),
-			env: this.#env,
-			localRoots: () => this.#localRoots,
-			emitStatus: event => this.#activeHooks("emitStatus")?.onDisplay({ type: "status", event }),
-		});
+		this.helpers =
+			this.#profile === "eval"
+				? createHelpers({
+						cwd: () => this.#activeCwd(),
+						env: this.#env!,
+						localRoots: () => this.#localRoots,
+						emitStatus: event => this.#activeHooks("emitStatus")?.onDisplay({ type: "status", event }),
+					})
+				: undefined;
 		this.#install(opts.extraGlobals);
 	}
 
@@ -201,6 +212,7 @@ export class JsRuntime {
 		// runtime's next run; run()/setRunScope still assert exclusive ownership.
 		this.#cwd = cwd;
 		this.#session.cwd = cwd;
+		if (this.#profile === "browser") return;
 		if (activeGlobalRunOwner === null || activeGlobalRunOwner === this.#globalOwner) {
 			this.#activateGlobals("set cwd");
 		}
@@ -212,6 +224,16 @@ export class JsRuntime {
 	 * cleanup it wants.
 	 */
 	setRunScope(scope: Record<string, unknown>): void {
+		if (this.#disposed) throw new Error("Cannot set run scope on a disposed JS runtime");
+		if (this.#profile === "browser") {
+			for (const key of Object.keys(scope)) {
+				if (!BROWSER_RUN_SCOPE_KEYS.has(key)) {
+					throw new TypeError(`${key} cannot be installed in a browser.run scope`);
+				}
+			}
+			this.#browserRealm!.setScope(scope);
+			return;
+		}
 		this.#activateGlobals("set run scope");
 		Object.assign(globalThis, scope);
 	}
@@ -220,10 +242,8 @@ export class JsRuntime {
 		code: string,
 		filename: string | undefined,
 		hooks: RuntimeHooks,
-		options: { runId?: string; cwd?: string } = {},
+		options: { runId?: string; cwd?: string; timeoutMs?: number } = {},
 	): Promise<unknown> {
-		this.#activateGlobals("run code");
-		const leaveRun = enterGlobalRun(this.#globalOwner, "run code");
 		const context: RunContext = {
 			runId: options.runId ?? crypto.randomUUID(),
 			hooks,
@@ -231,6 +251,32 @@ export class JsRuntime {
 			finalExpressionSet: false,
 			finalExpressionValue: undefined,
 		};
+		if (this.#profile === "browser") {
+			if (this.#disposed) throw new Error("Cannot run code on a disposed JS runtime");
+			const realm = this.#browserRealm!;
+			return await this.#als.run(context, async () => {
+				try {
+					const wrapped = await wrapBrowserCode(code);
+					const value = realm.run(wrapped.source, filename, options.timeoutMs);
+					if (wrapped.finalExpressionReturned) {
+						const awaited = await awaitMaybePromise(value);
+						if (context.finalExpressionSet) {
+							const finalValue = context.finalExpressionValue;
+							context.finalExpressionSet = false;
+							context.finalExpressionValue = undefined;
+							return await awaitMaybePromise(finalValue);
+						}
+						return awaited;
+					}
+					return await awaitMaybePromise(value);
+				} catch (error) {
+					throw realm.toHostError(error);
+				}
+			});
+		}
+
+		this.#activateGlobals("run code");
+		const leaveRun = enterGlobalRun(this.#globalOwner, "run code");
 		try {
 			return await this.#als.run(context, async () => {
 				const wrapped = await wrapCode(code);
@@ -301,14 +347,17 @@ export class JsRuntime {
 	}
 
 	#activeRequire(moduleUrlOrPath?: string): NodeJS.Require {
+		if (!this.#moduleLoader) throw new Error("Module loading is unavailable in this JavaScript runtime");
 		return this.#moduleLoader.requireForFile(moduleUrlOrPath, this.#activeCwd());
 	}
 
 	#moduleFilename(moduleUrlOrPath?: string): string {
+		if (!this.#moduleLoader) throw new Error("Module loading is unavailable in this JavaScript runtime");
 		return this.#moduleLoader.filenameForUrl(moduleUrlOrPath) ?? path.join(this.#activeCwd(), "[eval]");
 	}
 
 	#moduleDirname(moduleUrlOrPath?: string): string {
+		if (!this.#moduleLoader) throw new Error("Module loading is unavailable in this JavaScript runtime");
 		return this.#moduleLoader.dirnameForUrl(moduleUrlOrPath, this.#activeCwd());
 	}
 
@@ -329,26 +378,67 @@ export class JsRuntime {
 	}
 
 	#install(extraGlobals: Record<string, unknown> | undefined): void {
-		// Constructing a runtime while another same-realm runtime is mid-run would
-		// silently replace the live runtime's globals (Object.assign + prelude eval
-		// below). Fail before any global/stack mutation; WorkerCore reports it as
-		// init-failed instead of corrupting the active run.
+		const log = (level: string, ...args: unknown[]): void => {
+			const prefix = level === "error" ? "[error] " : level === "warn" ? "[warn] " : "";
+			const text = `${prefix}${formatConsoleArgs(args)}`;
+			this.#activeHooks("log")?.onText(text.endsWith("\n") ? text : `${text}\n`);
+		};
+		const table = (...args: unknown[]): void => {
+			const hooks = this.#activeHooks("table");
+			if (!hooks) return;
+			let buffer = "";
+			const stream = new Writable({
+				write(chunk, _enc, cb) {
+					buffer += typeof chunk === "string" ? chunk : (chunk as Buffer).toString("utf8");
+					cb();
+				},
+			});
+			const tableConsole = new Console({ stdout: stream, colorMode: false });
+			(tableConsole.table as (...a: unknown[]) => void)(...args);
+			hooks.onText(buffer.endsWith("\n") ? buffer : `${buffer}\n`);
+		};
+		const display = (value: unknown): void => this.displayValue(value);
+		const setFinalExpression = (value: unknown): void => {
+			const context = this.#als.getStore();
+			if (!context) {
+				logger.warn("js runtime final expression set outside an active run");
+				return;
+			}
+			context.finalExpressionSet = true;
+			context.finalExpressionValue = value;
+		};
+
+		if (this.#profile === "browser") {
+			for (const key of Object.keys(extraGlobals ?? {})) {
+				if (!BROWSER_RUN_SCOPE_KEYS.has(key)) {
+					throw new TypeError(`${key} cannot be installed in a browser.run runtime`);
+				}
+			}
+			this.#browserRealm = new BrowserRealm({ log, table, display, setFinalExpression });
+			if (extraGlobals) this.#browserRealm.setScope(extraGlobals);
+			return;
+		}
+
+		// Eval still uses process globals for persistent-cell semantics. Fail before
+		// mutating them if a different eval runtime is currently executing.
 		assertCanUseGlobalOwner(this.#globalOwner, "initialize a JS runtime");
 		const injected: Record<string, unknown> = {
+			__omp_log__: log,
+			__omp_table__: table,
+			__omp_display__: display,
+			__omp_set_final_expr__: setFinalExpression,
+			__omp_js_prelude_loaded__: false,
 			__omp_session__: this.#session,
 			__omp_helpers__: this.helpers,
-			__omp_call_tool__: async (name: string, args: unknown) => {
-				const hooks = this.#activeHooks("tool");
-				if (!hooks) return undefined;
-				return await hooks.callTool(name, args);
-			},
 			__omp_import__: async (source: string, options?: ImportCallOptions) => {
+				if (!this.#moduleLoader) throw new Error("Module loading is unavailable in this JavaScript runtime");
 				const resolved = await this.#moduleLoader.resolveForRun(this.#activeCwd(), source);
 				if (resolved.mode === "local") return resolved.value;
 				const target = resolved.target;
 				return options !== undefined ? await import(target, options) : await import(target);
 			},
 			__omp_import_from__: async (moduleUrl: string, source: string, options?: ImportCallOptions) => {
+				if (!this.#moduleLoader) throw new Error("Module loading is unavailable in this JavaScript runtime");
 				const resolved = await this.#moduleLoader.resolveForModule(moduleUrl, source, this.#activeCwd());
 				if (resolved.mode === "local") return resolved.value;
 				const target = resolved.target;
@@ -357,46 +447,20 @@ export class JsRuntime {
 			__omp_get_require__: (moduleUrl?: string) => this.#activeRequire(moduleUrl),
 			__omp_get_filename__: (moduleUrl?: string) => this.#moduleFilename(moduleUrl),
 			__omp_get_dirname__: (moduleUrl?: string) => this.#moduleDirname(moduleUrl),
+			require: this.#buildDynamicRequire(),
+			createRequire,
+			fs,
+			webcrypto: crypto,
+			__omp_call_tool__: async (name: string, args: unknown) => {
+				const hooks = this.#activeHooks("tool");
+				if (!hooks) return undefined;
+				if (!hooks.callTool) throw new Error("Tool bridge is unavailable in this JavaScript runtime");
+				return await hooks.callTool(name, args);
+			},
 			__omp_emit_status__: (op: string, data: Record<string, unknown> = {}) => {
 				const event: JsStatusEvent = { op, ...data };
 				this.#activeHooks("emitStatus")?.onDisplay({ type: "status", event });
 			},
-			__omp_log__: (level: string, ...args: unknown[]) => {
-				const prefix = level === "error" ? "[error] " : level === "warn" ? "[warn] " : "";
-				const text = `${prefix}${formatConsoleArgs(args)}`;
-				this.#activeHooks("log")?.onText(text.endsWith("\n") ? text : `${text}\n`);
-			},
-			__omp_table__: (...args: unknown[]) => {
-				const hooks = this.#activeHooks("table");
-				if (!hooks) return;
-				let buffer = "";
-				const stream = new Writable({
-					write(chunk, _enc, cb) {
-						buffer += typeof chunk === "string" ? chunk : (chunk as Buffer).toString("utf8");
-						cb();
-					},
-				});
-				const tableConsole = new Console({ stdout: stream, colorMode: false });
-				(tableConsole.table as (...a: unknown[]) => void)(...args);
-				hooks.onText(buffer.endsWith("\n") ? buffer : `${buffer}\n`);
-			},
-			__omp_display__: (value: unknown) => this.displayValue(value),
-			__omp_set_final_expr__: (value: unknown) => {
-				const context = this.#als.getStore();
-				if (!context) {
-					logger.warn("js runtime final expression set outside an active run");
-					return;
-				}
-				context.finalExpressionSet = true;
-				context.finalExpressionValue = value;
-			},
-			webcrypto: crypto,
-			// `process` is intentionally not overridden — user code gets the host worker's real
-			// `process` object. Subsetting it caused segfaults in workers that share state with
-			// puppeteer/worker_threads internals.
-			require: this.#buildDynamicRequire(),
-			createRequire,
-			fs,
 		};
 
 		const allGlobalKeys = new Set<string>([
@@ -410,8 +474,6 @@ export class JsRuntime {
 		}
 
 		Object.assign(globalThis, injected, extraGlobals ?? {});
-		// Prelude assigns console bridge + short aliases (`read`, `write`, `tool`, `display`, ...)
-		// onto globalThis. Must run after helpers are in place.
 		indirectEval(JAVASCRIPT_PRELUDE_SOURCE);
 		for (const key of allGlobalKeys) recordGlobalValue(key, this.#globalOwner);
 		RUN_HOOK_RESOLVERS.add(this.#runHookResolver);
@@ -421,6 +483,11 @@ export class JsRuntime {
 	dispose(): void {
 		if (this.#disposed) return;
 		this.#disposed = true;
+		if (this.#browserRealm) {
+			this.#browserRealm.dispose();
+			this.#browserRealm = undefined;
+			return;
+		}
 		RUN_HOOK_RESOLVERS.delete(this.#runHookResolver);
 		for (const key of this.#ownedGlobalKeys) releaseGlobalKey(key, this.#globalOwner);
 		this.#ownedGlobalKeys.clear();

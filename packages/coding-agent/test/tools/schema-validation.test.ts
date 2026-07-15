@@ -283,9 +283,12 @@ describe("tool schema validation (post-sanitization)", () => {
 		expect(description).toContain("Local path");
 		expect(description).toContain("internal URI");
 		expect(description).toContain("URL");
-		expect(description).toContain("omp://");
-		expect(description).toContain("issue://123");
-		expect(description).toContain("pr://123");
+		for (const selectedProtocol of ["pi://pi.md", "memory://root", "artifact://<id>"]) {
+			expect(description).toContain(selectedProtocol);
+		}
+		for (const disabledProtocol of ["issue://", "pr://", "rule://"]) {
+			expect(description).not.toContain(disabledProtocol);
+		}
 	});
 
 	it("bash schema and prompt advertise the timeout clamp and zero-disable", async () => {

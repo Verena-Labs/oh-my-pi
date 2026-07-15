@@ -6,6 +6,7 @@
  * - Registering providers (where to find it)
  * - Loading items for a capability across all providers
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
@@ -30,6 +31,16 @@ import type {
 /** Registry of all capabilities */
 const capabilities = new Map<string, Capability<unknown>>();
 
+/** OMP capability implementations retained for rebasing but absent from Pi's
+ * public discovery and loading surface. Providers may still register against
+ * these definitions during module initialization; no caller can enumerate or
+ * load them. */
+const PI_DISABLED_CAPABILITY_IDS: ReadonlySet<string> = new Set(["rules"]);
+
+function isPiDisabledCapability(capabilityId: string): boolean {
+	return PI_DISABLED_CAPABILITY_IDS.has(capabilityId);
+}
+
 /** Reverse index: provider ID -> capability IDs it's registered for */
 const providerCapabilities = new Map<string, Set<string>>();
 
@@ -41,6 +52,42 @@ const disabledProviders = new Set<string>();
 
 /** Settings manager for persistence (if set) */
 let settings: Settings | null = null;
+
+/**
+ * Request-local read view used while a reload discovers files against
+ * uncommitted candidate settings. Mutations intentionally bypass this view and
+ * continue to update only the committed process-global registry.
+ */
+interface CapabilityReadView {
+	readonly settings: Settings;
+	readonly disabledProviders: ReadonlySet<string>;
+}
+
+const capabilityReadScope = new AsyncLocalStorage<CapabilityReadView>();
+
+function getCapabilityReadSettings(): Settings | null {
+	return capabilityReadScope.getStore()?.settings ?? settings;
+}
+
+function getCapabilityReadDisabledProviders(): ReadonlySet<string> {
+	return capabilityReadScope.getStore()?.disabledProviders ?? disabledProviders;
+}
+
+/**
+ * Run host-owned capability discovery against a Settings snapshot without
+ * exposing that uncommitted policy to concurrent sessions. Callers must leave
+ * the scope before importing or executing user modules, because async work
+ * spawned by a callback inherits its AsyncLocalStorage context.
+ */
+export function runWithCapabilitySettings<T>(activeSettings: Settings, callback: () => T): T {
+	return capabilityReadScope.run(
+		{
+			settings: activeSettings,
+			disabledProviders: new Set(activeSettings.get("disabledProviders")),
+		},
+		callback,
+	);
+}
 
 // =============================================================================
 // Registration API
@@ -107,9 +154,10 @@ async function loadImpl<T>(
 	const allItems: Array<T & { _source: SourceMeta; _shadowed?: boolean }> = [];
 	const allWarnings: string[] = [];
 	const contributingProviders: string[] = [];
+	const readSettings = getCapabilityReadSettings();
 	const disabledExtensionIds = options.includeDisabled
 		? new Set<string>()
-		: new Set<string>(options.disabledExtensions ?? settings?.get("disabledExtensions") ?? []);
+		: new Set<string>(options.disabledExtensions ?? readSettings?.get("disabledExtensions") ?? []);
 
 	const results = await Promise.all(
 		providers.map(async provider => {
@@ -208,7 +256,8 @@ async function loadImpl<T>(
  * Filter providers based on options and disabled state.
  */
 function filterProviders<T>(capability: Capability<T>, options: LoadOptions): Provider<T>[] {
-	let providers = (capability.providers as Provider<T>[]).filter(p => !disabledProviders.has(p.id));
+	const readDisabledProviders = getCapabilityReadDisabledProviders();
+	let providers = (capability.providers as Provider<T>[]).filter(p => !readDisabledProviders.has(p.id));
 
 	if (options.providers) {
 		const allowed = new Set(options.providers);
@@ -226,6 +275,9 @@ function filterProviders<T>(capability: Capability<T>, options: LoadOptions): Pr
  * Load a capability by ID.
  */
 export async function loadCapability<T>(capabilityId: string, options: LoadOptions = {}): Promise<CapabilityResult<T>> {
+	if (isPiDisabledCapability(capabilityId)) {
+		throw new Error(`Unknown capability: "${capabilityId}"`);
+	}
 	const capability = capabilities.get(capabilityId) as Capability<T> | undefined;
 	if (!capability) {
 		throw new Error(`Unknown capability: "${capabilityId}"`);
@@ -287,14 +339,14 @@ export function enableProvider(providerId: string): void {
  * Check if a provider is enabled.
  */
 export function isProviderEnabled(providerId: string): boolean {
-	return !disabledProviders.has(providerId);
+	return !getCapabilityReadDisabledProviders().has(providerId);
 }
 
 /**
  * Get list of all disabled provider IDs.
  */
 export function getDisabledProviders(): string[] {
-	return Array.from(disabledProviders);
+	return Array.from(getCapabilityReadDisabledProviders());
 }
 
 /**
@@ -316,6 +368,7 @@ export function setDisabledProviders(providerIds: string[]): void {
  * Get a capability definition (for introspection).
  */
 export function getCapability<T>(id: string): Capability<T> | undefined {
+	if (isPiDisabledCapability(id)) return undefined;
 	return capabilities.get(id) as Capability<T> | undefined;
 }
 
@@ -323,16 +376,18 @@ export function getCapability<T>(id: string): Capability<T> | undefined {
  * List all registered capability IDs.
  */
 export function listCapabilities(): string[] {
-	return Array.from(capabilities.keys());
+	return Array.from(capabilities.keys()).filter(id => !isPiDisabledCapability(id));
 }
 
 /**
  * Get capability info for UI display.
  */
 export function getCapabilityInfo(capabilityId: string): CapabilityInfo | undefined {
+	if (isPiDisabledCapability(capabilityId)) return undefined;
 	const capability = capabilities.get(capabilityId);
 	if (!capability) return undefined;
 
+	const readDisabledProviders = getCapabilityReadDisabledProviders();
 	return {
 		id: capability.id,
 		displayName: capability.displayName,
@@ -342,7 +397,7 @@ export function getCapabilityInfo(capabilityId: string): CapabilityInfo | undefi
 			displayName: p.displayName,
 			description: p.description,
 			priority: p.priority,
-			enabled: !disabledProviders.has(p.id),
+			enabled: !readDisabledProviders.has(p.id),
 		})),
 	};
 }
@@ -361,10 +416,12 @@ export function getProviderInfo(providerId: string): ProviderInfo | undefined {
 	const meta = providerMeta.get(providerId);
 	const caps = providerCapabilities.get(providerId);
 	if (!meta || !caps) return undefined;
+	const publicCapabilities = Array.from(caps).filter(capabilityId => !isPiDisabledCapability(capabilityId));
+	if (publicCapabilities.length === 0) return undefined;
 
 	// Find priority from first capability's provider list
 	let priority = 0;
-	for (const capId of caps) {
+	for (const capId of publicCapabilities) {
 		const cap = capabilities.get(capId);
 		const provider = cap?.providers.find(p => p.id === providerId);
 		if (provider) {
@@ -378,8 +435,8 @@ export function getProviderInfo(providerId: string): ProviderInfo | undefined {
 		displayName: meta.displayName,
 		description: meta.description,
 		priority,
-		capabilities: Array.from(caps),
-		enabled: !disabledProviders.has(providerId),
+		capabilities: publicCapabilities,
+		enabled: !getCapabilityReadDisabledProviders().has(providerId),
 	};
 }
 

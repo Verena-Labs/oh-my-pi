@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolPathWithSource } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
@@ -18,6 +17,7 @@ import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/p
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import type { Rule } from "../../src/capability/rule";
 
 function createMockSession(onPrompt: (params: { emit: (event: AgentSessionEvent) => void }) => void): AgentSession {
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
@@ -88,13 +88,16 @@ const baseOptions = {
 	index: 0,
 	id: "subagent-pass-through",
 	settings: Settings.isolated(),
-	modelRegistry: { refresh: async () => {} } as unknown as ModelRegistry,
+	modelRegistry: {
+		authStorage: { enforceSingleCredentialPolicy: () => {} },
+		refresh: async () => {},
+	} as unknown as ModelRegistry,
 	enableLsp: false,
 };
 
 function createModelRegistry(model: Model): ModelRegistry {
 	return {
-		authStorage: {},
+		authStorage: { enforceSingleCredentialPolicy: () => {} },
 		refresh: async () => {},
 		getAvailable: () => [model],
 		getApiKey: async () => "test-key",

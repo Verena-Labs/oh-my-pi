@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import { HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storage";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { HistoryStorage } from "../src/session/history-storage";
 
 let tempDir: TempDir | null = null;
 
@@ -33,45 +33,43 @@ afterEach(async () => {
 	}
 });
 
-describe("HistoryStorage session linkage", () => {
-	it("persists the originating session id and surfaces it on recent + search", async () => {
+describe("Pi standalone prompt-history boundary", () => {
+	it("does not persist an explicit originating session id", async () => {
 		const { storage } = await freshStorage();
 		await flush(storage.add("deploy the service", "/repo", "session-abc"));
 
-		expect(storage.getRecent(10)[0]?.sessionId).toBe("session-abc");
-		expect(storage.search("deploy", 10)[0]?.sessionId).toBe("session-abc");
+		expect(storage.getRecent(10)[0]?.sessionId).toBeUndefined();
+		expect(storage.search("deploy", 10)[0]?.sessionId).toBeUndefined();
 	});
 
-	it("falls back to the session resolver when no explicit id is passed", async () => {
+	it("ignores the upstream session resolver", async () => {
 		const { storage } = await freshStorage();
 		storage.setSessionResolver(() => "resolved-session");
 		await flush(storage.add("run the tests", "/repo"));
 
-		expect(storage.getRecent(10)[0]?.sessionId).toBe("resolved-session");
+		expect(storage.getRecent(10)[0]?.sessionId).toBeUndefined();
 	});
 
-	it("prefers an explicit session id over the resolver", async () => {
+	it("suppresses both explicit and resolved session ids", async () => {
 		const { storage } = await freshStorage();
 		storage.setSessionResolver(() => "resolved-session");
 		await flush(storage.add("explicit wins", "/repo", "explicit-session"));
 
-		expect(storage.getRecent(10)[0]?.sessionId).toBe("explicit-session");
+		expect(storage.getRecent(10)[0]?.sessionId).toBeUndefined();
 	});
 
-	it("captures the session active at add() time, not at flush time", async () => {
+	it("does not capture changing session state during batched writes", async () => {
 		const { storage } = await freshStorage();
 		let current = "first-session";
 		storage.setSessionResolver(() => current);
-		// Both adds land in the same batch window; the session must be bound when
-		// each prompt is submitted, not when the shared batch is written.
 		const a = storage.add("prompt in first", "/repo");
 		current = "second-session";
 		const b = storage.add("prompt in second", "/repo");
 		await flush(a, b);
 
 		const byPrompt = new Map(storage.getRecent(10).map(e => [e.prompt, e.sessionId]));
-		expect(byPrompt.get("prompt in first")).toBe("first-session");
-		expect(byPrompt.get("prompt in second")).toBe("second-session");
+		expect(byPrompt.get("prompt in first")).toBeUndefined();
+		expect(byPrompt.get("prompt in second")).toBeUndefined();
 	});
 
 	it("normalizes an empty session id to null", async () => {
@@ -82,7 +80,7 @@ describe("HistoryStorage session linkage", () => {
 		expect(storage.getRecent(10)[0]?.sessionId).toBeUndefined();
 	});
 
-	it("adds session_id to a pre-existing schema and leaves legacy rows unstamped", async () => {
+	it("keeps schema compatibility while leaving legacy and new rows unstamped", async () => {
 		tempDir = TempDir.createSync("@omp-history-session-migrate-");
 		const dbPath = tempDir.join("history.db");
 		const legacyDb = new Database(dbPath);
@@ -103,7 +101,7 @@ describe("HistoryStorage session linkage", () => {
 
 		const byPrompt = new Map(storage.getRecent(10).map(e => [e.prompt, e.sessionId]));
 		expect(byPrompt.get("legacy prompt")).toBeUndefined();
-		expect(byPrompt.get("new prompt")).toBe("session-xyz");
+		expect(byPrompt.get("new prompt")).toBeUndefined();
 
 		const verify = new Database(dbPath, { readonly: true });
 		try {
@@ -115,8 +113,8 @@ describe("HistoryStorage session linkage", () => {
 	});
 });
 
-describe("HistoryStorage.matchingSessionIds", () => {
-	it("returns matching session ids ordered by recency, de-duplicated", async () => {
+describe("disabled HistoryStorage.matchingSessionIds integration", () => {
+	it("returns no session ids even when callers supply them", async () => {
 		const { storage } = await freshStorage();
 		await flush(
 			storage.add("deploy alpha", "/r", "sess-1"),
@@ -124,8 +122,7 @@ describe("HistoryStorage.matchingSessionIds", () => {
 			storage.add("deploy gamma", "/r", "sess-2"),
 		);
 
-		// Most recent matching prompt first; sess-1 appears once despite two prompts.
-		expect(storage.matchingSessionIds("deploy", 100)).toEqual(["sess-2", "sess-1"]);
+		expect(storage.matchingSessionIds("deploy", 100)).toEqual([]);
 	});
 
 	it("skips prompts that have no recorded session", async () => {

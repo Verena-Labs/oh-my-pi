@@ -315,8 +315,7 @@ describe("ModelHub", () => {
 
 			hub.handleInput(UP); // All models → Roles (since Recent is removed)
 			hub.handleInput("\n"); // dive into rows
-			hub.handleInput(UP); // wraps to the trailing "+ New fallback…" row
-			hub.handleInput(UP); // skips the section divider up to "+ New role…"
+			hub.handleInput(UP); // wraps to the trailing "+ New role…" row
 			hub.handleInput("\n");
 			expect(footerLine(hub.render(220))).toContain("New role name:");
 
@@ -342,7 +341,7 @@ describe("ModelHub", () => {
 			hub.handleInput("\n");
 			const strip = footerLine(hub.render(220));
 			expect(strip).toContain("default");
-			expect(strip).toContain("retry-fallback");
+			expect(strip).not.toContain("retry-fallback");
 
 			hub.handleInput("\n"); // assign to default (first chip)
 			expect(onAssign).toHaveBeenCalledTimes(1);
@@ -389,24 +388,17 @@ describe("ModelHub", () => {
 			expect(footerLine(hub.render(220))).not.toContain("inherit");
 		});
 
-		test("retry-fallback chip appends the model to the default chain without a thinking strip", () => {
-			const model = makeModel("test", "retry-fallback-model");
+		test("Pi omits retry-fallback chips from model assignment", () => {
+			const model = makeModel("test", "assignment-model");
 			const { hub, onAssign, onFallbackChainChange } = createHub({ models: [model], scoped: true });
 			installTestTheme();
 
 			hub.handleInput("\n");
-			hub.handleInput(LEFT); // wraps to the trailing retry-fallback chip
-			hub.handleInput("\n");
-
-			expect(onFallbackChainChange).toHaveBeenCalledWith("default", ["test/retry-fallback-model"]);
+			const footer = footerLine(hub.render(220));
+			expect(footer).not.toContain("fallback");
+			expect(footer).not.toContain("test/*");
 			expect(onAssign).not.toHaveBeenCalled();
-			expect(footerLine(hub.render(220))).not.toContain("inherit");
-
-			// A second registration of the same model is a no-op, not a duplicate.
-			hub.handleInput("\n");
-			hub.handleInput(LEFT);
-			hub.handleInput("\n");
-			expect(onFallbackChainChange).toHaveBeenCalledTimes(1);
+			expect(onFallbackChainChange).not.toHaveBeenCalled();
 		});
 
 		test("overflowing role strip scrolls left so the selected chip stays visible", () => {
@@ -418,9 +410,9 @@ describe("ModelHub", () => {
 			// At full width every chip fits and no left ellipsis appears.
 			expect(footerLine(hub.render(220))).not.toContain("…");
 
-			hub.handleInput(LEFT); // wrap to the trailing retry-fallback chip
+			hub.handleInput(LEFT); // wrap to the trailing role chip
 			const narrow = footerLine(hub.render(80));
-			expect(narrow).toContain("[ retry-fallback ]");
+			expect(narrow).toContain("[ advisor ]");
 			expect(narrow).toContain("…");
 
 			// Back on the first chip the window resets — no leading ellipsis.
@@ -431,7 +423,26 @@ describe("ModelHub", () => {
 		});
 	});
 
-	describe("fallback chains in the roles view", () => {
+	test("Pi omits fallback-chain rows and input hints from the roles view", () => {
+		const model = makeModel("test", "model-a");
+		const settings = Settings.isolated({
+			"retry.fallbackChains": { default: ["test/fallback-only"] },
+		});
+		const { hub, onFallbackChainChange } = createHub({ models: [model], scoped: true, settings });
+
+		hub.handleInput(UP);
+		hub.handleInput("\n");
+		const rendered = normalize(hub.render(220));
+		expect(rendered).not.toContain("fallback");
+		expect(rendered).not.toContain("↳");
+		expect(rendered).not.toContain("test/fallback-only");
+
+		hub.handleInput("f");
+		expect(normalize(hub.render(220))).not.toContain("Adding fallback");
+		expect(onFallbackChainChange).not.toHaveBeenCalled();
+	});
+
+	describe.skip("dormant upstream fallback chains in the roles view", () => {
 		/** Hop to the Roles sidebar entry and dive into its rows. */
 		function enterRolesView(hub: ModelHubComponent): void {
 			hub.handleInput(UP); // All models → Roles

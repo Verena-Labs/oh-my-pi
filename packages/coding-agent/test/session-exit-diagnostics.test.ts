@@ -9,16 +9,16 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createSessionTeardown } from "@oh-my-pi/pi-coding-agent/modes/session-teardown";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
 import {
 	collectPendingToolCalls,
 	describePendingToolCalls,
 	SESSION_EXIT_CUSTOM_TYPE,
 	TOOL_EXECUTION_START_CUSTOM_TYPE,
 	type ToolExecutionStartData,
-} from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
-import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
+} from "../src/session/exit-diagnostics";
 
 const pendingAssistant: AssistantMessage = {
 	role: "assistant",
@@ -45,7 +45,7 @@ const pendingAssistant: AssistantMessage = {
 	timestamp: Date.now(),
 };
 
-describe("session exit diagnostics", () => {
+describe.skip("OMP session exit diagnostics (disabled in Pi)", () => {
 	let session: AgentSession | undefined;
 	let authStorage: AuthStorage | undefined;
 	let tempDir: TempDir | undefined;
@@ -180,7 +180,7 @@ describe("session exit diagnostics", () => {
 			getDraftText: () => "",
 			beginDispose: () => activeSession.beginDispose(),
 			saveDraft: async () => {},
-			disposeSession: reason => activeSession.dispose({ reason }),
+			disposeSession: () => activeSession.dispose(),
 		});
 
 		await teardown(postmortem.Reason.SIGTERM);
@@ -263,6 +263,97 @@ describe("session exit diagnostics", () => {
 			isError: false,
 			timestamp: Date.now(),
 		});
+
+		expect(collectPendingToolCalls(sessionManager.getBranch())).toEqual([]);
+		expect(describePendingToolCalls(sessionManager.getBranch())).toBeUndefined();
+	});
+});
+
+describe("Pi ordinary session persistence without stop-recovery diagnostics", () => {
+	it("persists assistant messages and tool results without diagnostic custom entries", async () => {
+		const tempDir = TempDir.createSync("@pi-session-journal-");
+		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const modelRegistry = new ModelRegistry(authStorage);
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected built-in anthropic model to exist");
+		const sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected persistent session file path");
+		const agent = new Agent({
+			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+			convertToLlm,
+		});
+		const session = new AgentSession({
+			agent,
+			sessionManager,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+		});
+
+		try {
+			agent.emitExternalEvent({ type: "message_end", message: pendingAssistant });
+			agent.emitExternalEvent({
+				type: "tool_execution_start",
+				toolCallId: "toolu_repro",
+				toolName: "bash",
+				args: { command: "bun run check:ts" },
+			});
+			agent.emitExternalEvent({
+				type: "message_end",
+				message: {
+					role: "toolResult",
+					toolCallId: "toolu_repro",
+					toolName: "bash",
+					content: [{ type: "text", text: "ok" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			});
+			await session.dispose();
+
+			const entries = sessionManager.getEntries();
+			expect(entries.filter(entry => entry.type === "message").map(entry => entry.message.role)).toEqual([
+				"assistant",
+				"toolResult",
+			]);
+			expect(
+				entries.some(
+					entry =>
+						entry.type === "custom" &&
+						(entry.customType === TOOL_EXECUTION_START_CUSTOM_TYPE ||
+							entry.customType === SESSION_EXIT_CUSTOM_TYPE),
+				),
+			).toBe(false);
+
+			const jsonl = fs.readFileSync(sessionFile, "utf8");
+			expect(jsonl).toContain('"role":"assistant"');
+			expect(jsonl).toContain('"role":"toolResult"');
+			expect(jsonl).not.toContain('"customType":"tool_execution_start"');
+			expect(jsonl).not.toContain('"customType":"session_exit"');
+		} finally {
+			await session.dispose();
+			authStorage.close();
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not initialize pending-call warnings or postmortem session callbacks", async () => {
+		const mainSource = await Bun.file(path.join(import.meta.dir, "../src/main.ts")).text();
+		const agentSessionSource = await Bun.file(path.join(import.meta.dir, "../src/session/agent-session.ts")).text();
+		const interactiveSource = await Bun.file(path.join(import.meta.dir, "../src/modes/interactive-mode.ts")).text();
+
+		expect(mainSource).not.toContain("describePendingToolCalls");
+		expect(mainSource).not.toContain("Resumed session has pending tool calls");
+		expect(agentSessionSource).not.toContain("TOOL_EXECUTION_START_CUSTOM_TYPE");
+		expect(agentSessionSource).not.toContain("SESSION_EXIT_CUSTOM_TYPE");
+		expect(agentSessionSource).not.toContain("postmortem.register(`agent-session:");
+		expect(interactiveSource).not.toContain('postmortem.register("session-teardown"');
+	});
+
+	it("keeps the dormant pending-call classifier inert on direct invocation", () => {
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendMessage(pendingAssistant);
 
 		expect(collectPendingToolCalls(sessionManager.getBranch())).toEqual([]);
 		expect(describePendingToolCalls(sessionManager.getBranch())).toBeUndefined();

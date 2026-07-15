@@ -47,7 +47,7 @@ Single-shot result.
   - SQLite write: one of `Inserted row into <table>`, `Updated row '<key>' in <table>`, `No row updated ...`, `Deleted row ...`, `No row deleted ...`.
   - Conflict resolution: conflict-specific success text, with fresh hashline snapshot headers when applicable.
 - If hashline prefixes were copied from `read` output and stripped first, the first text block gets an extra note.
-- In hashline display mode, plain file writes (including ACP bridge writes) and conflict resolutions prepend a fresh `[<relative-path>#TAG]` header so the next `edit` has a current snapshot tag without an extra `read`. Bulk conflict resolutions append a `Snapshots:` block listing one header per successfully written file.
+- In hashline display mode, plain file writes (including host-bridge writes) and conflict resolutions prepend a fresh `[<relative-path>#TAG]` header so the next `edit` has a current snapshot tag without an extra `read`. Bulk conflict resolutions append a `Snapshots:` block listing one header per successfully written file.
 - Plain file writes may also return `details.diagnostics` plus `details.meta.diagnostics` when LSP diagnostics-on-write is enabled, and `details.madeExecutable` when a newly written shebang file is chmodded executable.
 - SQLite writes use `toolResult(...).sourcePath(...)`, so `details.meta.sourcePath` points at the database file.
 - Archive writes set `details.resolvedPath` to the archive's absolute path; internal URL writes return empty `details`.
@@ -72,7 +72,7 @@ Single-shot result.
 8. Otherwise the tool treats `path` as a plain filesystem file.
    - `enforcePlanModeWrite(..., { op: "create" })` runs before path resolution.
    - Existing files are checked by `assertEditableFile()` to block overwriting detected generated files.
-   - ACP bridge writeTextFile is tried first when available; otherwise the session’s writethrough callback writes content. With LSP enabled and `lsp.formatOnWrite` / `lsp.diagnosticsOnWrite` settings on, `createLspWritethrough()` may format content, sync it through LSP servers, save it, and collect diagnostics. Otherwise `writethroughNoop()` writes directly with `Bun.write()` or `file.write()`.
+   - A host-provided `writeTextFile` bridge is tried first when available; otherwise the session's writethrough callback writes content. With LSP enabled and `lsp.formatOnWrite` / `lsp.diagnosticsOnWrite` settings on, `createLspWritethrough()` may format content, sync it through LSP servers, save it, and collect diagnostics. Otherwise `writethroughNoop()` writes directly with `Bun.write()` or `file.write()`.
    - `maybeMarkExecutableForShebang()` may chmod the file executable when content starts with `#!`.
    - `invalidateFsScanAfterWrite()` runs on the file path.
 9. The tool returns a text result and optional diagnostics / executable metadata.

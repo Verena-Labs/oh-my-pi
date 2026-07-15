@@ -22,7 +22,7 @@ import {
 	type Usage,
 	withAuth,
 } from "@oh-my-pi/pi-ai";
-import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
+import { ProviderHttpError, ProviderResponseError } from "@oh-my-pi/pi-ai/error";
 import { createOpenAICodexCompactionRequestContext } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { convertTools } from "@oh-my-pi/pi-ai/providers/openai-responses";
 import { buildResponsesInput, resolveOpenAICompatPolicy } from "@oh-my-pi/pi-ai/providers/openai-shared";
@@ -700,6 +700,13 @@ function resolveCompactionEffort(model: Model, level: ThinkingLevel | undefined)
  */
 function createSummarizationError(prefix: string, response: AssistantMessage): Error {
 	const text = `${prefix}: ${response.errorMessage || "Unknown error"}`;
+	// Codex may deliver safety/prompt-policy rejections as an in-stream 403-like
+	// `invalid_prompt: Request blocked` event. That is a content rejection, not a
+	// bad OAuth grant. Preserve the provider error instead of letting compaction's
+	// auth fallback turn it into a misleading "configure credentials" warning.
+	if (/\binvalid_prompt\b|\brequest blocked\b/i.test(response.errorMessage ?? "")) {
+		return new ProviderResponseError(text, { provider: response.provider, kind: "content-blocked" });
+	}
 	return response.errorStatus === undefined ? new Error(text) : new ProviderHttpError(text, response.errorStatus);
 }
 

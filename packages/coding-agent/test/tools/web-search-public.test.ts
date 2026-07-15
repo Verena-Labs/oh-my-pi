@@ -1,9 +1,12 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AuthStorage, FetchImpl } from "@oh-my-pi/pi-ai";
 import { setExcludedSearchProviders } from "@oh-my-pi/pi-coding-agent/web/search/provider";
 import type { SearchParams } from "@oh-my-pi/pi-coding-agent/web/search/providers/base";
-import { searchPublicWeb } from "@oh-my-pi/pi-coding-agent/web/search/providers/public";
 import { SearchProviderError, type SearchProviderId } from "@oh-my-pi/pi-coding-agent/web/search/types";
+import * as searchProviderRegistry from "../../src/web/search/provider";
+import { DuckDuckGoProvider } from "../../src/web/search/providers/duckduckgo";
+import { GoogleProvider } from "../../src/web/search/providers/google";
+import { searchPublicWeb } from "../../src/web/search/providers/public";
 
 const fakeAuthStorage = {
 	async getApiKey() {
@@ -60,8 +63,22 @@ function makeFetchMock(bodies: { ddg: string; google: string }): FetchImpl {
 const GOOGLE_CHALLENGE = `<html><body>Our systems have detected unusual traffic from your computer network.</body></html>`;
 const DDG_CHALLENGE = `<html><body><div class="anomaly-modal"></div></body></html>`;
 
+beforeEach(() => {
+	vi.spyOn(searchProviderRegistry, "getSearchProvider").mockImplementation(id => {
+		switch (id) {
+			case "duckduckgo":
+				return Promise.resolve(new DuckDuckGoProvider());
+			case "google":
+				return Promise.resolve(new GoogleProvider());
+			default:
+				return Promise.reject(new Error(`Unexpected public web test provider: ${id}`));
+		}
+	});
+});
+
 afterEach(() => {
 	setExcludedSearchProviders([]);
+	vi.restoreAllMocks();
 });
 
 describe("Public Web aggregate provider", () => {

@@ -45,7 +45,8 @@ function renderPlain(sessions: SessionInfo[]): string {
 		.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-describe("SessionSelectorComponent status labels", () => {
+// Retained for OMP parity; Pi's plain selector does not advertise lifecycle metadata.
+describe.skip("OMP SessionSelectorComponent status labels (unavailable in Pi)", () => {
 	it("renders each derived status as a themed glyph + label on the metadata line", () => {
 		const rendered = renderPlain([
 			createSession("complete", "complete"),

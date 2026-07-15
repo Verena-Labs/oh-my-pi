@@ -136,7 +136,10 @@ describe("runSubprocess soft request budget", () => {
 			index: 0,
 			id,
 			settings: Settings.isolated({ "task.softRequestBudget": 2 }),
-			modelRegistry: { refresh: async () => {} } as unknown as ModelRegistry,
+			modelRegistry: {
+				authStorage: { enforceSingleCredentialPolicy: () => {} },
+				refresh: async () => {},
+			} as unknown as ModelRegistry,
 			enableLsp: false,
 			artifactsDir: tempDir.path(),
 		};

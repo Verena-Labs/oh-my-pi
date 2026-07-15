@@ -24,6 +24,30 @@ afterEach(async () => {
 });
 
 describe("RpcHostToolBridge", () => {
+	it("filters Pi-disabled host tool names before bridge registration", () => {
+		const bridge = new RpcHostToolBridge(() => {});
+		const tools = bridge.setTools([
+			{
+				name: "eval",
+				description: "disabled host tool",
+				parameters: { type: "object", properties: {}, additionalProperties: false },
+			},
+			{
+				name: "learn",
+				description: "retained name reaches the session collision boundary",
+				parameters: { type: "object", properties: {}, additionalProperties: false },
+			},
+			{
+				name: "host_allowed",
+				description: "allowed host tool",
+				parameters: { type: "object", properties: {}, additionalProperties: false },
+			},
+		]);
+
+		expect(tools.map(tool => tool.name)).toEqual(["learn", "host_allowed"]);
+		expect(bridge.getToolNames()).toEqual(["learn", "host_allowed"]);
+	});
+
 	it("forwards host tool updates and results to the pending execution", async () => {
 		const frames: Array<RpcHostToolCallRequest | RpcHostToolCancelRequest> = [];
 		const bridge = new RpcHostToolBridge(frame => {

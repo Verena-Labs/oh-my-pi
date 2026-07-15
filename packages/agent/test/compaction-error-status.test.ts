@@ -9,6 +9,7 @@ import {
 } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
+import { classify, Flag, is, ProviderResponseError } from "@oh-my-pi/pi-ai/error";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
 // Pins the fix for the "raw 401 surfaced as Compaction failed:" bug.
@@ -139,6 +140,24 @@ describe("compaction error-status propagation", () => {
 		const e = error as Error & { status?: number };
 		expect(e.status).toBe(403);
 		expect(e.message).toMatch(/Summarization failed|Short summary failed|Turn prefix summarization failed/);
+	});
+
+	test("invalid_prompt Request blocked is content rejection, not an auth failure", async () => {
+		vi.spyOn(ai, "completeSimple").mockResolvedValue(
+			makeAssistantError(403, "Codex error event: Request blocked. (code=invalid_prompt)"),
+		);
+
+		const error = await generateHandoff(handoffMessages, getAnthropicModel(), "usable-key", {
+			systemPrompt: ["sp"],
+			tools: [],
+		}).catch(err => err);
+
+		expect(error).toBeInstanceOf(ProviderResponseError);
+		expect((error as ProviderResponseError).kind).toBe("content-blocked");
+		const id = classify(error);
+		expect(is(id, Flag.ProviderFinishError)).toBe(true);
+		expect(is(id, Flag.AuthFailed)).toBe(false);
+		expect((error as Error).message).toContain("invalid_prompt");
 	});
 
 	test("missing errorStatus does not attach .status (preserves auth_unavailable regex path)", async () => {

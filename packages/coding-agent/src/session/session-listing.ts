@@ -592,6 +592,9 @@ export async function getRecentSessions(
 }
 
 function sessionMatchesResumeArg(session: SessionInfo, sessionArg: string): boolean {
+	if (path.resolve(session.path) === path.resolve(sessionArg)) {
+		return true;
+	}
 	const normalizedArg = sessionArg.toLowerCase();
 	const normalizedId = session.id.toLowerCase();
 	if (normalizedId.startsWith(normalizedArg)) {
@@ -618,6 +621,10 @@ export interface ResolveResumableSessionOptions {
 	allowGlobalFallback?: boolean;
 }
 
+function piAllowsGlobalSessionFallback(): boolean {
+	return false;
+}
+
 function isSessionStorage(value: SessionStorage | ResolveResumableSessionOptions): value is SessionStorage {
 	return "listFilesSync" in value;
 }
@@ -638,7 +645,7 @@ export async function resolveResumableSession(
 		return { session: localMatch, scope: "local" };
 	}
 
-	if (sessionDir && resolvedOptions.allowGlobalFallback !== true) {
+	if (!piAllowsGlobalSessionFallback() || resolvedOptions.allowGlobalFallback !== true) {
 		return undefined;
 	}
 

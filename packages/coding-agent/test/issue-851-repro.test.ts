@@ -32,7 +32,7 @@ describe("issue-851: claude-plugins loads flat .mcp.json shape", () => {
 	});
 
 	async function setupPlugin(pluginId: string, mcpJson: unknown): Promise<void> {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", pluginId);
 		await fs.mkdir(pluginsDir, { recursive: true });
 		await fs.mkdir(pluginPath, { recursive: true });

@@ -3,13 +3,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AuthStorage, type OAuthCredential, REMOTE_REFRESH_SENTINEL, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
+import { removeWithRetries } from "../../utils/src/temp";
 import {
 	AuthBrokerClient,
 	type AuthBrokerServerHandle,
 	RemoteAuthCredentialStore,
 	startAuthBroker,
-} from "@oh-my-pi/pi-ai/auth-broker";
-import { removeWithRetries } from "../../utils/src/temp";
+} from "../src/auth-broker";
 
 // MCP OAuth credentials extend the base OAuthCredential with refresh material
 // (tokenUrl/clientId/clientSecret/resource) embedded so token refresh works for
@@ -35,7 +35,7 @@ function mintMcpOAuthCredential(): OAuthCredential {
 	return { ...base, ...EXTRA_FIELDS };
 }
 
-describe("auth-broker preserves extra OAuth credential fields", () => {
+describe.skip("dormant OMP auth-broker OAuth transport fields (disabled in Pi)", () => {
 	let tempDir = "";
 	let serverStore: SqliteAuthCredentialStore | undefined;
 	let serverStorage: AuthStorage | undefined;

@@ -19,7 +19,7 @@ function createRuntime() {
 	};
 }
 
-describe("/tan slash command", () => {
+describe.skip("/tan slash command (dormant OMP behavior; disabled by Pi policy)", () => {
 	it("routes the full work item through the tan handler", async () => {
 		const harness = createRuntime();
 

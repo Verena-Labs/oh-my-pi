@@ -3,6 +3,7 @@ import { slashCommandCapability } from "../capability/slash-command";
 import { appendInlineArgsFallback, templateUsesInlineArgPlaceholders } from "../config/prompt-templates";
 import type { SlashCommand } from "../discovery";
 import { loadCapability } from "../discovery";
+import { isPiDisabledSlashCommandName } from "../slash-commands/pi-policy";
 import { EMBEDDED_COMMAND_TEMPLATES } from "../task/commands";
 import { parseCommandArgs, substituteArgs } from "../utils/command-args";
 
@@ -66,28 +67,31 @@ export interface LoadSlashCommandsOptions {
 export async function loadSlashCommands(options: LoadSlashCommandsOptions = {}): Promise<FileSlashCommand[]> {
 	const result = await loadCapability<SlashCommand>(slashCommandCapability.id, { cwd: options.cwd });
 
-	const fileCommands: FileSlashCommand[] = result.items.map(cmd => {
-		const { description, body } = parseCommandTemplate(cmd.content, {
-			source: cmd.path ?? `slash-command:${cmd.name}`,
-			level: cmd.level === "native" ? "fatal" : "warn",
+	const fileCommands: FileSlashCommand[] = result.items
+		.filter(cmd => !isPiDisabledSlashCommandName(cmd.name))
+		.map(cmd => {
+			const { description, body } = parseCommandTemplate(cmd.content, {
+				source: cmd.path ?? `slash-command:${cmd.name}`,
+				level: cmd.level === "native" ? "fatal" : "warn",
+			});
+
+			// Format source label: "via ProviderName Level"
+			const capitalizedLevel = cmd.level.charAt(0).toUpperCase() + cmd.level.slice(1);
+			const sourceStr = `via ${cmd._source.providerName} ${capitalizedLevel}`;
+
+			return {
+				name: cmd.name,
+				description,
+				content: body,
+				source: sourceStr,
+				_source: { providerName: cmd._source.providerName, level: cmd.level },
+			};
 		});
-
-		// Format source label: "via ProviderName Level"
-		const capitalizedLevel = cmd.level.charAt(0).toUpperCase() + cmd.level.slice(1);
-		const sourceStr = `via ${cmd._source.providerName} ${capitalizedLevel}`;
-
-		return {
-			name: cmd.name,
-			description,
-			content: body,
-			source: sourceStr,
-			_source: { providerName: cmd._source.providerName, level: cmd.level },
-		};
-	});
 
 	const seenNames = new Set(fileCommands.map(cmd => cmd.name));
 	for (const cmd of EMBEDDED_SLASH_COMMANDS) {
 		const name = cmd.name.replace(/\.md$/, "");
+		if (isPiDisabledSlashCommandName(name)) continue;
 		if (seenNames.has(name)) continue;
 
 		const { description, body } = parseCommandTemplate(cmd.content, {
@@ -115,6 +119,7 @@ export function expandSlashCommand(text: string, fileCommands: FileSlashCommand[
 
 	const spaceIndex = text.indexOf(" ");
 	const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+	if (isPiDisabledSlashCommandName(commandName)) return text;
 	const argsString = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
 
 	const fileCommand = fileCommands.find(cmd => cmd.name === commandName);

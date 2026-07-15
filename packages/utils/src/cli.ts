@@ -265,6 +265,17 @@ export abstract class Command {
 // Help rendering
 // ---------------------------------------------------------------------------
 
+/** Normalize retained upstream metadata before it reaches Pi's public CLI. */
+export function normalizePublicCliText(text: string): string {
+	return text
+		.replaceAll("~/.omp", "~/.pi")
+		.replaceAll(".omp/", ".pi/")
+		.replaceAll("omp://", "pi://")
+		.replaceAll("OMP_", "PI_")
+		.replace(/\bOMP\b/g, "Pi")
+		.replace(/\bomp\b/g, "pi");
+}
+
 /** Render full root help: header, default command details, subcommand list. */
 export function renderRootHelp(config: CliConfig): void {
 	const { bin, version, commands } = config;
@@ -291,7 +302,7 @@ export function renderRootHelp(config: CliConfig): void {
 		lines.push("");
 	}
 
-	process.stdout.write(lines.join("\n"));
+	process.stdout.write(normalizePublicCliText(lines.join("\n")));
 }
 
 /** Render help for a single command. */
@@ -304,7 +315,7 @@ export function renderCommandHelp(bin: string, id: string, Cmd: CommandCtor): vo
 	const hasFlags = Object.keys(Cmd.flags ?? {}).length > 0;
 	lines.push(`  $ ${bin} ${id}${argStr}${hasFlags ? " [FLAGS]" : ""}\n`);
 	renderCommandBody(lines, Cmd);
-	process.stdout.write(lines.join("\n"));
+	process.stdout.write(normalizePublicCliText(lines.join("\n")));
 }
 
 function renderCommandBody(lines: string[], Cmd: CommandCtor): void {

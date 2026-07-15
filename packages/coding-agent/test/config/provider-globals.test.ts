@@ -8,7 +8,7 @@ describe("applyProviderGlobalsFromSettings", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("reapplies valid web and image provider globals from cwd-scoped settings", () => {
+	it("reapplies only selected Pi web providers and valid image providers", () => {
 		const excludeSpy = vi.spyOn(webSearch, "setExcludedSearchProviders").mockImplementation(() => {});
 		const webSpy = vi.spyOn(webSearch, "setPreferredSearchProvider").mockImplementation(() => {});
 		const imageSpy = vi.spyOn(imageGen, "setPreferredImageProvider").mockImplementation(() => {});
@@ -16,16 +16,16 @@ describe("applyProviderGlobalsFromSettings", () => {
 		applyProviderGlobalsFromSettings({
 			get(path: "providers.webSearchExclude" | "providers.webSearch" | "providers.image"): unknown {
 				const values: Record<string, unknown> = {
-					"providers.webSearchExclude": ["exa", "not-a-provider", "gemini"],
-					"providers.webSearch": "perplexity",
+					"providers.webSearchExclude": ["codex", "not-a-provider", "duckduckgo"],
+					"providers.webSearch": "codex",
 					"providers.image": "xai",
 				};
 				return values[path];
 			},
 		});
 
-		expect(excludeSpy).toHaveBeenCalledWith(["exa", "gemini"]);
-		expect(webSpy).toHaveBeenCalledWith("perplexity");
+		expect(excludeSpy).toHaveBeenCalledWith(["codex", "duckduckgo"]);
+		expect(webSpy).toHaveBeenCalledWith("codex");
 		expect(imageSpy).toHaveBeenCalledWith("xai");
 	});
 });

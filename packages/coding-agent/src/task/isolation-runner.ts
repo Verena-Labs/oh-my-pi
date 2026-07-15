@@ -1,11 +1,10 @@
 /**
  * Reusable isolation lifecycle for subagent execution.
  *
- * Both `TaskTool` and the eval `agent()` bridge spawn subagents that can run
- * inside a copy-on-write worktree, capture their changes, and (optionally)
- * apply those changes back to the parent repo. The orchestration is identical
- * for both callers; this module hosts the shared lifecycle so eval `agent()`
- * does not need to round-trip through `TaskTool.#runSpawn`.
+ * `TaskTool` and the eval `agent()` bridge can spawn subagents inside a
+ * copy-on-write worktree and capture their changes. Pi's task surface stops at
+ * that capture boundary; the retained upstream merge helpers remain available only
+ * to callers whose owning capability explicitly permits integration.
  *
  * Shape:
  *   1. {@link prepareIsolationContext} — resolve git root + capture baseline.
@@ -16,7 +15,7 @@
  *                                        opted out).
  *
  * Step 1 happens once per top-level call (the baseline is cloned per spawn
- * before mutation); steps 2 and 3 are per-spawn.
+ * before mutation); step 2 is per-spawn, and step 3 is caller-controlled.
  */
 import * as path from "node:path";
 import type * as natives from "@oh-my-pi/pi-natives";
@@ -130,7 +129,7 @@ async function writeIsolationPatch(
 /**
  * Run a subagent inside an isolation worktree and capture its changes.
  *
- * Branch mode: on success, commits the diff onto `omp/task/${agentId}` and
+ * Branch mode: on success, commits the diff onto `pi/task/${agentId}` and
  * returns `branchName` + `nestedPatches`. On commit failure the branch is
  * deleted, the still-live isolation diff is written to `${artifactsDir}/${agentId}.patch`,
  * and `result.error` carries the merge-failure message.
@@ -173,7 +172,7 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 				};
 			} catch (mergeErr) {
 				// Agent succeeded but branch commit failed — clean up stale branch
-				const branchName = `omp/task/${opts.agentId}`;
+				const branchName = `pi/task/${opts.agentId}`;
 				await git.branch.tryDelete(opts.context.repoRoot, branchName);
 				const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
 				try {
@@ -222,6 +221,25 @@ export interface IsolationMergeOptions {
 	result: SingleResult;
 	repoRoot: string;
 	mergeMode: "patch" | "branch";
+}
+
+/**
+ * Describe an explicit isolated run without applying its changes to the
+ * caller's checkout. Pi keeps manual isolation and its patch/branch artifacts,
+ * but integration is always a separate, user-directed operation.
+ */
+export function describeManualIsolation(result: SingleResult): string {
+	if (result.branchName) {
+		return `\n\nManual isolation: changes captured on branch \`${result.branchName}\`. Not merged; integrate manually.`;
+	}
+	if (result.patchPath) {
+		return `\n\nManual isolation: changes captured at \`${result.patchPath}\`. Not applied; integrate manually.`;
+	}
+	const nestedPatchCount = result.nestedPatches?.length ?? 0;
+	if (nestedPatchCount > 0) {
+		return `\n\nManual isolation: changes captured for ${nestedPatchCount} nested repositor${nestedPatchCount === 1 ? "y" : "ies"}. Not applied; integrate manually.`;
+	}
+	return "\n\nManual isolation: no changes captured.";
 }
 
 export interface IsolationMergeOutcome {

@@ -70,7 +70,7 @@ export interface SegmentContext {
 		enabled: boolean;
 		paused: boolean;
 	} | null;
-	vibeMode: {
+	delegateMode: {
 		enabled: boolean;
 	} | null;
 	collab: CollabStatus | null;

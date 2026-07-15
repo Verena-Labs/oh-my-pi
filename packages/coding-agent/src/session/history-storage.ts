@@ -28,6 +28,11 @@ function escapeLikePattern(text: string): string {
 	return text.replace(/[\\%_]/g, "\\$&");
 }
 
+/** Pi keeps prompt-history search independent from the disabled rich session tree. */
+function piAllowsPromptHistorySessionLinkage(): boolean {
+	return false;
+}
+
 export class HistoryStorage {
 	#db: Database;
 	static #instance?: HistoryStorage;
@@ -142,7 +147,7 @@ CREATE TRIGGER IF NOT EXISTS history_ai AFTER INSERT ON history BEGIN
 	 * batched writes capture the session active when the prompt was submitted.
 	 */
 	setSessionResolver(resolver: () => string | undefined): void {
-		this.#sessionResolver = resolver;
+		this.#sessionResolver = piAllowsPromptHistorySessionLinkage() ? resolver : undefined;
 	}
 
 	add(prompt: string, cwd?: string, sessionId?: string): Promise<void> {
@@ -150,7 +155,7 @@ CREATE TRIGGER IF NOT EXISTS history_ai AFTER INSERT ON history BEGIN
 		if (!trimmed) return Promise.resolve();
 		if (this.#lastPromptCache === trimmed) return Promise.resolve();
 		this.#lastPromptCache = trimmed;
-		const session = sessionId ?? this.#sessionResolver?.();
+		const session = piAllowsPromptHistorySessionLinkage() ? (sessionId ?? this.#sessionResolver?.()) : undefined;
 		return this.#drain.push({ prompt: trimmed, cwd: cwd ?? undefined, sessionId: session || undefined }, rows => {
 			this.#insertBatch(rows);
 		});
@@ -222,6 +227,7 @@ CREATE TRIGGER IF NOT EXISTS history_ai AFTER INSERT ON history BEGIN
 	 * picker with prompts that the 4KB session-list prefix never sees.
 	 */
 	matchingSessionIds(query: string, limit = 500): string[] {
+		if (!piAllowsPromptHistorySessionLinkage()) return [];
 		const seen = new Set<string>();
 		const ids: string[] = [];
 		for (const entry of this.search(query, limit)) {

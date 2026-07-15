@@ -547,8 +547,15 @@ function serveSnapshotStream(
 	});
 }
 
+function piAllowsRemoteCredentialServices(): boolean {
+	return false;
+}
+
 /** Boot the broker. Caller owns lifecycle; `handle.close()` to stop. */
 export function startAuthBroker(opts: AuthBrokerServerOptions): AuthBrokerServerHandle {
+	if (!piAllowsRemoteCredentialServices()) {
+		throw new Error("The remote credential broker is unavailable in Pi");
+	}
 	const bind = parseBind(opts.bind ?? DEFAULT_AUTH_BROKER_BIND);
 	const tokens = new Set<string>(opts.bearerTokens);
 	const version = opts.version;

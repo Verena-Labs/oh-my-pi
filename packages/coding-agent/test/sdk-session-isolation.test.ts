@@ -4,14 +4,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
-import { SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getSessionsDir, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import type { Rule } from "../src/capability/rule";
+import { SecretObfuscator } from "../src/secrets";
 
 function createTtsrRule(name: string): Rule {
 	return {
@@ -115,7 +115,7 @@ describe("createAgentSession session storage isolation", () => {
 			await session.dispose();
 		}
 	});
-	it("wires the discovered TTSR manager into the created session", async () => {
+	it("does not initialize a TTSR manager for SDK-supplied rules", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-ttsr-${Snowflake.next()}-`));
 		tempDirs.push(tempDir);
 		const cwd = path.join(tempDir, `project-${Snowflake.next()}`);
@@ -139,15 +139,13 @@ describe("createAgentSession session storage isolation", () => {
 		});
 
 		try {
-			expect(session.ttsrManager).toBeDefined();
-			expect(session.ttsrManager?.checkDelta("forbidden", { source: "text" }).map(match => match.name)).toEqual([
-				rule.name,
-			]);
+			expect(session.ttsrManager).toBeUndefined();
+			expect(session.systemPrompt.join("\n")).not.toContain(rule.content);
 		} finally {
 			await session.dispose();
 		}
 	});
-	it("loads obfuscator only when secrets exist", async () => {
+	it("does not initialize an obfuscator from legacy secret settings or files", async () => {
 		await withClearedSecretEnv(async () => {
 			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-secrets-${Snowflake.next()}-`));
 			tempDirs.push(tempDir);
@@ -155,10 +153,12 @@ describe("createAgentSession session storage isolation", () => {
 			const agentDir = path.join(tempDir, "agent");
 			fs.mkdirSync(cwd, { recursive: true });
 
+			const injectedObfuscator = new SecretObfuscator([{ type: "plain", content: "sdk-secret-token-123456" }]);
 			const commonOptions = {
 				cwd,
 				agentDir,
 				modelRegistry: sharedModelRegistry,
+				obfuscator: injectedObfuscator,
 				settings: Settings.isolated({ "secrets.enabled": true }),
 				disableExtensionDiscovery: true,
 				skills: [],
@@ -176,35 +176,64 @@ describe("createAgentSession session storage isolation", () => {
 				await withoutSecrets.session.dispose();
 			}
 
-			fs.mkdirSync(path.join(cwd, ".omp"), { recursive: true });
-			fs.writeFileSync(path.join(cwd, ".omp", "secrets.yml"), "- type: plain\n  content: sdk-secret-token-123456\n");
+			fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+			fs.writeFileSync(path.join(cwd, ".pi", "secrets.yml"), "- type: plain\n  content: sdk-secret-token-123456\n");
 
 			const withSecrets = await createAgentSession(commonOptions);
 			try {
-				expect(withSecrets.session.obfuscator?.hasSecrets()).toBe(true);
+				expect(withSecrets.session.obfuscator).toBeUndefined();
 			} finally {
 				await withSecrets.session.dispose();
 			}
 		});
 	});
 
-	it("keeps restored assistant messages deobfuscated across reloads", async () => {
+	it("rejects an injected session manager carrying a foreign transcript", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-manager-boundary-${Snowflake.next()}-`));
+		tempDirs.push(tempDir);
+		const cwd = path.join(tempDir, "project");
+		const foreignCwd = path.join(tempDir, "foreign-project");
+		fs.mkdirSync(cwd, { recursive: true });
+		fs.mkdirSync(foreignCwd, { recursive: true });
+		const foreignManager = SessionManager.inMemory(foreignCwd);
+		foreignManager.appendCustomEntry("foreign-state", { value: true });
+
+		await expect(
+			createAgentSession({
+				cwd,
+				agentDir: tempDir,
+				modelRegistry: sharedModelRegistry,
+				settings: Settings.isolated(),
+				sessionManager: foreignManager,
+				disableExtensionDiscovery: true,
+				skills: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				enableMCP: false,
+				enableLsp: false,
+			}),
+		).rejects.toThrow("Injected session manager belongs to a different project");
+	});
+
+	it("does not scan secret files to rewrite legacy persisted placeholders", async () => {
 		await withClearedSecretEnv(async () => {
 			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-session-secrets-${Snowflake.next()}-`));
 			tempDirs.push(tempDir);
 			const cwd = path.join(tempDir, "project");
 			const agentDir = path.join(tempDir, "agent");
-			fs.mkdirSync(path.join(cwd, ".omp"), { recursive: true });
-			fs.writeFileSync(path.join(cwd, ".omp", "secrets.yml"), "- type: plain\n  content: sdk-secret-token-123456\n");
+			fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+			fs.writeFileSync(path.join(cwd, ".pi", "secrets.yml"), "- type: plain\n  content: sdk-secret-token-123456\n");
 
 			const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 			if (!model) throw new Error("Expected anthropic model");
 
 			const obfuscator = new SecretObfuscator([{ type: "plain", content: "sdk-secret-token-123456" }]);
+			const persistedText = obfuscator.obfuscate("token sdk-secret-token-123456");
 			const initialManager = SessionManager.create(cwd, path.join(agentDir, "sessions"));
 			initialManager.appendMessage({
 				role: "assistant",
-				content: [{ type: "text", text: obfuscator.obfuscate("token sdk-secret-token-123456") }],
+				content: [{ type: "text", text: persistedText }],
 				api: model.api,
 				provider: model.provider,
 				model: model.id,
@@ -241,13 +270,12 @@ describe("createAgentSession session storage isolation", () => {
 				enableLsp: false,
 			});
 			try {
-				expect(getAssistantText(session.messages.at(-1) as AssistantMessage | undefined)).toContain(
+				expect(getAssistantText(session.messages.at(-1) as AssistantMessage | undefined)).toBe(persistedText);
+				expect(getAssistantText(session.messages.at(-1) as AssistantMessage | undefined)).not.toContain(
 					"sdk-secret-token-123456",
 				);
 				await session.reload();
-				expect(getAssistantText(session.messages.at(-1) as AssistantMessage | undefined)).toContain(
-					"sdk-secret-token-123456",
-				);
+				expect(getAssistantText(session.messages.at(-1) as AssistantMessage | undefined)).toBe(persistedText);
 			} finally {
 				await session.dispose();
 			}

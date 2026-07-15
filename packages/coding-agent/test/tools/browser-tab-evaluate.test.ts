@@ -52,6 +52,74 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser tab evaluation", () => {
 			});
 
 			expect(result.content).toEqual([{ type: "text", text: "42" }]);
+
+			const rawPageResult = await tool.execute("run", {
+				action: "run",
+				name,
+				code: "return await page.evaluate(() => 6 * 7);",
+			});
+			expect(rawPageResult.content).toEqual([{ type: "text", text: "42" }]);
+
+			const boundary = await tool.execute("run", {
+				action: "run",
+				name,
+				code: `return [
+					typeof tool, typeof completion, typeof output, typeof agent,
+					typeof parallel, typeof pipeline, typeof read, typeof write, typeof env,
+					typeof __omp_call_tool__, typeof process, typeof Bun, typeof require,
+					typeof fs, typeof fetch, typeof Function, typeof eval,
+					typeof globalThis.process,
+				].join("|");`,
+			});
+			expect(boundary.content).toEqual([
+				{
+					type: "text",
+					text: Array.from({ length: 18 }, () => "undefined").join("|"),
+				},
+			]);
+
+			const computedBoundary = await tool.execute("run", {
+				action: "run",
+				name,
+				code: `const key = ["con", "structor"].join("");
+				const capture = async attempt => {
+					try {
+						const value = await attempt();
+						return value === undefined ? "unavailable" : "escaped";
+					} catch (error) {
+						return error?.name ?? "blocked";
+					}
+				};
+				return [
+					await capture(() => (() => {})[key]("return process")()),
+					await capture(() => Reflect.get(() => {}, key)("return process")()),
+					typeof page.url[key],
+					typeof Reflect.get(page.url, key),
+					await capture(() => globalThis.process?.getBuiltinModule("node:fs")),
+					await capture(() => (() => {})[key]("return process.getBuiltinModule('node:fs')")()),
+					await capture(() => (() => {})[key]("return process.getBuiltinModule('node:http')")()),
+					await capture(() => (() => {})[key]("return process.getBuiltinModule('node:child_process')")()),
+					typeof fetch,
+					typeof WebSocket,
+				].join("|");`,
+			});
+			expect(computedBoundary.content).toEqual([
+				{
+					type: "text",
+					text: [
+						"EvalError",
+						"EvalError",
+						"undefined",
+						"undefined",
+						"unavailable",
+						"EvalError",
+						"EvalError",
+						"EvalError",
+						"undefined",
+						"undefined",
+					].join("|"),
+				},
+			]);
 		} finally {
 			await tool.execute("close", { action: "close", name, kill: true });
 		}

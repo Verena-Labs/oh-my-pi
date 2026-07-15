@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import {
 	GALLERY_STATES,
+	getGalleryToolNames,
 	parseGalleryStates,
 	renderGalleryState,
 	resolveFixture,
@@ -33,8 +34,18 @@ describe("gallery harness", () => {
 		);
 	});
 
+	it("neither lists nor accepts Pi-disabled tool renderers and fixtures", () => {
+		const names = getGalleryToolNames();
+		for (const disabled of ["eval", "debug", "ssh", "github"]) {
+			expect(names, disabled).not.toContain(disabled);
+			expect(() => resolveFixture(disabled), disabled).toThrow(
+				`Tool '${disabled}' is unavailable in the Pi gallery.`,
+			);
+		}
+	});
+
 	it("renders every registered tool in every lifecycle state without throwing", async () => {
-		for (const name in toolRenderers) {
+		for (const name of getGalleryToolNames().filter(name => name in toolRenderers)) {
 			const fixture = resolveFixture(name);
 			for (const state of GALLERY_STATES) {
 				const lines = await renderGalleryState(name, fixture, state, 100);

@@ -1,5 +1,5 @@
 /**
- * Contracts: vibe tool renderers.
+ * Contracts: delegate tool renderers.
  *
  * 1. spawn/send render a mini composer — the message typed into a tiny CLI
  *    frame with a prompt glyph and (while pending) a blinking cursor.
@@ -14,14 +14,15 @@
  */
 import { beforeAll, describe, expect, it } from "bun:test";
 import { Settings } from "../../config/settings";
+import type { DelegateScreenSnapshot } from "../../delegate/runtime";
 import { getThemeByName, setThemeInstance, type Theme } from "../../modes/theme/theme";
-import type { VibeScreenSnapshot } from "../../vibe/runtime";
-import { createVibeToolRenderer, type VibeToolDetails } from "../vibe";
+import { createDelegateToolRenderer, type DelegateToolDetails } from "../delegate";
+import { toolRenderers } from "../renderers";
 
 const strip = (lines: readonly string[]): string[] =>
 	lines.map(line => line.replace(/\x1b\]8;[^\x1b\x07]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-9;]*m/g, ""));
 
-function makeScreen(overrides: Partial<VibeScreenSnapshot> = {}): VibeScreenSnapshot {
+function makeScreen(overrides: Partial<DelegateScreenSnapshot> = {}): DelegateScreenSnapshot {
 	return {
 		id: "Anna",
 		cli: "fast",
@@ -39,7 +40,7 @@ function renderLines(component: { render(width: number): readonly string[] }, wi
 	return strip(component.render(width));
 }
 
-describe("vibe tool renderers", () => {
+describe("delegate tool renderers", () => {
 	let uiTheme: Theme;
 
 	beforeAll(async () => {
@@ -50,8 +51,14 @@ describe("vibe tool renderers", () => {
 		setThemeInstance(uiTheme);
 	});
 
+	it("retains read-only renderers for legacy transcript tool blocks", () => {
+		for (const name of ["vibe_spawn", "vibe_send", "vibe_wait", "vibe_kill", "vibe_list"]) {
+			expect(toolRenderers[name]).toBeDefined();
+		}
+	});
+
 	it("send composer types the message into a mini CLI frame with a blinking cursor while pending", () => {
-		const renderer = createVibeToolRenderer("send");
+		const renderer = createDelegateToolRenderer("send");
 		const component = renderer.renderCall(
 			{ session: "Anna", message: "Focus on the API first.\nThen tests." },
 			{ expanded: false, isPartial: true, spinnerFrame: 0 },
@@ -59,7 +66,7 @@ describe("vibe tool renderers", () => {
 		) as { render(width: number): readonly string[] };
 		const text = renderLines(component).join("\n");
 
-		expect(text).toContain("vibe send → Anna");
+		expect(text).toContain("delegate send → Anna");
 		expect(text).toContain("> Focus on the API first.");
 		expect(text).toContain("Then tests.▌");
 		expect(text).toContain("delivering…");
@@ -75,7 +82,7 @@ describe("vibe tool renderers", () => {
 	});
 
 	it("composer cursor re-derives from mutated options on the same component", () => {
-		const renderer = createVibeToolRenderer("send");
+		const renderer = createDelegateToolRenderer("send");
 		const options = { expanded: false, isPartial: true, spinnerFrame: 0 };
 		const component = renderer.renderCall({ session: "Anna", message: "Hi" }, options, uiTheme) as {
 			render(width: number): readonly string[];
@@ -88,8 +95,8 @@ describe("vibe tool renderers", () => {
 	});
 
 	it("wait wall spinner re-derives from mutated options on the same component", () => {
-		const renderer = createVibeToolRenderer("wait");
-		const details: VibeToolDetails = {
+		const renderer = createDelegateToolRenderer("wait");
+		const details: DelegateToolDetails = {
 			op: "wait",
 			screens: [makeScreen({ currentTool: "edit" })],
 			wait: { settled: [], stillRunning: ["Anna"], timedOut: false, waiting: true },
@@ -107,8 +114,8 @@ describe("vibe tool renderers", () => {
 	});
 
 	it("send result frames the ack under the composer", () => {
-		const renderer = createVibeToolRenderer("send");
-		const details: VibeToolDetails = {
+		const renderer = createDelegateToolRenderer("send");
+		const details: DelegateToolDetails = {
 			op: "send",
 			screens: [makeScreen()],
 			send: { id: "Anna", mode: "steered" },
@@ -121,15 +128,15 @@ describe("vibe tool renderers", () => {
 		) as { render(width: number): readonly string[] };
 		const text = renderLines(component).join("\n");
 
-		expect(text).toContain("vibe send → Anna");
+		expect(text).toContain("delegate send → Anna");
 		expect(text).toContain("> Focus on the API first.");
 		expect(text).toContain("steered into the running turn");
 		expect(text).not.toContain("▌");
 	});
 
 	it("wait renders stacked TV screens: live trace + streamed text, idle gist, settled footer", () => {
-		const renderer = createVibeToolRenderer("wait");
-		const details: VibeToolDetails = {
+		const renderer = createDelegateToolRenderer("wait");
+		const details: DelegateToolDetails = {
 			op: "wait",
 			screens: [
 				makeScreen({
@@ -183,8 +190,8 @@ describe("vibe tool renderers", () => {
 	});
 
 	it("clamps every TV line to the render width", () => {
-		const renderer = createVibeToolRenderer("list");
-		const details: VibeToolDetails = {
+		const renderer = createDelegateToolRenderer("list");
+		const details: DelegateToolDetails = {
 			op: "list",
 			screens: [
 				makeScreen({

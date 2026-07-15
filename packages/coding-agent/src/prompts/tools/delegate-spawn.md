@@ -7,4 +7,4 @@ Starts a persistent worker session — a full coding agent (edit, bash, grep, ev
 
 Returns immediately with the session id; the turn's result (activity trace + the worker's response) is delivered to you automatically when the worker finishes. Do not wait unless you are blocked — keep directing other sessions.
 
-The session persists after the turn: it remembers the whole conversation. Continue it with `vibe_send`; never spawn a second session for a follow-up on the same workstream.
+The session persists after the turn: it remembers the whole conversation. Continue it with `delegate_send`; never spawn a second session for a follow-up on the same workstream.

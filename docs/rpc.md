@@ -26,7 +26,7 @@ Behavior notes:
 - RPC mode resets workflow-altering `todo.*`, `task.*`, `memory.backend`/`memories.enabled`, `advisor.*`, `async.*`, and `bash.autoBackground.*` settings to their built-in defaults instead of inheriting user overrides.
 - The process reads stdin as JSONL (`readJsonl(Bun.stdin.stream())`).
 - At startup it writes `{ "type": "ready" }` before processing commands.
-- When stdin closes, pending host-tool calls and host-URI requests are rejected and the process exits with code `0`.
+- When stdin closes, pending host-tool calls are rejected and the process exits with code `0`.
 - Responses/events are written as one JSON object per line.
 
 ## Transport and Framing
@@ -42,19 +42,17 @@ There is no envelope beyond the object shape itself.
 3. `AgentSessionEvent` objects (`agent_start`, `message_update`, etc.)
 4. `RpcExtensionUIRequest` (`{ type: "extension_ui_request", ... }`)
 5. Host tool requests/cancellations (`host_tool_call`, `host_tool_cancel`)
-6. Host URI requests/cancellations (`host_uri_request`, `host_uri_cancel`)
-7. Extension errors (`{ type: "extension_error", extensionPath, event, error }`)
-8. Available-commands updates (`{ type: "available_commands_update", commands }`), emitted at startup and whenever command metadata changes
-9. Prompt lifecycle hints (`{ type: "prompt_result", id?, agentInvoked }`) for scheduled prompts that later resolve without invoking the agent
-10. Subagent frames (`subagent_lifecycle`, `subagent_progress`, `subagent_event`), gated by `set_subagent_subscription`
-11. Builtin slash-command side channels (`command_output`, `session_info_update`, `config_update`)
+6. Extension errors (`{ type: "extension_error", extensionPath, event, error }`)
+7. Available-commands updates (`{ type: "available_commands_update", commands }`), emitted at startup and whenever command metadata changes
+8. Prompt lifecycle hints (`{ type: "prompt_result", id?, agentInvoked }`) for scheduled prompts that later resolve without invoking the agent
+9. Subagent frames (`subagent_lifecycle`, `subagent_progress`, `subagent_event`), gated by `set_subagent_subscription`
+10. Builtin slash-command side channels (`command_output`, `session_info_update`, `config_update`)
 
 ### Inbound frame categories (stdin)
 
 1. `RpcCommand`
 2. `RpcExtensionUIResponse` (`{ type: "extension_ui_response", ... }`)
 3. Host tool updates/results (`host_tool_update`, `host_tool_result`)
-4. Host URI results (`host_uri_result`)
 
 ## Request/Response Correlation
 
@@ -90,7 +88,7 @@ Important edge behavior from runtime:
 - `{ id?, type: "get_available_commands" }`
 - `{ id?, type: "set_todos", phases: TodoPhase[] }`
 - `{ id?, type: "set_host_tools", tools: RpcHostToolDefinition[] }`
-- `{ id?, type: "set_host_uri_schemes", schemes: RpcHostUriSchemeDefinition[] }`
+- `{ id?, type: "set_host_uri_schemes", schemes: RpcHostUriSchemeDefinition[] }` (legacy wire shape; always rejected in Pi)
 - `{ id?, type: "set_subagent_subscription", level: "off" | "progress" | "events" }`
 - `{ id?, type: "get_subagents" }`
 - `{ id?, type: "get_subagent_messages", subagentId?: string, sessionFile?: string, fromByte?: number }`
@@ -304,35 +302,32 @@ call. Re-sending `set_host_tools` replaces the previous host-owned set.
 
 ### `set_host_uri_schemes` payload
 
-Replaces the current set of host-owned URL schemes the RPC server should
-dispatch reads/writes through:
+Host-defined URI registration is unavailable in Pi. The legacy command shape
+remains parseable for wire compatibility, but every request returns an error
+without registering, replacing, or unregistering any scheme:
 
 ```json
 {
   "id": "req_4",
   "type": "set_host_uri_schemes",
-  "schemes": [
-    {
-      "scheme": "db",
-      "description": "Virtual db row files",
-      "writable": true,
-      "immutable": false
-    }
-  ]
+  "schemes": [{ "scheme": "db", "writable": true }]
 }
 ```
-
-The response payload is:
 
 ```json
 {
-  "schemes": ["db"]
+  "id": "req_4",
+  "type": "response",
+  "command": "set_host_uri_schemes",
+  "success": false,
+  "error": "Host URI scheme registration is unavailable in Pi"
 }
 ```
 
-Schemes are case-insensitive on the wire and normalized to lowercase before
-the response is sent. Re-sending `set_host_uri_schemes` replaces the entire
-previous set — schemes missing from the new list are unregistered.
+Pi's internal-resource set is fixed at build time: `local://`, `agent://`,
+`artifact://`, `history://`, `mcp://`, `memory://`, `skill://`, `vault://`,
+`ssh://`, and `pi://`. The separate `conflict://` workflow remains
+purpose-built rather than host-defined.
 
 ## Event Stream Schema
 
@@ -505,82 +500,6 @@ Completion uses:
 ```
 
 Set top-level `isError: true` on `host_tool_result` to reject the pending host tool call and surface the returned text content as a tool error.
-
-## Host URI Sub-Protocol
-
-RPC hosts can also own custom URL schemes (virtual files). After
-`set_host_uri_schemes`, every read of `<scheme>://…` and write of
-`<scheme>://…` (when registered as `writable`) is bounced back to the host
-over the same transport.
-
-### Outbound request
-
-When a session tool resolves a host-owned URL, RPC mode emits:
-
-```json
-{
-  "type": "host_uri_request",
-  "id": "uri_1",
-  "operation": "read",
-  "url": "db://users/42"
-}
-```
-
-Writes look the same with `"operation": "write"` and an additional
-`"content": "..."` field carrying the full replacement bytes.
-
-If the request is later aborted (caller cancels, session ends), RPC mode
-emits:
-
-```json
-{
-  "type": "host_uri_cancel",
-  "id": "uri_cancel_1",
-  "targetId": "uri_1"
-}
-```
-
-### Inbound result
-
-For successful reads:
-
-```json
-{
-  "type": "host_uri_result",
-  "id": "uri_1",
-  "content": "id=42\nname=Alice\n",
-  "contentType": "text/plain",
-  "notes": ["fresh from cache"],
-  "immutable": false
-}
-```
-
-For successful writes, omit content:
-
-```json
-{ "type": "host_uri_result", "id": "uri_1" }
-```
-
-To reject the request, set `isError: true` and either populate `error` with
-a message or fall back to `content` for textual error surfacing:
-
-```json
-{
-  "type": "host_uri_result",
-  "id": "uri_1",
-  "isError": true,
-  "error": "row 42 not found"
-}
-```
-
-### Constraints
-
-- The agent's `edit` tool does not target host URIs. Hosts that want to
-  mutate virtual files expose `write` and let the model use the `write` tool
-  with replacement content.
-- Schemes are global to the process; `set_host_uri_schemes` replaces the
-  previous set, unregistering anything not in the new list.
-- Schemes are normalized to lowercase before registration.
 
 ## Error Model and Recoverability
 

@@ -10,7 +10,6 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getOrFetchIssue, getOrFetchPr } from "@oh-my-pi/pi-coding-agent/tools/gh";
 import {
 	clearAll,
 	getCached,
@@ -22,6 +21,7 @@ import {
 import { ToolAbortError, throwIfAborted } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { getOrFetchIssue, getOrFetchPr } from "../../src/tools/gh";
 
 const TEST_REPO = "owner/example";
 const TEST_AUTH_KEY = "test-auth";

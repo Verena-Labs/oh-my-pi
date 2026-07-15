@@ -82,6 +82,14 @@ import { UserMessageSelectorComponent } from "../components/user-message-selecto
 import type { SessionObserverRegistry } from "../session-observer-registry";
 import { buildCopyTargets } from "../utils/copy-targets";
 
+function piAllowsSessionTree(): boolean {
+	return false;
+}
+
+function piAllowsSessionDeletion(): boolean {
+	return false;
+}
+
 const MANUAL_LOGIN_TIP = "Tip: You can complete pairing with /login <redirect URL>.";
 
 export class SelectorController {
@@ -758,25 +766,6 @@ export class SelectorController {
 						this.ctx.showError(error instanceof Error ? error.message : String(error));
 					}
 				},
-				onFallbackChainChange: (role, chain) => {
-					try {
-						const chains = { ...this.ctx.settings.get("retry.fallbackChains") };
-						if (chain.length === 0) {
-							delete chains[role];
-						} else {
-							chains[role] = chain;
-						}
-						this.ctx.settings.set("retry.fallbackChains", chains);
-						const roleInfo = getRoleInfo(role, settings);
-						this.ctx.showStatus(
-							chain.length > 0
-								? `${roleInfo?.name ?? role} fallbacks: ${chain.join(" → ")}`
-								: `${roleInfo?.name ?? role} fallbacks cleared`,
-						);
-					} catch (error) {
-						this.ctx.showError(error instanceof Error ? error.message : String(error));
-					}
-				},
 				onLoginRequest: providerId => {
 					done();
 					void this.#loginThenReopenModelHub(providerId);
@@ -970,6 +959,10 @@ export class SelectorController {
 	}
 
 	showTreeSelector(): void {
+		if (!piAllowsSessionTree()) {
+			this.ctx.showStatus("Session tree navigation is unavailable in Pi");
+			return;
+		}
 		const tree = this.ctx.sessionManager.getTree();
 		const realLeafId = this.ctx.sessionManager.getLeafId();
 
@@ -1101,11 +1094,6 @@ export class SelectorController {
 			this.ctx.sessionManager.getCwd(),
 			this.ctx.sessionManager.getSessionDir(),
 		);
-		// Always open in current-folder scope; the empty-state hint in SessionList
-		// invites the user to Tab into all-projects rather than silently surfacing
-		// every project's history when the cwd has nothing to resume. See #3099.
-		const historyStorage = this.ctx.historyStorage;
-		const historyMatcher = historyStorage ? (query: string) => historyStorage.matchingSessionIds(query) : undefined;
 		// Fullscreen session picker on the alternate screen (the /settings idiom):
 		// the overlay borrows the alt buffer and enables mouse tracking (wheel
 		// scroll + click-to-resume) for its lifetime, leaving the transcript
@@ -1135,22 +1123,6 @@ export class SelectorController {
 				void this.ctx.shutdown();
 			},
 			{
-				onDelete: async (session: SessionInfo) => {
-					if (!(await this.#detachActiveSessionBeforeDeletion(session.path))) {
-						return false;
-					}
-					const storage = new FileSessionStorage();
-					try {
-						await storage.deleteSessionWithArtifacts(session.path);
-						return true;
-					} catch (err) {
-						throw new Error(`Failed to delete session: ${err instanceof Error ? err.message : String(err)}`, {
-							cause: err,
-						});
-					}
-				},
-				historyMatcher,
-				loadAllSessions: () => SessionManager.listAll(),
 				getTerminalRows: () => this.ctx.ui.terminal.rows,
 				fillHeight: true,
 			},
@@ -1223,6 +1195,10 @@ export class SelectorController {
 	}
 
 	async handleSessionDeleteCommand(): Promise<void> {
+		if (!piAllowsSessionDeletion()) {
+			this.ctx.showWarning("Unknown command.");
+			return;
+		}
 		const sessionFile = this.ctx.sessionManager.getSessionFile();
 		if (!sessionFile) {
 			this.ctx.showError("No session file to delete (in-memory session)");

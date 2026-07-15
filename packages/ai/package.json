@@ -69,22 +69,12 @@
       "types": "./src/*.ts",
       "import": "./src/*.ts"
     },
-    "./auth-broker": {
-      "types": "./src/auth-broker/index.ts",
-      "import": "./src/auth-broker/index.ts"
-    },
-    "./auth-broker/*": {
-      "types": "./src/auth-broker/*.ts",
-      "import": "./src/auth-broker/*.ts"
-    },
-    "./auth-gateway": {
-      "types": "./src/auth-gateway/index.ts",
-      "import": "./src/auth-gateway/index.ts"
-    },
-    "./auth-gateway/*": {
-      "types": "./src/auth-gateway/*.ts",
-      "import": "./src/auth-gateway/*.ts"
-    },
+    "./auth-broker": null,
+    "./auth-broker.js": null,
+    "./auth-broker/*": null,
+    "./auth-gateway": null,
+    "./auth-gateway.js": null,
+    "./auth-gateway/*": null,
     "./providers/*": {
       "types": "./src/providers/*.ts",
       "import": "./src/providers/*.ts"

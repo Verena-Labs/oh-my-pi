@@ -1,83 +1,57 @@
 # checkpoint
 
-> Mark the current top-level conversation state so later `rewind` can collapse exploratory context into a report.
+> Mark the current top-level conversation so later `rewind` can replace exploratory context with a concise report.
 
 ## Source
+
 - Entry: `packages/coding-agent/src/tools/checkpoint.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/checkpoint.md`
 - Key collaborators:
-  - `packages/coding-agent/src/session/agent-session.ts` — captures the active checkpoint after tool success.
-  - `packages/coding-agent/src/session/session-manager.ts` — persists the normal session entry stream; not the active checkpoint marker.
-  - `packages/coding-agent/src/tools/index.ts` — registers the tool and gates it behind `checkpoint.enabled`.
-  - `packages/coding-agent/src/config/settings-schema.ts` — defines the disabled-by-default feature flag.
+  - `packages/coding-agent/src/session/agent-session.ts` captures and reconstructs checkpoint state.
+  - `packages/coding-agent/src/session/session-manager.ts` persists the ordinary checkpoint tool result used as the resumable boundary.
+  - `packages/coding-agent/src/tools/index.ts` registers both checkpoint tools and gates them behind `checkpoint.enabled`.
 
-## Inputs
+## Input
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `goal` | `string` | Yes | Investigation goal. Required by the schema and echoed in the tool result. |
+| `goal` | `string` | Yes | A name for the investigation goal. |
 
-## Outputs
-The tool returns a single text result plus structured details:
+## Output
 
-- text body:
-  - `Checkpoint created.`
-  - `Goal: <goal>`
-  - `Run your investigation, then call rewind with a concise report.`
-- `details`:
-  - `goal: string`
-  - `startedAt: string` — ISO timestamp created inside `CheckpointTool.execute()`
+The tool returns:
 
-No checkpoint ID, artifact URI, job handle, file path, or restore token is returned.
+- `Checkpoint created.`
+- `Goal: <goal>`
+- `Run your investigation, then call rewind with a concise report.`
+- structured details containing `goal` and an ISO `startedAt` timestamp.
+
+It does not return a file snapshot, Git reference, artifact, job, or external restore token.
 
 ## Flow
-1. `CheckpointTool.createIf()` in `packages/coding-agent/src/tools/checkpoint.ts` returns `null` for subagents by checking `session.taskDepth`; only top-level sessions can see the tool.
-2. `CheckpointTool.execute()` rejects subagent calls again with `ToolError("Checkpoint not available in subagents.")`.
-3. It rejects nested checkpoints with `ToolError("Checkpoint already active.")` when `session.getCheckpointState?.()` is already set.
-4. It creates `startedAt = new Date().toISOString()` and returns a normal `toolResult()` payload. The tool itself does not persist anything.
-5. On the later `tool_execution_end` event, `AgentSession` in `packages/coding-agent/src/session/agent-session.ts` detects successful `checkpoint` execution and captures three in-memory fields:
-   - `checkpointMessageCount` — current `agent.state.messages.length`, after the checkpoint tool result has already been appended
-   - `checkpointEntryId` — `sessionManager.getEntries().at(-1)?.id ?? null`, i.e. the last persisted session entry ID at checkpoint time
-   - `startedAt` — copied from tool details or regenerated
-6. `AgentSession` stores that object in its private `#checkpointState` field and clears `#pendingRewindReport`.
 
-## Side Effects
-- Session state (transcript, memory, jobs, checkpoints, registries)
-  - Sets `AgentSession.#checkpointState` in memory.
-  - Records the checkpoint boundary as a message count plus a session entry ID.
-  - Enables the later yield guard: if a checkpoint is active and no rewind report is pending, `#enforceRewindBeforeYield()` injects a developer-role warning and schedules another turn.
-- User-visible prompts / interactive UI
-  - The tool result tells the model to call `rewind` after the investigation.
-  - If the agent tries to `yield` first, `AgentSession` injects:
+1. Only a top-level session can create a checkpoint; subagents reject the call.
+2. A second checkpoint is rejected while one is active.
+3. The tool emits an ordinary successful tool result. That result is persisted in the normal append-only session journal.
+4. `AgentSession` records the result's entry ID and timestamp as the active conversation boundary.
+5. On resume or session reconstruction, `AgentSession` scans the active branch. A successful checkpoint result without a later retained rewind report restores the active checkpoint, so `rewind` remains available after a process restart.
+6. Until rewind completes, yielding injects a reminder to finish the checkpoint with a report.
 
-```text
-<system-warning>
-You are in an active checkpoint. You MUST call rewind with your investigation findings before yielding. Do NOT yield without completing the checkpoint.
-</system-warning>
-```
+The runtime marker is private state reconstructed from ordinary session entries; there is no separately exposed checkpoint/session-tree API.
 
-## Limits & Caps
-- Availability is gated by `checkpoint.enabled`, default `false`, in `packages/coding-agent/src/config/settings-schema.ts`.
-- The tool is registered as discoverable in `packages/coding-agent/src/tools/index.ts`.
-- Only one active checkpoint is allowed per top-level session.
-- Checkpoint state is not persisted as a dedicated session entry. If the process exits, a resumed session can reload the conversation history, but not the live `#checkpointState` guard.
-- Session persistence still applies to the ordinary checkpoint tool call message. Global session persistence truncation is `MAX_PERSIST_CHARS = 500_000` in `packages/coding-agent/src/session/session-persistence.ts`.
+## Limits
+
+- Availability is controlled by `checkpoint.enabled`.
+- Top-level sessions only.
+- One active checkpoint at a time.
+- Conversation context only. Files, Git state, processes, artifacts, credentials, and other external state are neither captured nor restored.
+- The named goal labels the investigation for the model; there is no public checkpoint-ID picker or checkpoint tree.
 
 ## Errors
-- `ToolError("Checkpoint not available in subagents.")` — thrown for subagent sessions.
-- `ToolError("Checkpoint already active.")` — thrown when a prior checkpoint has not been rewound or cleared.
-- The tool body has no local `try/catch`; unexpected exceptions propagate.
 
-## Notes
-- Despite the summary string `Create a git-based checkpoint to save and restore session state`, the implementation does not call git and does not snapshot filesystem state.
-- Captured state is conversation/session metadata only:
-  - in-memory message count
-  - session entry ID in the session tree
-  - timestamp
-- Not captured:
-  - working tree contents
-  - staged changes
-  - artifacts
-  - blob-store contents
-  - SQLite history rows from `packages/coding-agent/src/session/history-storage.ts`
-  - auth or agent records from `packages/coding-agent/src/session/agent-storage.ts`
+- `Checkpoint not available in subagents.`
+- `Checkpoint already active.`
+
+## Related
+
+- [`rewind`](rewind.md)

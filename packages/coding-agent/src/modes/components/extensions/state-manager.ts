@@ -10,7 +10,6 @@ import type { ExtensionModule } from "../../../capability/extension-module";
 import type { Hook } from "../../../capability/hook";
 import type { MCPServer } from "../../../capability/mcp";
 import type { Prompt } from "../../../capability/prompt";
-import type { Rule } from "../../../capability/rule";
 import type { Skill } from "../../../capability/skill";
 import type { SlashCommand } from "../../../capability/slash-command";
 import type { CustomTool } from "../../../capability/tool";
@@ -110,17 +109,6 @@ export async function loadAllExtensions(cwd?: string, disabledIds?: string[]): P
 		});
 	} catch (error) {
 		logger.warn("Failed to load skills capability", { error: String(error) });
-	}
-
-	// Load rules
-	try {
-		const rules = await loadCapability<Rule>("rules", loadOpts);
-		addItems(rules.all, "rule", {
-			getDescription: r => r.description,
-			getTrigger: r => r.globs?.join(", ") || (r.alwaysApply ? "always" : undefined),
-		});
-	} catch (error) {
-		logger.warn("Failed to load rules capability", { error: String(error) });
 	}
 
 	// Load custom tools

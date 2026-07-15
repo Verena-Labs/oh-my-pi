@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { Glob } from "bun";
+import { PI_DOC_FILENAMES } from "../src/internal-urls/pi-docs-manifest";
 
 const packageDir = path.resolve(import.meta.dir, "..");
 const docsDir = path.resolve(packageDir, "../../docs");
@@ -20,14 +20,9 @@ function isStringArray(value: unknown): value is string[] {
 	return Array.isArray(value) && value.every(item => typeof item === "string");
 }
 
-/** Build the exact two-line `omp://` docs embed from the source `docs` Markdown corpus. */
+/** Build the exact two-line `pi://` docs embed from the public Pi docs manifest. */
 export async function buildDocsIndexPayload(): Promise<DocsIndexPayload> {
-	const glob = new Glob("**/*.md");
-	const files: string[] = [];
-	for await (const relativePath of glob.scan(docsDir)) {
-		files.push(relativePath.split(path.sep).join("/"));
-	}
-	files.sort();
+	const files = [...PI_DOC_FILENAMES].sort();
 
 	const bodies = await Promise.all(files.map(file => Bun.file(path.join(docsDir, file)).text()));
 	const bodiesB64 = Buffer.from(gzipSync(Buffer.from(JSON.stringify(bodies)), { level: 9 })).toString("base64");

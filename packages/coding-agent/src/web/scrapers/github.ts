@@ -121,7 +121,7 @@ export async function fetchGitHubApi(
 
 		const headers: Record<string, string> = {
 			Accept: "application/vnd.github.v3+json",
-			"User-Agent": "omp-web-fetch/1.0",
+			"User-Agent": "pi-web-fetch/1.0",
 		};
 
 		// Use GITHUB_TOKEN if available

@@ -30,6 +30,7 @@ import {
 import type { ModelRegistry } from "../../config/model-registry";
 import { getKnownRoleIds, getRoleInfo } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
+import { isPiLockedSetting } from "../../config/settings-schema";
 import { AUTO_THINKING, type ConfiguredThinkingLevel, getConfiguredThinkingLevelMetadata } from "../../thinking";
 import { theme } from "../theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
@@ -230,7 +231,9 @@ export class ModelHubComponent implements Component {
 		this.#settings = settings;
 		this.#registry = registry;
 		this.#scopedModels = scopedModels;
-		this.#callbacks = callbacks;
+		this.#callbacks = isPiLockedSetting("retry.fallbackChains")
+			? { ...callbacks, onFallbackChainChange: undefined }
+			: callbacks;
 
 		this.#browser = new ModelBrowser(settings, {
 			emptyText: () => this.#emptyStateMessage(),
@@ -504,6 +507,7 @@ export class ModelHubComponent implements Component {
 	 * or chain editors, so an edit through the hub replaces them wholesale.
 	 */
 	#fallbackChains(): Record<string, string[]> {
+		if (!this.#callbacks.onFallbackChainChange) return {};
 		try {
 			const chains = this.#settings.get("retry.fallbackChains");
 			if (!chains || typeof chains !== "object" || Array.isArray(chains)) return {};
@@ -535,6 +539,10 @@ export class ModelHubComponent implements Component {
 			}
 		}
 		rows.push({ kind: "newRole" });
+		if (!this.#callbacks.onFallbackChainChange) {
+			this.#rolesRows = rows;
+			return;
+		}
 		rows.push({ kind: "separator" });
 		const modelKeys = Object.keys(chains)
 			.filter(key => key.includes("/"))
@@ -790,17 +798,19 @@ export class ModelHubComponent implements Component {
 				action: assignedHere ? "unassign" : "assign",
 			});
 		}
-		chips.push({
-			label: `fallbacks:${item.model.id}`,
-			styled: theme.fg("muted", `fallbacks:${item.model.id}`),
-			action: "fallbackModel",
-		});
-		chips.push({
-			label: `fallbacks:${item.model.provider}/*`,
-			styled: theme.fg("muted", `fallbacks:${item.model.provider}/*`),
-			action: "fallbackProvider",
-		});
-		chips.push({ label: "fallback", styled: theme.fg("muted", "retry-fallback"), action: "fallback" });
+		if (this.#callbacks.onFallbackChainChange) {
+			chips.push({
+				label: `fallbacks:${item.model.id}`,
+				styled: theme.fg("muted", `fallbacks:${item.model.id}`),
+				action: "fallbackModel",
+			});
+			chips.push({
+				label: `fallbacks:${item.model.provider}/*`,
+				styled: theme.fg("muted", `fallbacks:${item.model.provider}/*`),
+				action: "fallbackProvider",
+			});
+			chips.push({ label: "fallback", styled: theme.fg("muted", "retry-fallback"), action: "fallback" });
+		}
 		this.#strip = { kind: "role", item, chips, index: 0, returnToRoles: false };
 	}
 
@@ -1277,7 +1287,7 @@ export class ModelHubComponent implements Component {
 			else if (row?.kind === "chainKey") this.#setFallbackChain(row.role, []);
 			return;
 		}
-		if (printable === "f") {
+		if (printable === "f" && this.#callbacks.onFallbackChainChange) {
 			if (row?.kind === "newFallback") this.#startAssignFallbackKey();
 			else if (row && row.kind !== "newRole" && row.kind !== "separator") {
 				this.#startAssignFallback(row.role, null);
@@ -1569,7 +1579,9 @@ export class ModelHubComponent implements Component {
 				text = `Recently used models${scopedSuffix}`;
 				break;
 			case "roles":
-				text = "Model roles — f adds a retry fallback, cleared roles fall back to auto-selection";
+				text = this.#callbacks.onFallbackChainChange
+					? "Model roles — f adds a retry fallback, cleared roles fall back to auto-selection"
+					: "Model roles — cleared roles return to auto-selection";
 				break;
 			case "provider":
 				if (entry.locked) {
@@ -1799,7 +1811,9 @@ export class ModelHubComponent implements Component {
 			if (row?.kind === "newFallback") {
 				return "↑/↓ rows · Enter new model/provider fallback chain · ← providers";
 			}
-			return "↑/↓ rows · Enter pick · f fallback · x clear · t thinking · c cycle · [/] reorder · n new";
+			return this.#callbacks.onFallbackChainChange
+				? "↑/↓ rows · Enter pick · f fallback · x clear · t thinking · c cycle · [/] reorder · n new"
+				: "↑/↓ rows · Enter pick · x clear · t thinking · c cycle · [/] reorder · n new";
 		}
 		if (entry.kind === "provider" && entry.locked) {
 			return entry.oauth ? "Enter log in · ↑/↓ providers · Esc close" : "↑/↓ providers · Esc close";

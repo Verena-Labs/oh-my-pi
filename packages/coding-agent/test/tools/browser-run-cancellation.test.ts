@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { postmortem } from "@oh-my-pi/pi-utils";
-import { JsRuntime, type RuntimeHooks } from "../../src/eval/js/shared/runtime";
 import { bindBrowserRunFacade, markHandled, waitForBrowserRun } from "../../src/tools/browser/run-cancellation";
+import { type BrowserRuntimeHooks, createBrowserRuntime } from "../../src/tools/browser/runtime";
 import { ToolAbortError } from "../../src/tools/tool-errors";
 
 async function collectUnhandledRejections(action: () => void | Promise<void>): Promise<unknown[]> {
@@ -147,16 +147,15 @@ describe("browser run cancellation", () => {
 	});
 
 	it("aborts run-scoped wait() before a stale continuation can mutate the tab", async () => {
-		const runtime = new JsRuntime({ initialCwd: process.cwd(), sessionId: "browser-run-cancellation-test" });
+		const runtime = createBrowserRuntime(process.cwd(), "browser-run-cancellation-test");
 		const timeoutSignal = AbortSignal.timeout(20);
 		const runAc = new AbortController();
 		const signal = AbortSignal.any([timeoutSignal, runAc.signal]);
 		const state: { lateNavigation?: string; displays: string[] } = { displays: [] };
 		const { promise: cancelRejection, reject } = Promise.withResolvers<never>();
-		const hooks: RuntimeHooks = {
+		const hooks: BrowserRuntimeHooks = {
 			onText: chunk => state.displays.push(chunk),
 			onDisplay: output => state.displays.push(JSON.stringify(output)),
-			callTool: async () => undefined,
 		};
 		timeoutSignal.addEventListener("abort", () => reject(new Error("Browser code execution timed out after 20ms")), {
 			once: true,
@@ -190,5 +189,6 @@ describe("browser run cancellation", () => {
 
 		expect(state.lateNavigation).toBeUndefined();
 		expect(state.displays).toEqual([]);
+		runtime.dispose();
 	});
 });

@@ -40,6 +40,8 @@ import {
 	type GroupPrefix,
 	type GroupTypeMap,
 	getDefault,
+	getPiLockedSetting,
+	isPiLockedSetting,
 	SETTINGS_SCHEMA,
 	type SettingPath,
 	type SettingValue,
@@ -139,28 +141,9 @@ export function validateProviderMaxInFlightRequests(value: unknown): Record<stri
 }
 
 const PATH_SCOPED_ARRAY_SETTINGS = new Set<SettingPath>(["enabledModels", "disabledProviders"]);
-type PathScopedStringArrayEntry = {
-	path?: unknown;
-	paths?: unknown;
-	pathPrefix?: unknown;
-	pathPrefixes?: unknown;
-	values?: unknown;
-	items?: unknown;
-	models?: unknown;
-	providers?: unknown;
-};
 
 function expandTilde(p: string): string {
 	return p === "~" ? os.homedir() : p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
-}
-
-function normalizePathPrefix(prefix: string): string {
-	return path.resolve(expandTilde(prefix));
-}
-
-function pathMatchesPrefix(cwd: string, prefix: string): boolean {
-	const relative = path.relative(normalizePathPrefix(prefix), path.resolve(cwd));
-	return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function stringArrayFromUnknown(value: unknown): string[] {
@@ -186,42 +169,9 @@ type EditVariantEntry = {
 	mode: EditMode;
 };
 
-function resolvePathScopedStringArray(settingPath: SettingPath, value: unknown, cwd: string): string[] | undefined {
+function resolvePathScopedStringArray(settingPath: SettingPath, value: unknown): string[] | undefined {
 	if (!PATH_SCOPED_ARRAY_SETTINGS.has(settingPath) || !Array.isArray(value)) return undefined;
-
-	const resolved: string[] = [];
-	for (const entry of value) {
-		if (typeof entry === "string") {
-			resolved.push(entry);
-			continue;
-		}
-		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-
-		const scoped = entry as PathScopedStringArrayEntry;
-		const prefixes = [
-			...stringArrayFromUnknown(scoped.path),
-			...stringArrayFromUnknown(scoped.paths),
-			...stringArrayFromUnknown(scoped.pathPrefix),
-			...stringArrayFromUnknown(scoped.pathPrefixes),
-		];
-		if (prefixes.length === 0 || !prefixes.some(prefix => pathMatchesPrefix(cwd, prefix))) continue;
-
-		const values =
-			settingPath === "enabledModels"
-				? [
-						...stringArrayFromUnknown(scoped.values),
-						...stringArrayFromUnknown(scoped.items),
-						...stringArrayFromUnknown(scoped.models),
-					]
-				: [
-						...stringArrayFromUnknown(scoped.values),
-						...stringArrayFromUnknown(scoped.items),
-						...stringArrayFromUnknown(scoped.providers),
-					];
-		resolved.push(...values);
-	}
-
-	return resolved;
+	return stringArrayFromUnknown(value);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -356,13 +306,14 @@ export class Settings {
 	 * Returns the merged value from global + project + overrides, or the default.
 	 */
 	get<P extends SettingPath>(path: P): SettingValue<P> {
+		const piLocked = getPiLockedSetting(path);
+		if (piLocked.locked) return piLocked.value;
 		if (this.#resolvedCache.has(path)) {
 			return this.#resolvedCache.get(path) as SettingValue<P>;
 		}
 
 		const value = getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]);
-		const resolved =
-			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
+		const resolved = value !== undefined ? (resolvePathScopedStringArray(path, value) ?? value) : getDefault(path);
 		this.#resolvedCache.set(path, resolved);
 		return resolved as SettingValue<P>;
 	}
@@ -372,6 +323,7 @@ export class Settings {
 	 * config, or runtime override) rather than falling back to the schema default.
 	 */
 	isConfigured(path: SettingPath): boolean {
+		if (isPiLockedSetting(path)) return false;
 		return getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]) !== undefined;
 	}
 
@@ -381,6 +333,9 @@ export class Settings {
 	 * Triggers hooks for settings that have side effects.
 	 */
 	set<P extends SettingPath>(path: P, value: SettingValue<P>): void {
+		if (isPiLockedSetting(path)) {
+			throw new Error(`Setting "${path}" is unavailable in Pi.`);
+		}
 		const prev = this.get(path);
 		const segments = path.split(".");
 		setByPath(this.#global, segments, value);
@@ -401,6 +356,9 @@ export class Settings {
 	 * Apply runtime overrides (not persisted).
 	 */
 	override<P extends SettingPath>(path: P, value: SettingValue<P>): void {
+		if (isPiLockedSetting(path)) {
+			throw new Error(`Setting "${path}" is unavailable in Pi.`);
+		}
 		const prev = this.get(path);
 		const segments = path.split(".");
 		setByPath(this.#overrides, segments, value);
@@ -412,6 +370,7 @@ export class Settings {
 	 * Clear a runtime override.
 	 */
 	clearOverride(path: SettingPath): void {
+		if (isPiLockedSetting(path)) return;
 		const prev = this.get(path);
 		const segments = path.split(".");
 		let current = this.#overrides;
@@ -493,6 +452,58 @@ export class Settings {
 		this.#rebuildMerged();
 		this.#fireEffectiveSettingChanged("modelRoles", this.get("modelRoles"), prevModelRoles);
 		this.#fireAllHooks();
+	}
+
+	/**
+	 * Prepare a re-read of the global, project, and explicit overlay layers
+	 * without changing this live instance or firing setting hooks. Runtime
+	 * overrides are copied into the prepared view so discovery can validate the
+	 * exact effective settings that would be adopted.
+	 */
+	async prepareReload(): Promise<Settings> {
+		if (!this.#persist) return this;
+		await this.flush();
+		const prepared = new Settings({
+			cwd: this.#cwd,
+			agentDir: this.#agentDir,
+			readOnly: true,
+		});
+		prepared.#configPath = this.#configPath;
+		prepared.#configFiles = [...this.#configFiles];
+		prepared.#overrides = structuredClone(this.#overrides);
+		await prepared.#loadReadOnly();
+		return prepared;
+	}
+
+	/**
+	 * Adopt a view returned by {@link prepareReload} without replacing this
+	 * Settings instance. This is the commit point for callers that need to stage
+	 * config-dependent work before making the new effective settings visible.
+	 */
+	adoptReload(prepared: Settings): void {
+		if (prepared === this) return;
+		if (prepared.#cwd !== this.#cwd || prepared.#agentDir !== this.#agentDir) {
+			throw new Error("Cannot adopt settings prepared for a different project");
+		}
+		const prevModelRoles = this.get("modelRoles");
+		this.#configPath = prepared.#configPath;
+		this.#global = structuredClone(prepared.#global);
+		this.#project = structuredClone(prepared.#project);
+		this.#configOverlay = structuredClone(prepared.#configOverlay);
+		this.#rebuildMerged();
+		this.#fireEffectiveSettingChanged("modelRoles", this.get("modelRoles"), prevModelRoles);
+		this.#fireAllHooks({ suppressErrors: true });
+	}
+
+	/**
+	 * Re-read and immediately adopt persisted settings while retaining stable
+	 * object identity. Transactional reloaders should use prepareReload/adoptReload
+	 * so dependent candidates can be validated before this commit point.
+	 */
+	async reload(): Promise<void> {
+		const prepared = await this.prepareReload();
+		validateProviderMaxInFlightRequests(prepared.get("providers.maxInFlightRequests"));
+		this.adoptReload(prepared);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -861,6 +872,27 @@ export class Settings {
 
 	/** Apply schema migrations to raw settings */
 	#migrateRawSettings(raw: RawSettings): RawSettings {
+		// Pi's legacy settings.json stored the default model as two top-level
+		// fields. Preserve that choice in the current role-based setting, while
+		// allowing an explicit modelRoles.default to win. The legacy fields are
+		// always removed so the migrated config is schema-clean and idempotent.
+		const legacyDefaultProvider = raw.defaultProvider;
+		const legacyDefaultModel = raw.defaultModel;
+		if (
+			typeof legacyDefaultProvider === "string" &&
+			legacyDefaultProvider.trim().length > 0 &&
+			typeof legacyDefaultModel === "string" &&
+			legacyDefaultModel.trim().length > 0
+		) {
+			const modelRoles = isRecord(raw.modelRoles) ? raw.modelRoles : {};
+			if (!("default" in modelRoles)) {
+				modelRoles.default = `${legacyDefaultProvider.trim()}/${legacyDefaultModel.trim()}`;
+				raw.modelRoles = modelRoles;
+			}
+		}
+		delete raw.defaultProvider;
+		delete raw.defaultModel;
+
 		// queueMode -> steeringMode
 		if ("queueMode" in raw && !("steeringMode" in raw)) {
 			raw.steeringMode = raw.queueMode;
@@ -1380,12 +1412,17 @@ export class Settings {
 		this.#editVariantCache = undefined;
 	}
 
-	#fireAllHooks(): void {
+	#fireAllHooks(options?: { suppressErrors?: boolean }): void {
 		for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
 			const hook = SETTING_HOOKS[key];
 			if (hook) {
-				const value = this.get(key);
-				hook(value, value);
+				try {
+					const value = this.get(key);
+					hook(value, value);
+				} catch (error) {
+					if (!options?.suppressErrors) throw error;
+					logger.warn("Settings: reload hook failed", { path: key, error: String(error) });
+				}
 			}
 		}
 	}

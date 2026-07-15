@@ -219,7 +219,7 @@ describe("buildSessionContext", () => {
 			expect((ctx.messages[0] as any).summary).toContain("Empty summary");
 		});
 
-		it("uses preserved OpenAI replacement history instead of kept raw messages", () => {
+		it("ignores legacy OpenAI replacement history and keeps the Pi baseline messages", () => {
 			const remoteCompaction: CompactionEntry = {
 				...compaction("3", "2", "Remote summary", "1"),
 				preserveData: {
@@ -240,21 +240,16 @@ describe("buildSessionContext", () => {
 				msg("4", "3", "user", "after compact"),
 			];
 			const ctx = buildSessionContext(entries);
-			expect(ctx.messages).toHaveLength(2);
+			expect(ctx.messages).toHaveLength(4);
 			expect(ctx.messages[0]?.role).toBe("compactionSummary");
 			if (ctx.messages[0]?.role !== "compactionSummary") throw new Error("Expected compaction summary message");
-			expect(ctx.messages[0].providerPayload).toEqual({
-				type: "openaiResponsesHistory",
-				provider: "openai",
-				items: [
-					{ type: "message", role: "user", content: [{ type: "input_text", text: "Preserved user" }] },
-					{ type: "compaction", encrypted_content: "enc_123" },
-				],
-			});
-			expect((ctx.messages[1] as { content: string }).content).toBe("after compact");
+			expect(ctx.messages[0].providerPayload).toBeUndefined();
+			expect((ctx.messages[1] as { content: string }).content).toBe("first");
+			expect((ctx.messages[2] as { content: Array<{ text: string }> }).content[0]?.text).toBe("response");
+			expect((ctx.messages[3] as { content: string }).content).toBe("after compact");
 		});
 
-		it("caps snapcompact frame payload in LLM context but preserves transcript frames", () => {
+		it("does not reattach snapcompact frames to LLM or transcript contexts", () => {
 			const oldFrame = "o".repeat(Math.ceil(snapcompact.FRAME_DATA_BYTES_BUDGET / 2) + 1);
 			const newFrame = "n".repeat(oldFrame.length);
 			const compacted: CompactionEntry = {
@@ -282,25 +277,12 @@ describe("buildSessionContext", () => {
 			const llmContext = buildSessionContext(entries);
 			const summary = llmContext.messages[0];
 			if (summary?.role !== "compactionSummary") throw new Error("Expected LLM compaction summary");
-			const imageBlocks = summary.blocks?.filter(block => block.type === "image");
-			expect(imageBlocks).toHaveLength(1);
-			const keptImage = imageBlocks?.[0];
-			if (keptImage?.type !== "image") throw new Error("Expected kept snapcompact image");
-			expect(keptImage.data).toBe(newFrame);
-			const blocks = summary.blocks ?? [];
-			const noticeIndex = blocks.findIndex(
-				block => block.type === "text" && block.text.includes("image middle omitted"),
-			);
-			const imageIndex = blocks.findIndex(block => block.type === "image");
-			expect(noticeIndex).toBeGreaterThanOrEqual(0);
-			// Omitted frames are the oldest archived images, so the gap notice must
-			// precede the kept (newer) image to keep blocks oldest-to-newest.
-			expect(noticeIndex).toBeLessThan(imageIndex);
+			expect(summary.blocks?.filter(block => block.type === "image") ?? []).toHaveLength(0);
 
 			const transcript = buildSessionContext(entries, undefined, undefined, { transcript: true });
 			const transcriptSummary = transcript.messages[2];
 			if (transcriptSummary?.role !== "compactionSummary") throw new Error("Expected transcript compaction summary");
-			expect(transcriptSummary.blocks?.filter(block => block.type === "image")).toHaveLength(2);
+			expect(transcriptSummary.blocks?.filter(block => block.type === "image") ?? []).toHaveLength(0);
 		});
 
 		it("does not rehydrate legacy oversized snapcompact frames into active LLM context (#4470)", () => {
@@ -340,10 +322,10 @@ describe("buildSessionContext", () => {
 			const blocks = summary.blocks ?? [];
 			expect(summary.summary).toContain("Legacy snapcompact summary");
 			expect(blocks.some(block => block.type === "text" && block.text.includes("oldest retained snapcompact"))).toBe(
-				true,
+				false,
 			);
 			expect(blocks.some(block => block.type === "text" && block.text.includes("newest retained snapcompact"))).toBe(
-				true,
+				false,
 			);
 			expect(blocks.filter(block => block.type === "image")).toHaveLength(0);
 			expect(summary.images ?? []).toHaveLength(0);
@@ -351,10 +333,10 @@ describe("buildSessionContext", () => {
 			const transcript = buildSessionContext(entries, undefined, undefined, { transcript: true });
 			const transcriptSummary = transcript.messages[2];
 			if (transcriptSummary?.role !== "compactionSummary") throw new Error("Expected transcript compaction summary");
-			expect(transcriptSummary.blocks?.filter(block => block.type === "image")).toHaveLength(17);
+			expect(transcriptSummary.blocks?.filter(block => block.type === "image") ?? []).toHaveLength(0);
 		});
 
-		it("keeps current oversized snapcompact frame archives in active LLM context", () => {
+		it("does not attach current oversized snapcompact frame archives", () => {
 			const framePayload = "A".repeat(100_000);
 			const archiveText = `Current archive source\n${"archived history ".repeat(22_000)}`;
 			const compacted: CompactionEntry = {
@@ -389,10 +371,10 @@ describe("buildSessionContext", () => {
 			const ctx = buildSessionContext(entries);
 			const summary = ctx.messages[0];
 			if (summary?.role !== "compactionSummary") throw new Error("Expected active compaction summary");
-			expect(summary.blocks?.filter(block => block.type === "image")).toHaveLength(17);
+			expect(summary.blocks?.filter(block => block.type === "image") ?? []).toHaveLength(0);
 		});
 
-		it("keeps small legacy snapcompact frame archives in active LLM context", () => {
+		it("does not attach small legacy snapcompact frame archives", () => {
 			const archiveText = `Large legacy text-only counter\n${"archived history ".repeat(22_000)}`;
 			const compacted: CompactionEntry = {
 				...compaction("3", "2", "Small legacy snapcompact summary", "1"),
@@ -423,7 +405,7 @@ describe("buildSessionContext", () => {
 			const ctx = buildSessionContext(entries);
 			const summary = ctx.messages[0];
 			if (summary?.role !== "compactionSummary") throw new Error("Expected active compaction summary");
-			expect(summary.blocks?.filter(block => block.type === "image")).toHaveLength(2);
+			expect(summary.blocks?.filter(block => block.type === "image") ?? []).toHaveLength(0);
 		});
 
 		it("multiple compactions uses latest", () => {

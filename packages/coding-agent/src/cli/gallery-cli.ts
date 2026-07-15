@@ -13,6 +13,7 @@ import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
 import { ToolExecutionComponent } from "../modes/components/tool-execution";
 import { initTheme, theme } from "../modes/theme/theme";
+import { isPiDisabledToolName } from "../tools/builtin-names";
 import { toolRenderers } from "../tools/renderers";
 import { type GalleryFixture, type GalleryResult, galleryFixtures } from "./gallery-fixtures";
 import { captureGalleryScreenshots } from "./gallery-screenshot";
@@ -89,6 +90,19 @@ const GENERIC_ERROR: GalleryResult = {
 	isError: true,
 };
 
+function assertPiGalleryTool(name: string): void {
+	if (isPiDisabledToolName(name)) {
+		throw new Error(`Tool '${name}' is unavailable in the Pi gallery.`);
+	}
+}
+
+/** Renderer and fixture names that are actually available in Pi. */
+export function getGalleryToolNames(): string[] {
+	return Array.from(new Set([...Object.keys(toolRenderers), ...Object.keys(galleryFixtures)]))
+		.filter(name => !isPiDisabledToolName(name))
+		.sort();
+}
+
 /**
  * Build the fake `AgentTool` the component needs for its label, edit mode, and —
  * for `customRendered` fixtures — the renderer functions that route it through
@@ -113,6 +127,7 @@ function fakeToolFor(name: string, fixture: GalleryFixture | undefined): AgentTo
 
 /** The curated fixture for a tool, or a generic one for registry tools lacking sample data. */
 export function resolveFixture(name: string): GalleryFixture {
+	assertPiGalleryTool(name);
 	return (
 		galleryFixtures[name] ??
 		({
@@ -134,6 +149,7 @@ export async function renderGalleryState(
 	width: number,
 	expanded = false,
 ): Promise<readonly string[]> {
+	assertPiGalleryTool(name);
 	if (fixture.renderState) {
 		return await fixture.renderState(state, width, expanded);
 	}
@@ -245,7 +261,7 @@ export async function runGalleryCommand(args: GalleryCommandArgs): Promise<void>
 	// Renderer-registry tools plus fixture-only tools (no dedicated renderer,
 	// e.g. `report_tool_issue` / custom extension tools) so the gallery covers
 	// the generic fallback + custom-tool branches too.
-	const allNames = Array.from(new Set([...Object.keys(toolRenderers), ...Object.keys(galleryFixtures)])).sort();
+	const allNames = getGalleryToolNames();
 	const names = args.tool ? allNames.filter(name => name === args.tool) : allNames;
 	if (args.tool && names.length === 0) {
 		process.stdout.write(`Unknown tool '${args.tool}'. Known tools: ${allNames.join(", ")}\n`);

@@ -18,7 +18,7 @@ import { clearCache } from "@oh-my-pi/pi-coding-agent/capability/fs";
 import type { Skill } from "@oh-my-pi/pi-coding-agent/capability/skill";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 import "@oh-my-pi/pi-coding-agent/capability/skill";
-import "@oh-my-pi/pi-coding-agent/discovery/github";
+import "../../src/discovery/github";
 
 function writeSkill(root: string, name: string, description: string | null): void {
 	const skillDir = path.join(root, name);

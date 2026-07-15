@@ -11,8 +11,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/memories";
 import { localBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/local-backend";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { LearnTool } from "@oh-my-pi/pi-coding-agent/tools/learn";
+import { LearnTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 Bun.env.PI_PYTHON_SKIP_CHECK = "1";
@@ -292,7 +291,7 @@ describe("learn tool (local backend)", () => {
 	});
 
 	function localSession(): ToolSession {
-		const settings = Settings.isolated({ "autolearn.enabled": true, "memory.backend": "local" });
+		const settings = Settings.isolated({ "memory.backend": "local" });
 		spyOn(settings, "getAgentDir").mockReturnValue(agentDir);
 		spyOn(settings, "getCwd").mockReturnValue(projCwd);
 		return {

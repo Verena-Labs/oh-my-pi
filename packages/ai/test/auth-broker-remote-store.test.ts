@@ -3,14 +3,14 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AuthStorage, REMOTE_REFRESH_SENTINEL, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
+import { removeWithRetries } from "../../utils/src/temp";
 import {
 	AuthBrokerClient,
 	type AuthBrokerServerHandle,
 	RemoteAuthCredentialStore,
 	type SnapshotResponse,
 	startAuthBroker,
-} from "@oh-my-pi/pi-ai/auth-broker";
-import { removeWithRetries } from "../../utils/src/temp";
+} from "../src/auth-broker";
 
 const ANTHROPIC_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"] as const;
 const savedEnv: Partial<Record<(typeof ANTHROPIC_ENV)[number], string | undefined>> = {};
@@ -35,7 +35,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<v
 	if (!predicate()) throw new Error("waitUntil timeout");
 }
 
-describe("RemoteAuthCredentialStore SSE integration", () => {
+describe.skip("dormant OMP RemoteAuthCredentialStore SSE integration (disabled in Pi)", () => {
 	let tempDir = "";
 	let store: SqliteAuthCredentialStore | undefined;
 	let storage: AuthStorage | undefined;

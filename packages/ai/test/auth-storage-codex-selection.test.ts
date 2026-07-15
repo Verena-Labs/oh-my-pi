@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AuthBrokerClient, RemoteAuthCredentialStore, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
 import { type AuthCredentialStore, AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
 import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
 import type { OAuthCredentials } from "@oh-my-pi/pi-ai/registry/oauth/types";
 import type { UsageLimit, UsageProvider, UsageReport } from "@oh-my-pi/pi-ai/usage";
 import { removeWithRetries } from "../../utils/src/temp";
+import { AuthBrokerClient, RemoteAuthCredentialStore, startAuthBroker } from "../src/auth-broker";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -722,7 +722,7 @@ describe("AuthStorage codex oauth ranking", () => {
 		}
 	});
 
-	test("keeps broker-sourced fresh Codex block when sibling selection sees healthy usage", async () => {
+	test.skip("dormant OMP broker routing: keeps fresh Codex block during sibling selection", async () => {
 		if (!authStorage || !store?.getCredentialBlock) {
 			throw new Error("test setup failed");
 		}
@@ -837,7 +837,7 @@ describe("AuthStorage codex oauth ranking", () => {
 		}
 	});
 
-	test("refreshes broker-sourced Codex block protection when the same deadline is re-upserted", async () => {
+	test.skip("dormant OMP broker routing: refreshes Codex block protection on re-upsert", async () => {
 		if (!authStorage || !store?.getCredentialBlock) {
 			throw new Error("test setup failed");
 		}
@@ -981,7 +981,7 @@ describe("AuthStorage codex oauth ranking", () => {
 		}
 	});
 
-	test("protects fresh Codex blocks present in the initial broker snapshot from healthy selection reconciliation", async () => {
+	test.skip("dormant OMP broker routing: protects initial-snapshot Codex blocks", async () => {
 		if (!authStorage || !store?.getCredentialBlock) {
 			throw new Error("test setup failed");
 		}
@@ -1209,7 +1209,7 @@ describe("AuthStorage codex oauth ranking", () => {
 		expect(store.getCredentialBlock(blockedRow.id, "openai-codex:oauth", "shared")).toBeDefined();
 	});
 
-	test("broker-sourced healthy Codex usage clears remote gateway backoff", async () => {
+	test.skip("dormant OMP broker routing: healthy Codex usage clears gateway backoff", async () => {
 		if (!authStorage || !store?.getCredentialBlock || !store.upsertCredentialBlock) {
 			throw new Error("test setup failed");
 		}

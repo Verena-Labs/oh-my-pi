@@ -56,7 +56,16 @@ describe("issue #980 provider-qualified model resolution", () => {
 		});
 		expect(cliResolved.model).toBeUndefined();
 		expect(cliResolved.error).toBe(
-			'Model "anthropic/claude-3-7-sonnet" not found. Run "omp models" to see available models.',
+			'Model "anthropic/claude-3-7-sonnet" not found. Run "pi models" to see available models.',
+		);
+
+		const unknownProvider = resolveCliModel({
+			cliProvider: "missing-provider",
+			cliModel: "claude-3-7-sonnet",
+			modelRegistry: { getAll: () => availableModels },
+		});
+		expect(unknownProvider.error).toBe(
+			'Unknown provider "missing-provider". Run "pi models" to see available providers/models.',
 		);
 	});
 });

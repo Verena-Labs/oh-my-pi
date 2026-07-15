@@ -220,10 +220,7 @@ export class RawSseViewerComponent implements Component {
 		const lines: string[] = [];
 		if (snapshot.droppedRecords > 0) {
 			lines.push(
-				theme.fg(
-					"warning",
-					`: omp-debug-dropped records=${snapshot.droppedRecords} chars=${snapshot.droppedChars}`,
-				),
+				theme.fg("warning", `: pi-debug-dropped records=${snapshot.droppedRecords} chars=${snapshot.droppedChars}`),
 			);
 			lines.push("");
 		}
@@ -233,7 +230,7 @@ export class RawSseViewerComponent implements Component {
 				lines.push(sanitizeFrameLine(line, innerWidth));
 			}
 			if (record.kind === "event" && record.truncated) {
-				lines.push(theme.fg("warning", `: omp-debug-event-truncated originalChars=${record.originalChars}`));
+				lines.push(theme.fg("warning", `: pi-debug-event-truncated originalChars=${record.originalChars}`));
 			}
 			lines.push("");
 		}

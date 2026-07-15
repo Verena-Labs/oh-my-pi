@@ -4,7 +4,7 @@
  * Unified types for web search responses across supported providers.
  */
 
-export const SEARCH_PROVIDER_OPTIONS = [
+const OMP_SEARCH_PROVIDER_OPTIONS = [
 	{
 		value: "auto",
 		label: "Auto",
@@ -76,30 +76,47 @@ export const SEARCH_PROVIDER_OPTIONS = [
 ] as const;
 
 /** Supported web search providers (every option except `auto`). */
-export type SearchProviderId = Exclude<(typeof SEARCH_PROVIDER_OPTIONS)[number]["value"], "auto">;
+export type SearchProviderId = Exclude<(typeof OMP_SEARCH_PROVIDER_OPTIONS)[number]["value"], "auto">;
+
+/** The only web-search providers selectable or loadable through Pi. */
+export const SEARCH_PROVIDER_OPTIONS = [
+	{ value: "auto", label: "Auto", description: "Use the configured Pi web-search provider" },
+	{
+		value: "codex",
+		label: "OpenAI",
+		description: "OpenAI native web search using the saved Codex credential",
+	},
+	{
+		value: "duckduckgo",
+		label: "DuckDuckGo",
+		description: "Credential-free web search",
+	},
+] as const;
+
+export type PiSearchProviderId = Exclude<(typeof SEARCH_PROVIDER_OPTIONS)[number]["value"], "auto">;
 
 /**
  * Auto-resolution priority order. Derived from {@link SEARCH_PROVIDER_OPTIONS}
  * (minus `auto`) so the settings/setup dropdown and `resolveProviderChain()`
  * share one source of truth and never drift apart.
  */
-export const SEARCH_PROVIDER_ORDER: readonly SearchProviderId[] = SEARCH_PROVIDER_OPTIONS.flatMap(option =>
-	option.value === "auto" ? [] : [option.value],
-);
+export const SEARCH_PROVIDER_ORDER: readonly PiSearchProviderId[] = ["codex", "duckduckgo"];
 
 export const SEARCH_PROVIDER_PREFERENCES = ["auto", ...SEARCH_PROVIDER_ORDER] as const;
 
 /** Display labels, derived from {@link SEARCH_PROVIDER_OPTIONS}. */
 export const SEARCH_PROVIDER_LABELS = Object.fromEntries(
-	SEARCH_PROVIDER_OPTIONS.flatMap(option => (option.value === "auto" ? [] : [[option.value, option.label] as const])),
+	OMP_SEARCH_PROVIDER_OPTIONS.flatMap(option =>
+		option.value === "auto" ? [] : [[option.value, option.label] as const],
+	),
 ) as Record<SearchProviderId, string>;
 
-export function isSearchProviderId(value: string): value is SearchProviderId {
-	return SEARCH_PROVIDER_ORDER.includes(value as SearchProviderId);
+export function isSearchProviderId(value: string): value is PiSearchProviderId {
+	return SEARCH_PROVIDER_ORDER.includes(value as PiSearchProviderId);
 }
 
-export function isSearchProviderPreference(value: string): value is SearchProviderId | "auto" {
-	return SEARCH_PROVIDER_PREFERENCES.includes(value as SearchProviderId | "auto");
+export function isSearchProviderPreference(value: string): value is PiSearchProviderId | "auto" {
+	return SEARCH_PROVIDER_PREFERENCES.includes(value as PiSearchProviderId | "auto");
 }
 
 /** Source returned by search (all providers) */

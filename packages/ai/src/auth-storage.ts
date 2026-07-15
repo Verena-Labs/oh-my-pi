@@ -481,6 +481,13 @@ export interface CredentialDisabledEvent {
 }
 
 export type AuthStorageOptions = {
+	/**
+	 * Restrict runtime credential selection to the first matching stored
+	 * credential. The remaining rows stay available for login, migration, and
+	 * explicit account management, but requests never rank or rotate through
+	 * sibling credentials.
+	 */
+	singleCredential?: boolean;
 	usageProviderResolver?: (provider: Provider) => UsageProvider | undefined;
 	rankingStrategyResolver?: (provider: Provider) => CredentialRankingStrategy | undefined;
 	usageFetch?: typeof fetch;
@@ -1072,6 +1079,7 @@ export class AuthStorage {
 	#data: Map<string, StoredCredential[]> = new Map();
 	#runtimeOverrides: Map<string, string> = new Map();
 	#configOverrides: Map<string, string> = new Map();
+	#singleCredential: boolean;
 	/** Tracks next credential index per provider:type key for round-robin distribution (non-session use). */
 	#providerRoundRobinIndex: Map<string, number> = new Map();
 	/** Tracks the last used credential per provider for a session (used for rate-limit switching). */
@@ -1114,6 +1122,7 @@ export class AuthStorage {
 
 	constructor(store: AuthCredentialStore, options: AuthStorageOptions = {}) {
 		this.#store = store;
+		this.#singleCredential = options.singleCredential === true;
 		this.#configValueResolver = options.configValueResolver ?? defaultConfigValueResolver;
 		this.#usageProviderResolver = options.usageProviderResolver ?? resolveDefaultUsageProvider;
 		this.#rankingStrategyResolver = options.rankingStrategyResolver ?? resolveDefaultRankingStrategy;
@@ -1194,6 +1203,19 @@ export class AuthStorage {
 				logger.debug("AuthStorage generation listener failed", { reason, error: String(error) });
 			}
 		}
+	}
+
+	/**
+	 * Permanently narrow this instance to deterministic single-credential
+	 * selection. Pi calls this for injected stores as well as stores it creates,
+	 * so an SDK-provided AuthStorage or ModelRegistry cannot restore account
+	 * pooling. Stored sibling rows remain available for explicit account
+	 * management and migration.
+	 */
+	enforceSingleCredentialPolicy(): void {
+		this.#singleCredential = true;
+		this.#providerRoundRobinIndex.clear();
+		this.#sessionLastCredential.clear();
 	}
 
 	/**
@@ -1434,6 +1456,7 @@ export class AuthStorage {
 	 * Order wraps around so all credentials are tried if earlier ones are blocked.
 	 */
 	#getCredentialOrder(providerKey: string, sessionId: string | undefined, total: number): number[] {
+		if (this.#singleCredential) return [0];
 		if (total <= 1) return [0];
 		const start = sessionId
 			? this.#getHashedIndex(sessionId, total)
@@ -1590,6 +1613,7 @@ export class AuthStorage {
 		type: AuthCredential["type"],
 		index: number,
 	): void {
+		if (this.#singleCredential) return;
 		if (!sessionId) return;
 		const sessionMap = this.#sessionLastCredential.get(provider) ?? new Map();
 		sessionMap.set(sessionId, { type, index });
@@ -1614,6 +1638,7 @@ export class AuthStorage {
 		provider: string,
 		sessionId: string | undefined,
 	): { type: AuthCredential["type"]; index: number } | undefined {
+		if (this.#singleCredential) return undefined;
 		if (!sessionId) return undefined;
 		let sessionMap = this.#sessionLastCredential.get(provider);
 		if (sessionMap?.has(sessionId)) {
@@ -3451,6 +3476,7 @@ export class AuthStorage {
 		}
 
 		this.#markCredentialBlocked(provider, providerKey, sessionCredential.index, blockedUntil, blockScope);
+		if (this.#singleCredential) return { switched: false, retryAtMs: blockedUntil };
 
 		const remainingCredentials = this.#getCredentialsForProvider(provider)
 			.map((credential, index) => ({ credential, index }))
@@ -3775,7 +3801,8 @@ export class AuthStorage {
 		const blockScope = strategy?.blockScope?.(rankingContext);
 		const planRequirement = resolveOpenAICodexPlanRequirement(provider, options?.modelId);
 		const hasPlanRequirement = planRequirement !== "none";
-		const checkUsage = strategy !== undefined && (credentials.length > 1 || hasPlanRequirement);
+		const checkUsage =
+			!this.#singleCredential && strategy !== undefined && (credentials.length > 1 || hasPlanRequirement);
 		const sessionCredential = this.#getSessionCredential(provider, sessionId);
 		const sessionPreferredIndex = sessionCredential?.type === "oauth" ? sessionCredential.index : undefined;
 		const sessionPreferredCredential =

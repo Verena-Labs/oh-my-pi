@@ -9,6 +9,7 @@ import * as sdk from "../../sdk";
 import type { AgentSession } from "../../session/agent-session";
 import { BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE } from "../../session/messages";
 import { SessionManager } from "../../session/session-manager";
+import { isPiDisabledSlashCommandName } from "../../slash-commands/pi-policy";
 import { createMCPProxyTools, createSubagentSettings } from "../../task/executor";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
 import type { InteractiveModeContext } from "../types";
@@ -41,6 +42,7 @@ export class TanCommandController {
 	constructor(private readonly ctx: InteractiveModeContext) {}
 
 	async start(work: string): Promise<void> {
+		if (isPiDisabledSlashCommandName("tan")) return;
 		const trimmedWork = work.trim();
 		if (!trimmedWork) {
 			this.ctx.showStatus("Usage: /tan <work>");

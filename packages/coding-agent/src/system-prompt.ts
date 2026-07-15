@@ -471,7 +471,7 @@ export interface BuildSystemPromptOptions {
 	contextFiles?: Array<{ path: string; content: string; depth?: number }>;
 	/** Skills provided directly to system prompt construction. */
 	skills?: Skill[];
-	/** Pre-loaded rulebook rules (descriptions, excluding TTSR and always-apply). */
+	/** Legacy OMP compatibility input. Pi ignores rulebook content. */
 	rules?: Array<{ name: string; description?: string; path: string; globs?: string[] }>;
 	/** Intent field name injected into every tool schema. If set, explains the field in the prompt. */
 	intentField?: string;
@@ -489,7 +489,7 @@ export interface BuildSystemPromptOptions {
 	taskMaxConcurrency?: number;
 	/** Whether IRC-backed parallel coordination can be included in delegation policy. */
 	taskIrcEnabled?: boolean;
-	/** Rules with alwaysApply=true — their full content is injected into the prompt. */
+	/** Legacy OMP compatibility input. Pi ignores always-apply rule content. */
 	alwaysApplyRules?: AlwaysApplyRule[];
 	/** Whether secret obfuscation is active. When true, explains the redaction format in the prompt. */
 	secretsEnabled?: boolean;
@@ -536,8 +536,6 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
-		rules,
-		alwaysApplyRules,
 		intentField,
 		mcpDiscoveryMode = false,
 		mcpDiscoveryServerSummaries = [],
@@ -758,7 +756,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		resolvedAppendPrompt,
 		...contextPromptSources,
 	];
-	const injectedAlwaysApplyRules = dedupeAlwaysApplyRules(alwaysApplyRules, promptSources);
+	// OMP's conditional/sticky rulebook remains in source for rebasing, but Pi
+	// never renders caller-supplied rule descriptions or always-apply content.
+	const injectedAlwaysApplyRules = dedupeAlwaysApplyRules([], promptSources);
 
 	const environment = getEnvironmentInfo(cpuModel, gpu);
 	const data = {
@@ -776,7 +776,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		agentsMdSearch: { files: agentsMdFiles },
 		workspaceTree,
 		skills: filteredSkills,
-		rules: rules ?? [],
+		rules: [],
 		alwaysApplyRules: injectedAlwaysApplyRules,
 		date,
 		dateTime,

@@ -3,9 +3,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { clearCustomApis } from "@oh-my-pi/pi-ai/api-registry";
-import { startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
 import { AuthStorage } from "@oh-my-pi/pi-ai/auth-storage";
 import { createMockModel, type MockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
+import { startAuthGateway } from "../src/auth-gateway";
 
 interface GatewayHarness {
 	url: string;
@@ -41,7 +41,7 @@ afterEach(() => {
 	clearCustomApis();
 });
 
-describe("auth-gateway diagnostic response headers", () => {
+describe.skip("dormant OMP auth-gateway response headers (disabled in Pi)", () => {
 	it("non-streaming responses carry cost, model id, request id, and duration", async () => {
 		const gw = await bootGateway();
 		try {

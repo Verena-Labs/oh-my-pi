@@ -852,9 +852,10 @@ export function registerPluginCacheInvalidator(invalidator: () => void): void {
 }
 
 /**
- * List all installed Claude Code plugin roots from the plugin cache.
- * Reads ~/.claude/plugins/installed_plugins.json and ~/.omp/plugins/installed_plugins.json,
- * and optionally the nearest project-scoped registry resolved from `cwd`.
+ * List all installed marketplace plugin roots from Pi-owned registries.
+ * The file format stays Claude-compatible, but foreign tool registries are
+ * deliberately ignored. Pi reads its user registry and, when present, the
+ * nearest project-scoped registry resolved from `cwd`.
  *
  * Results are cached per `home:resolvedProjectPath` key to avoid repeated parsing.
  */
@@ -871,61 +872,17 @@ export async function listClaudePluginRoots(
 	const warnings: string[] = [];
 	const projectRoots: ClaudePluginRoot[] = [];
 
-	// ── Claude Code registry ──────────────────────────────────────────────────
-	const registryPath = path.join(home, ".claude", "plugins", "installed_plugins.json");
-	const content = await readFile(registryPath);
-
-	if (content) {
-		const registry = parseClaudePluginsRegistry(content);
-		if (!registry) {
-			warnings.push(`Failed to parse Claude Code plugin registry: ${registryPath}`);
-		} else {
-			for (const [pluginId, entries] of Object.entries(registry.plugins)) {
-				if (!Array.isArray(entries) || entries.length === 0) continue;
-
-				// Parse plugin ID format: "plugin-name@marketplace"
-				const atIndex = pluginId.lastIndexOf("@");
-				if (atIndex === -1) {
-					warnings.push(`Invalid plugin ID format (missing @marketplace): ${pluginId}`);
-					continue;
-				}
-
-				const pluginName = pluginId.slice(0, atIndex);
-				const marketplace = pluginId.slice(atIndex + 1);
-
-				// Process all valid entries, not just the first one.
-				// This handles plugins with multiple installs (different scopes/versions).
-				for (const entry of entries) {
-					if (!entry.installPath || typeof entry.installPath !== "string") {
-						warnings.push(`Plugin ${pluginId} entry has no installPath`);
-						continue;
-					}
-					if (entry.enabled === false) continue;
-
-					roots.push({
-						id: pluginId,
-						marketplace,
-						plugin: pluginName,
-						version: entry.version || "unknown",
-						path: entry.installPath,
-						scope: entry.scope || "user",
-					});
-				}
-			}
-		}
-	}
-
-	// ── OMP installed plugins registry ───────────────────────────────────────
-	// OMP registry is authoritative: its entries replace Claude's entries for the same plugin ID.
+	// ── Pi installed plugins registry ────────────────────────────────────────
 	// In production `home` is `os.homedir()`, so `getPluginsDir(home)` resolves to the
 	// same XDG-aware path the marketplace writer uses (reads and writes always agree).
 	// Tests pass a temp dir, which short-circuits the resolver for deterministic isolation.
-	const ompRegistryPath = path.join(getPluginsDir(home), "installed_plugins.json");
-	const ompContent = await readFile(ompRegistryPath);
-	if (ompContent) {
-		const ompRegistry = parseClaudePluginsRegistry(ompContent);
-		if (ompRegistry) {
-			for (const [pluginId, entries] of Object.entries(ompRegistry.plugins)) {
+	const piRegistryPath = path.join(getPluginsDir(home), "installed_plugins.json");
+	const projectRegistryPath = resolvedProjectPath === piRegistryPath ? null : resolvedProjectPath;
+	const piContent = await readFile(piRegistryPath);
+	if (piContent) {
+		const piRegistry = parseClaudePluginsRegistry(piContent);
+		if (piRegistry) {
+			for (const [pluginId, entries] of Object.entries(piRegistry.plugins)) {
 				if (!Array.isArray(entries) || entries.length === 0) continue;
 
 				const atIndex = pluginId.lastIndexOf("@");
@@ -935,11 +892,6 @@ export async function listClaudePluginRoots(
 				}
 				const pluginName = pluginId.slice(0, atIndex);
 				const marketplace = pluginId.slice(atIndex + 1);
-
-				// OMP is authoritative: drop all Claude-sourced entries for this plugin ID
-				const filtered = roots.filter(r => r.id !== pluginId);
-				roots.length = 0;
-				roots.push(...filtered);
 
 				for (const entry of entries) {
 					if (!entry.installPath || typeof entry.installPath !== "string") {
@@ -961,15 +913,15 @@ export async function listClaudePluginRoots(
 				}
 			}
 		} else {
-			warnings.push(`Failed to parse OMP plugin registry: ${ompRegistryPath}`);
+			warnings.push(`Failed to parse Pi plugin registry: ${piRegistryPath}`);
 		}
 	}
 
-	// ── Project-scoped OMP registry ────────────────────────────────────────
-	// Loaded from the nearest .omp/plugins/installed_plugins.json relative to cwd.
+	// ── Project-scoped Pi registry ───────────────────────────────────────────
+	// Loaded from the nearest .pi/plugins/installed_plugins.json relative to cwd.
 	// Project entries take precedence over user entries for the same plugin ID.
-	if (resolvedProjectPath) {
-		const projectContent = await readFile(resolvedProjectPath);
+	if (projectRegistryPath) {
+		const projectContent = await readFile(projectRegistryPath);
 		if (projectContent) {
 			const projectRegistry = parseClaudePluginsRegistry(projectContent);
 			if (projectRegistry) {
@@ -999,7 +951,7 @@ export async function listClaudePluginRoots(
 					}
 				}
 			} else {
-				warnings.push(`Failed to parse project plugin registry: ${resolvedProjectPath}`);
+				warnings.push(`Failed to parse project plugin registry: ${projectRegistryPath}`);
 			}
 		}
 	}
@@ -1044,10 +996,24 @@ export function clearClaudePluginRootsCache(): void {
  * installing/uninstalling/enabling/disabling plugins.
  */
 export function clearPluginRootsAndCaches(extraPaths?: readonly string[]): void {
-	invalidateFsCache(path.join(os.homedir(), ".claude", "plugins", "installed_plugins.json"));
+	invalidatePluginRootsAndCaches(extraPaths);
+	preloadedPluginRoots = [...injectedPluginDirRoots];
+	// Re-warm preloaded roots asynchronously so sync LSP config reads stay valid
+	if (lastPreloadHome) {
+		void preloadPluginRoots(lastPreloadHome, getProjectDir());
+	}
+}
+
+/**
+ * Invalidate plugin discovery inputs without changing the preloaded roots used
+ * by the active runtime. Transactional reloaders use this while preparing a
+ * candidate, then replace the preloaded snapshot only at their commit point.
+ */
+export function invalidatePluginRootsAndCaches(extraPaths?: readonly string[]): void {
 	invalidateFsCache(path.join(getPluginsDir(), "installed_plugins.json"));
 	for (const p of extraPaths ?? []) invalidateFsCache(p);
-	clearClaudePluginRootsCache();
+	pluginRootsCache.clear();
+	for (const invalidate of pluginCacheInvalidators) invalidate();
 }
 
 // ── Preloaded plugin roots (for sync consumers like LSP config) ─────────────
@@ -1064,9 +1030,19 @@ let lastPreloadHome: string | undefined;
  * but before any LSP config is read.
  */
 export async function preloadPluginRoots(home: string, cwd?: string): Promise<void> {
-	lastPreloadHome = home;
+	adoptPreloadedPluginRoots(home, await preparePluginRoots(home, cwd));
+}
+
+/** Load a fresh plugin-root snapshot without exposing it to sync consumers. */
+export async function preparePluginRoots(home: string, cwd?: string): Promise<ClaudePluginRoot[]> {
 	const { roots } = await listClaudePluginRoots(home, cwd);
-	preloadedPluginRoots = roots;
+	return roots;
+}
+
+/** Commit a prepared plugin-root snapshot for sync consumers such as LSP. */
+export function adoptPreloadedPluginRoots(home: string, roots: readonly ClaudePluginRoot[]): void {
+	lastPreloadHome = home;
+	preloadedPluginRoots = [...roots];
 }
 
 /**

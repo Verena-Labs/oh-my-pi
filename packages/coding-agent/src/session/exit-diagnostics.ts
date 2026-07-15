@@ -4,6 +4,10 @@ import type { SessionEntry } from "./session-entries";
 export const TOOL_EXECUTION_START_CUSTOM_TYPE = "tool_execution_start";
 export const SESSION_EXIT_CUSTOM_TYPE = "session_exit";
 
+function piAllowsStopRecoveryDiagnostics(): boolean {
+	return false;
+}
+
 /**
  * Compact projection of tool-call arguments persisted with the start marker.
  * The assistant message already carries the full arguments; this exists only
@@ -162,6 +166,7 @@ function applyMessageEntry(pending: Map<string, PendingToolCallRecord>, message:
 
 /** Finds tool calls left pending at the end of a session branch. */
 export function collectPendingToolCalls(entries: readonly SessionEntry[]): PendingToolCallDiagnostic[] {
+	if (!piAllowsStopRecoveryDiagnostics()) return [];
 	const pending = new Map<string, PendingToolCallRecord>();
 	for (const entry of entries) {
 		if (entry.type === "message") {
@@ -194,9 +199,10 @@ function formatPendingToolCall(call: PendingToolCallDiagnostic): string {
 
 /** Builds the resume warning shown when a prior branch ended mid-tool-call. */
 export function describePendingToolCalls(entries: readonly SessionEntry[]): string | undefined {
+	if (!piAllowsStopRecoveryDiagnostics()) return undefined;
 	const pending = collectPendingToolCalls(entries);
 	if (pending.length === 0) return undefined;
 	const formatted = pending.map(formatPendingToolCall).join(", ");
 	const noun = pending.length === 1 ? "tool call" : "tool calls";
-	return `Previous session ended while ${pending.length} ${noun} remained pending: ${formatted}. The prior OMP process exited before recording tool result(s).`;
+	return `Previous session ended while ${pending.length} ${noun} remained pending: ${formatted}. The prior Pi process exited before recording tool result(s).`;
 }

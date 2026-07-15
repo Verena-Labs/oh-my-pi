@@ -1016,6 +1016,10 @@ async function tryRenderBinaryPayload(
 
 let specialHandlersPromise: Promise<SpecialHandler[]> | undefined;
 
+function piAllowsSpecializedWebHandlers(): boolean {
+	return false;
+}
+
 /**
  * Lazily load the site-specific scraper handlers. The scrapers barrel eagerly
  * imports ~80 site modules, none of which are needed until the first fetch that
@@ -1035,6 +1039,7 @@ async function handleSpecialUrls(
 	signal: AbortSignal | undefined,
 	storage: AgentStorage | null,
 ): Promise<FetchRenderResult | null> {
+	if (!piAllowsSpecializedWebHandlers()) return null;
 	const specialHandlers = await loadSpecialHandlers();
 	for (const handler of specialHandlers) {
 		if (signal?.aborted) {

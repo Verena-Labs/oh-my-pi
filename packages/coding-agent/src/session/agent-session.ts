@@ -138,7 +138,7 @@ import {
 	isBunTestRuntime,
 	isEnoent,
 	logger,
-	postmortem,
+	normalizePathForComparison,
 	prompt,
 	relativePathWithinRoot,
 	Snowflake,
@@ -194,6 +194,7 @@ import {
 	validateProviderMaxInFlightRequests,
 } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
+import type { DelegateModeState } from "../delegate/state";
 import { loadCapability } from "../discovery";
 import { expandApplyPatchToEntries, normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
 import { getFileSnapshotStore } from "../edit/file-snapshot-store";
@@ -215,6 +216,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionRunner,
 	ExtensionUIContext,
+	LoadExtensionsResult,
 	MessageEndEvent,
 	MessageStartEvent,
 	MessageUpdateEvent,
@@ -259,6 +261,7 @@ import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with {
 import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
 import parentIrcSteerTemplate from "../prompts/steering/parent-irc.md" with { type: "text" };
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
+import delegateModeActivePrompt from "../prompts/system/delegate-mode-active.md" with { type: "text" };
 import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
@@ -283,7 +286,6 @@ import toolCallLoopRedirectTemplate from "../prompts/system/tool-call-loop-redir
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
 import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
-import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
 import { AgentRegistry } from "../registry/agent-registry";
 import {
 	deobfuscateAssistantContent,
@@ -292,6 +294,7 @@ import {
 	obfuscateProviderContext,
 	type SecretObfuscator,
 } from "../secrets/obfuscator";
+import { isPiDisabledSlashCommandName } from "../slash-commands/pi-policy";
 import { invalidateHostMetadata } from "../ssh/connection-manager";
 import { usesCodexTaskPrompt } from "../task/prompt-policy";
 import {
@@ -319,7 +322,7 @@ import {
 } from "../tool-discovery/tool-index";
 import { assertEditableFile } from "../tools/auto-generated-guard";
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
-import { normalizeToolNames } from "../tools/builtin-names";
+import { isPiDisabledToolName, isPiProtectedBuiltinToolName, normalizeToolNames } from "../tools/builtin-names";
 import type { CheckpointState, CompletedRewindState } from "../tools/checkpoint";
 import { outputMeta, wrapToolWithMetaNotice } from "../tools/output-meta";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
@@ -337,8 +340,8 @@ import { describeAttachedImagesForTextModel } from "../utils/image-vision-fallba
 import { formatLocalCalendarDate } from "../utils/local-date";
 import { generateSessionTitle } from "../utils/title-generator";
 import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
-import type { VibeModeState } from "../vibe/state";
 import type { AuthStorage } from "./auth-storage";
+import { rewriteCheckpointConversation } from "./checkpoint-rewind-private";
 import type { ClientBridge, ClientBridgePermissionOption, ClientBridgePermissionOutcome } from "./client-bridge";
 import {
 	type CodexAutoRedeemRedeemDecision,
@@ -348,14 +351,6 @@ import {
 	shouldPromptCodexAutoRedeem,
 } from "./codex-auto-reset";
 import { findCompactMode } from "./compact-modes";
-import {
-	collectPendingToolCalls,
-	SESSION_EXIT_CUSTOM_TYPE,
-	type SessionExitData,
-	summarizeToolArguments,
-	TOOL_EXECUTION_START_CUSTOM_TYPE,
-	type ToolExecutionStartData,
-} from "./exit-diagnostics";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -382,7 +377,7 @@ import { formatSessionDumpText } from "./session-dump-format";
 import type { BranchSummaryEntry, CompactionEntry, NewSessionOptions, SessionEntry } from "./session-entries";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
 import { formatSessionHistoryMarkdown } from "./session-history-format";
-import { cleanupEmptyMoveSession, type SessionManager } from "./session-manager";
+import { cleanupEmptyMoveSession, SessionManager } from "./session-manager";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
@@ -593,13 +588,6 @@ export const SHUTDOWN_CONSOLIDATE_BUDGET_MS = 1_500;
 
 export interface AgentSessionDisposeOptions {
 	mnemopiConsolidateTimeoutMs?: number;
-	/**
-	 * Postmortem reason that triggered this dispose (signal/fatal teardown
-	 * paths). When set, the persisted `session_exit` diagnostic records it
-	 * instead of the generic `"dispose"` used for normal programmatic disposal
-	 * (`/quit`, test teardown, subagent completion).
-	 */
-	reason?: postmortem.Reason;
 }
 
 type CompactionCheckResult = Readonly<{
@@ -740,6 +728,26 @@ export interface PlanYolo {
 	thinkingLevel?: ConfiguredThinkingLevel;
 }
 
+export interface AgentSessionPluginRuntimeUpdate {
+	extensionsResult: LoadExtensionsResult;
+	tools: AgentTool[];
+	autoActivateToolNames: Iterable<string>;
+	promptTemplates: PromptTemplate[];
+	slashCommands: FileSlashCommand[];
+	customCommands: LoadedCustomCommand[];
+	skills: Skill[];
+	skillWarnings: SkillWarning[];
+	skillsSettings: SkillsSettings;
+	/** Prepare external registries immediately before the synchronous session
+	 * swap. A rejection here leaves the active session snapshot untouched. */
+	prepareAdopt?: () => Promise<void>;
+	/** Restore external registries if an unexpected pre-commit adoption failure
+	 * occurs after prepareAdopt completed. */
+	rollbackPreparedAdopt?: () => Promise<void>;
+	/** Apply SDK closure-backed resources in the same synchronous adoption step. */
+	onAdopt?: () => void;
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -768,6 +776,14 @@ export interface AgentSessionConfig {
 	slashCommands?: FileSlashCommand[];
 	/** Extension runner (created in main.ts with wrapped tools) */
 	extensionRunner?: ExtensionRunner;
+	/** Tool names whose definitions came from the reloadable extension/plugin snapshot. */
+	pluginToolNames?: Iterable<string>;
+	/** Registry entries shadowed by reloadable plugin tools and restored when those tools disappear. */
+	pluginToolFallbacks?: ReadonlyMap<string, AgentTool>;
+	/** Shadowed entries that were built-ins before a plugin overrode them. */
+	pluginToolFallbackBuiltInNames?: Iterable<string>;
+	/** Session-scoped discovery/reload transaction installed by createAgentSession. */
+	reloadPlugins?: () => Promise<void>;
 	/** Loaded skills (already discovered by SDK) */
 	skills?: Skill[];
 	/** Skill loading warnings (already captured by SDK) */
@@ -779,8 +795,8 @@ export interface AgentSessionConfig {
 	modelRegistry: ModelRegistry;
 	/** Tool registry for LSP and settings */
 	toolRegistry?: Map<string, AgentTool>;
-	/** Creates the tools registered only while `/vibe` mode is active. */
-	createVibeTools?: () => AgentTool[];
+	/** Creates the tools registered only while `/delegate` mode is active. */
+	createDelegateTools?: () => AgentTool[];
 	/** Tool names whose current registry entry is still the built-in implementation. */
 	builtInToolNames?: Iterable<string>;
 	/** Update tool-session predicates that render guidance from the live active tool set. */
@@ -1144,6 +1160,34 @@ interface ActiveRetryFallbackState {
 	originalThinkingLevel: ConfiguredThinkingLevel | undefined;
 	lastAppliedFallbackThinkingLevel: ConfiguredThinkingLevel | undefined;
 	pinned: boolean;
+}
+
+function piAllowsDedicatedSsh(): boolean {
+	return false;
+}
+
+function piAllowsEvalKernels(): boolean {
+	return false;
+}
+
+function piAllowsExtraSessionOperations(): boolean {
+	return false;
+}
+
+function piAllowsContextPruning(): boolean {
+	return false;
+}
+
+function piAllowsAutomaticStopRecovery(): boolean {
+	return false;
+}
+
+function piAllowsRulebookInjection(): boolean {
+	return false;
+}
+
+function piAllowsOutboundSecretObfuscation(): boolean {
+	return false;
 }
 
 function parseRetryFallbackSelector(
@@ -1688,8 +1732,6 @@ export class AgentSession {
 
 	// Event subscription state
 	#unsubscribeAgent?: () => void;
-	#cancelExitRecorder?: () => void;
-	#exitRecorded = false;
 	#unsubscribeAppendOnly?: () => void;
 	#unsubscribeModelRoles?: () => void;
 	/** Last (enable, providerId) tuple resolved by `#syncAppendOnlyContext` — used to skip no-op invalidations. */
@@ -1708,7 +1750,7 @@ export class AgentSession {
 	#advisorPrimaryTurnsCompleted = 0;
 	#advisorInterruptImmuneTurnStart: number | undefined;
 	#planModeState: PlanModeState | undefined;
-	#vibeModeState: VibeModeState | undefined;
+	#delegateModeState: DelegateModeState | undefined;
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
 	#advisorEnabled = false;
@@ -1825,6 +1867,12 @@ export class AgentSession {
 	#isDisposed = false;
 	// Extension system
 	#extensionRunner: ExtensionRunner | undefined = undefined;
+	#pluginToolNames = new Set<string>();
+	#pluginToolFallbacks = new Map<string, AgentTool>();
+	#pluginToolFallbackBuiltInNames = new Set<string>();
+	#reloadPlugins: (() => Promise<void>) | undefined;
+	#pluginReloadPromise: Promise<void> | undefined;
+	#pluginPromptAdmissions = 0;
 	#turnIndex = 0;
 	#messageEndPersistenceTail: Promise<void> = Promise.resolve();
 	#pendingMessageEndPersistence = new Map<string, Promise<void>>();
@@ -1845,8 +1893,8 @@ export class AgentSession {
 
 	// Tool registry and prompt builder for extensions
 	#toolRegistry: Map<string, AgentTool>;
-	#createVibeTools: (() => AgentTool[]) | undefined;
-	#installedVibeToolNames = new Set<string>();
+	#createDelegateTools: (() => AgentTool[]) | undefined;
+	#installedDelegateToolNames = new Set<string>();
 	#transformContext: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 	#onPayload: SimpleStreamOptions["onPayload"] | undefined;
 	#onResponse: SimpleStreamOptions["onResponse"] | undefined;
@@ -1992,7 +2040,7 @@ export class AgentSession {
 		if (mode === "off") return;
 		try {
 			this.#powerAssertion = MacOSPowerAssertion.start({
-				reason: "Oh My Pi agent session",
+				reason: "Pi agent session",
 				idle: true,
 				display: mode === "display" || mode === "system",
 				system: mode === "system",
@@ -2442,12 +2490,20 @@ export class AgentSession {
 		}
 		this.#applyThinkingLevelToAgent(this.#thinkingLevel);
 
-		this.#promptTemplates = config.promptTemplates ?? [];
-		this.#slashCommands = config.slashCommands ?? [];
+		this.#promptTemplates = (config.promptTemplates ?? []).filter(
+			template => !isPiDisabledSlashCommandName(template.name),
+		);
+		this.#slashCommands = (config.slashCommands ?? []).filter(command => !isPiDisabledSlashCommandName(command.name));
 		this.#extensionRunner = config.extensionRunner;
+		this.#pluginToolNames = new Set(config.pluginToolNames ?? []);
+		this.#pluginToolFallbacks = new Map(config.pluginToolFallbacks ?? []);
+		this.#pluginToolFallbackBuiltInNames = new Set(config.pluginToolFallbackBuiltInNames ?? []);
+		this.#reloadPlugins = config.reloadPlugins;
 		this.#skills = config.skills ?? [];
 		this.#skillWarnings = config.skillWarnings ?? [];
-		this.#customCommands = config.customCommands ?? [];
+		this.#customCommands = (config.customCommands ?? []).filter(
+			command => !isPiDisabledSlashCommandName(command.command.name),
+		);
 		this.#skillsSettings = config.skillsSettings;
 		this.#modelRegistry = config.modelRegistry;
 		// Resolve the wire service-tier per request so the Fireworks Priority
@@ -2464,7 +2520,7 @@ export class AgentSession {
 		this.#pruneToolDescriptions = config.pruneToolDescriptions === true;
 		this.#validateRetryFallbackChains();
 		this.#toolRegistry = config.toolRegistry ?? new Map();
-		this.#createVibeTools = config.createVibeTools;
+		this.#createDelegateTools = config.createDelegateTools;
 		this.#builtInToolNames = new Set(config.builtInToolNames ?? []);
 		this.#requestedToolNames = config.requestedToolNames;
 		this.#transformContext = config.transformContext ?? (messages => messages);
@@ -2591,8 +2647,8 @@ export class AgentSession {
 			this.sessionManager.getSessionFile(),
 			this.#getConfiguredDefaultSelectedMCPToolNames(),
 		);
-		this.#ttsrManager = config.ttsrManager;
-		this.#obfuscator = config.obfuscator;
+		this.#ttsrManager = piAllowsRulebookInjection() ? config.ttsrManager : undefined;
+		this.#obfuscator = piAllowsOutboundSecretObfuscation() ? config.obfuscator : undefined;
 		this.#agentId = config.agentId;
 		this.#agentKind = config.agentKind ?? "main";
 		this.#providerSessionId = config.providerSessionId;
@@ -2651,10 +2707,6 @@ export class AgentSession {
 				);
 			},
 		});
-		this.#cancelExitRecorder = postmortem.register(`agent-session:${this.sessionManager.getSessionId()}`, reason => {
-			this.#recordSessionExit(reason);
-		});
-
 		this.#advisorEnabled = this.settings.get("advisor.enabled") as boolean;
 		if (this.#advisorEnabled) this.#buildAdvisorRuntime();
 
@@ -3591,67 +3643,6 @@ export class AgentSession {
 		this.#emit({ type: "notice", level, message, source });
 	}
 
-	#recordToolExecutionStart(event: Extract<AgentEvent, { type: "tool_execution_start" }>): void {
-		const data: ToolExecutionStartData = {
-			toolCallId: event.toolCallId,
-			toolName: event.toolName,
-			startedAt: new Date().toISOString(),
-		};
-		// The assistant message already persists the full arguments; store only
-		// the command/path projection the resume warning renders.
-		const args = summarizeToolArguments(event.args);
-		if (args) data.args = args;
-		if (event.intent) data.intent = event.intent;
-		this.sessionManager.appendCustomEntry(TOOL_EXECUTION_START_CUSTOM_TYPE, data);
-	}
-
-	#recordSessionExit(reason: postmortem.Reason | "dispose"): void {
-		if (this.#exitRecorded) return;
-		this.#exitRecorded = true;
-		const pendingToolCalls = collectPendingToolCalls(this.sessionManager.getBranch());
-		if (
-			pendingToolCalls.length === 0 &&
-			!this.sessionManager.getEntries().some(entry => entry.type === "message" && entry.message.role === "assistant")
-		) {
-			return;
-		}
-		const kind: SessionExitData["kind"] =
-			reason === "dispose" || reason === postmortem.Reason.MANUAL
-				? "normal"
-				: reason === postmortem.Reason.UNCAUGHT_EXCEPTION || reason === postmortem.Reason.UNHANDLED_REJECTION
-					? "fatal"
-					: reason === postmortem.Reason.EXIT
-						? "process_exit"
-						: "signal";
-		const data: SessionExitData = {
-			reason,
-			kind,
-			recordedAt: new Date().toISOString(),
-		};
-		if (pendingToolCalls.length > 0) data.pendingToolCalls = pendingToolCalls;
-		try {
-			this.sessionManager.appendCustomEntry(SESSION_EXIT_CUSTOM_TYPE, data);
-			this.sessionManager.flushSync();
-			// Only pending tool calls or an abnormal teardown are noteworthy; a
-			// clean dispose logs at debug so routine exits don't read as problems.
-			const exitLog = pendingToolCalls.length > 0 || kind !== "normal" ? logger.warn : logger.debug;
-			exitLog("Session exit recorded", {
-				sessionId: this.sessionManager.getSessionId(),
-				sessionFile: this.sessionManager.getSessionFile(),
-				reason,
-				kind,
-				pendingToolCalls: pendingToolCalls.length,
-			});
-		} catch (error) {
-			logger.error("Failed to record session exit", {
-				sessionId: this.sessionManager.getSessionId(),
-				sessionFile: this.sessionManager.getSessionFile(),
-				reason,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-	}
-
 	#queuedExtensionEvents: Promise<void> = Promise.resolve();
 
 	#queueExtensionEvent(event: AgentSessionEvent): Promise<void> {
@@ -4028,10 +4019,6 @@ export class AgentSession {
 				cacheRead: usage.cacheRead,
 				cacheWrite: usage.cacheWrite,
 			});
-		}
-
-		if (event.type === "tool_execution_start") {
-			this.#recordToolExecutionStart(event);
 		}
 
 		try {
@@ -6126,11 +6113,9 @@ export class AgentSession {
 	 * Remove all listeners, flush pending writes, and disconnect from agent.
 	 * Call this when completely done with the session.
 	 *
-	 * Idempotent: concurrent or repeated calls share one settled promise. The
-	 * keypress `InteractiveMode.shutdown()` path and the postmortem
-	 * `SIGTERM`/`SIGHUP`/`uncaughtException` callback can both target this
-	 * method, so a second invocation must never re-emit `session_shutdown` or
-	 * double-drain the owned `AsyncJobManager` (issue #4080).
+	 * Idempotent: concurrent or repeated calls share one settled promise, so a
+	 * second invocation never re-emits `session_shutdown` or double-drains the
+	 * owned `AsyncJobManager`.
 	 */
 	#disposeCall?: Promise<void>;
 	dispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
@@ -6140,9 +6125,6 @@ export class AgentSession {
 
 	async #doDispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
 		this.beginDispose();
-		this.#recordSessionExit(options.reason ?? "dispose");
-		this.#cancelExitRecorder?.();
-		this.#cancelExitRecorder = undefined;
 		try {
 			if (this.#extensionRunner?.hasHandlers("session_shutdown")) {
 				await this.#extensionRunner.emit({ type: "session_shutdown" });
@@ -6230,7 +6212,7 @@ export class AgentSession {
 		//
 		// BOUNDED: an owned manager may hold an HTTP/SSE server whose session-
 		// termination DELETE blocks up to the MCP request timeout (30s default,
-		// unbounded when OMP_MCP_TIMEOUT_MS=0), so awaiting `disconnectAll()`
+		// unbounded when PI_MCP_TIMEOUT_MS=0), so awaiting `disconnectAll()`
 		// unbounded would stall /exit and print-mode shutdown on a broken remote
 		// endpoint. Race it against a short deadline — stdio close (the subprocess
 		// reap this targets) completes well within the bound; a slow transport
@@ -6290,6 +6272,7 @@ export class AgentSession {
 	}
 
 	freshSession(): FreshSessionResult | undefined {
+		if (!piAllowsExtraSessionOperations()) return undefined;
 		if (this.isStreaming) return undefined;
 		const previousSessionId = this.sessionId;
 		const closedProviderSessions = this.#providerSessionState.size;
@@ -6499,40 +6482,40 @@ export class AgentSession {
 	}
 
 	/**
-	 * Registers the ephemeral vibe tools and activates them alongside `baseToolNames`.
+	 * Registers the ephemeral delegate tools and activates them alongside `baseToolNames`.
 	 *
-	 * @throws When this session cannot create vibe tools or the factory returns duplicate names.
+	 * @throws When this session cannot create delegate tools or the factory returns duplicate names.
 	 */
-	async activateVibeTools(baseToolNames: string[]): Promise<void> {
-		const createVibeTools = this.#createVibeTools;
-		if (!createVibeTools) {
-			throw new Error("Vibe tools are unavailable in this session.");
+	async activateDelegateTools(baseToolNames: string[]): Promise<void> {
+		const createDelegateTools = this.#createDelegateTools;
+		if (!createDelegateTools) {
+			throw new Error("Delegate tools are unavailable in this session.");
 		}
 
-		const tools = createVibeTools();
-		const vibeToolNames = tools.map(tool => tool.name);
-		if (new Set(vibeToolNames).size !== vibeToolNames.length) {
-			throw new Error("Vibe tool names must be unique.");
+		const tools = createDelegateTools();
+		const delegateToolNames = tools.map(tool => tool.name);
+		if (new Set(delegateToolNames).size !== delegateToolNames.length) {
+			throw new Error("Delegate tool names must be unique.");
 		}
 
 		for (const tool of tools) {
 			if (this.#toolRegistry.has(tool.name)) continue;
 			this.#toolRegistry.set(tool.name, this.#wrapRuntimeTool(tool));
 			this.#builtInToolNames.add(tool.name);
-			this.#installedVibeToolNames.add(tool.name);
+			this.#installedDelegateToolNames.add(tool.name);
 		}
 
-		await this.#applyActiveToolsByName([...new Set([...baseToolNames, ...vibeToolNames])]);
+		await this.#applyActiveToolsByName([...new Set([...baseToolNames, ...delegateToolNames])]);
 	}
 
-	/** Removes tools installed by {@link activateVibeTools} and activates `nextToolNames`. */
-	async deactivateVibeTools(nextToolNames: string[]): Promise<void> {
-		for (const name of this.#installedVibeToolNames) {
+	/** Removes tools installed by {@link activateDelegateTools} and activates `nextToolNames`. */
+	async deactivateDelegateTools(nextToolNames: string[]): Promise<void> {
+		for (const name of this.#installedDelegateToolNames) {
 			this.#toolRegistry.delete(name);
 			this.#builtInToolNames.delete(name);
 			this.#selectedDiscoveredToolNames.delete(name);
 		}
-		this.#installedVibeToolNames.clear();
+		this.#installedDelegateToolNames.clear();
 		await this.#applyActiveToolsByName(nextToolNames);
 	}
 
@@ -6828,7 +6811,7 @@ export class AgentSession {
 		toolNames: string[],
 		options?: { persistMCPSelection?: boolean; previousSelectedMCPToolNames?: string[] },
 	): Promise<void> {
-		toolNames = normalizeToolNames(toolNames);
+		toolNames = normalizeToolNames(toolNames).filter(name => !isPiDisabledToolName(name));
 		const previousSelectedMCPToolNames = options?.previousSelectedMCPToolNames ?? this.getSelectedMCPToolNames();
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
@@ -6896,6 +6879,12 @@ export class AgentSession {
 	 * refreshed definition visible to the next model call without restarting.
 	 */
 	async refreshSshTool(options?: { activateIfAvailable?: boolean }): Promise<void> {
+		if (!piAllowsDedicatedSsh()) {
+			this.#toolRegistry.delete("ssh");
+			this.#selectedDiscoveredToolNames.delete("ssh");
+			await this.#applyActiveToolsByName(this.getActiveToolNames().filter(name => name !== "ssh"));
+			return;
+		}
 		resetCapabilities();
 		if (!this.#reloadSshTool) return;
 		const previousSshTool = this.#toolRegistry.get("ssh");
@@ -6928,6 +6917,167 @@ export class AgentSession {
 			nextActive.push(refreshedTool.name);
 		}
 		await this.#applyActiveToolsByName(nextActive);
+	}
+
+	/** Reload the complete session-scoped plugin/config snapshot. Concurrent
+	 * callers share one transaction; an active model turn is never mutated. */
+	reloadPlugins(): Promise<void> {
+		if (!this.#reloadPlugins) {
+			return Promise.reject(new Error("Runtime plugin reload is unavailable for this session."));
+		}
+		if (this.isStreaming) {
+			return Promise.reject(new Error("Cannot reload plugins while the agent is running."));
+		}
+		if (this.#pluginPromptAdmissions > 0) {
+			return Promise.reject(new Error("Cannot reload plugins while a prompt is starting."));
+		}
+		if (this.#pluginReloadPromise) return this.#pluginReloadPromise;
+		const pending = this.#reloadPlugins();
+		this.#pluginReloadPromise = pending.finally(() => {
+			this.#pluginReloadPromise = undefined;
+		});
+		return this.#pluginReloadPromise;
+	}
+
+	/** Adopt a fully loaded candidate snapshot as one synchronous registry swap,
+	 * then rebuild the active toolset/system prompt before returning. */
+	async adoptPluginRuntime(update: AgentSessionPluginRuntimeUpdate): Promise<void> {
+		const runner = this.#extensionRunner;
+		if (!runner) throw new Error("Extension runner is unavailable for plugin reload.");
+		if (this.isStreaming) throw new Error("Cannot adopt plugins while the agent is running.");
+
+		const nextTools = new Map<string, AgentTool>();
+		for (const tool of update.tools) {
+			if (isPiDisabledToolName(tool.name) || isPiProtectedBuiltinToolName(tool.name)) continue;
+			nextTools.set(tool.name, tool);
+		}
+		const previousPluginToolNames = new Set(this.#pluginToolNames);
+		const previousActiveToolNames = this.getActiveToolNames();
+		const nextToolRegistry = new Map(this.#toolRegistry);
+		const nextBuiltInToolNames = new Set(this.#builtInToolNames);
+		for (const name of previousPluginToolNames) {
+			nextToolRegistry.delete(name);
+			const fallback = this.#pluginToolFallbacks.get(name);
+			if (fallback) nextToolRegistry.set(name, fallback);
+			if (this.#pluginToolFallbackBuiltInNames.has(name)) nextBuiltInToolNames.add(name);
+		}
+
+		const nextFallbacks = new Map<string, AgentTool>();
+		const nextFallbackBuiltInNames = new Set<string>();
+		for (const [name, tool] of nextTools) {
+			const fallback = nextToolRegistry.get(name);
+			if (fallback) {
+				nextFallbacks.set(name, fallback);
+				if (nextBuiltInToolNames.has(name)) nextFallbackBuiltInNames.add(name);
+			}
+			nextToolRegistry.set(name, tool);
+			nextBuiltInToolNames.delete(name);
+		}
+
+		let prepared = false;
+		let oldRuntimeShutdown = false;
+		try {
+			await update.prepareAdopt?.();
+			prepared = true;
+			await runner.emit({ type: "session_shutdown" });
+			oldRuntimeShutdown = true;
+
+			// Once adopt returns, the runner and prepared external registries are the
+			// committed snapshot. All remaining registry assignments are synchronous
+			// and post-commit work below is best-effort.
+			runner.adopt(update.extensionsResult);
+		} catch (error) {
+			if (prepared && update.rollbackPreparedAdopt) {
+				try {
+					await update.rollbackPreparedAdopt();
+				} catch (rollbackError) {
+					logger.error("Plugin runtime pre-commit rollback failed", {
+						error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+					});
+				}
+			}
+			if (oldRuntimeShutdown) {
+				try {
+					await runner.emit({ type: "session_start" });
+				} catch (restartError) {
+					logger.error("Retained plugin runtime restart failed after rejected adoption", {
+						error: restartError instanceof Error ? restartError.message : String(restartError),
+					});
+				}
+			}
+			throw error;
+		}
+
+		// From this point through the field assignments there are no awaits, so
+		// prompt admission cannot observe a mixed registry snapshot.
+		this.#toolRegistry.clear();
+		for (const [name, tool] of nextToolRegistry) this.#toolRegistry.set(name, tool);
+		this.#builtInToolNames.clear();
+		for (const name of nextBuiltInToolNames) this.#builtInToolNames.add(name);
+		this.#pluginToolNames = new Set(nextTools.keys());
+		this.#pluginToolFallbacks = nextFallbacks;
+		this.#pluginToolFallbackBuiltInNames = nextFallbackBuiltInNames;
+		this.#promptTemplates = update.promptTemplates.filter(template => !isPiDisabledSlashCommandName(template.name));
+		this.#slashCommands = update.slashCommands.filter(command => !isPiDisabledSlashCommandName(command.name));
+		this.#customCommands = update.customCommands.filter(
+			command => !isPiDisabledSlashCommandName(command.command.name),
+		);
+		this.#skills = [...update.skills];
+		this.#skillWarnings = [...update.skillWarnings];
+		this.#skillsSettings = update.skillsSettings;
+
+		// The session and external registries are committed. Remaining refresh and
+		// lifecycle work is best-effort and must not report a rollback-safe failure.
+		try {
+			update.onAdopt?.();
+		} catch (error) {
+			logger.warn("Plugin runtime post-commit state refresh failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		this.#invalidateDiscoveryCaches();
+
+		const nextActiveToolNames = previousActiveToolNames.filter(name => this.#toolRegistry.has(name));
+		for (const name of update.autoActivateToolNames) {
+			if (
+				!previousPluginToolNames.has(name) &&
+				this.#toolRegistry.has(name) &&
+				!nextActiveToolNames.includes(name)
+			) {
+				nextActiveToolNames.push(name);
+			}
+		}
+		try {
+			await this.#applyActiveToolsByName(nextActiveToolNames);
+		} catch (error) {
+			logger.warn("Plugin runtime active-tool refresh failed after commit", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		// Resource-only changes (skills, context files, prompt templates, settings)
+		// can leave the active tool signature unchanged, so force the prompt to
+		// observe the newly adopted snapshot as part of this transaction.
+		try {
+			await this.refreshBaseSystemPrompt();
+		} catch (error) {
+			logger.warn("Plugin runtime system-prompt refresh failed after commit", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		try {
+			await runner.emit({ type: "session_start" });
+		} catch (error) {
+			logger.warn("Plugin runtime session-start handlers failed after commit", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		try {
+			this.#notifyCommandMetadataChanged();
+		} catch (error) {
+			logger.warn("Plugin runtime command-metadata refresh failed after commit", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
 	/**
@@ -7107,6 +7257,9 @@ export class AgentSession {
 	 *   arrive after initial session activation.
 	 */
 	async refreshMCPTools(mcpTools: CustomTool[], options?: { activateAll?: boolean }): Promise<void> {
+		const allowedMcpTools = mcpTools.filter(
+			tool => !isPiDisabledToolName(tool.name) && !isPiProtectedBuiltinToolName(tool.name),
+		);
 		const previousSelectedMCPToolNames = this.getSelectedMCPToolNames();
 		const existingNames = Array.from(this.#toolRegistry.keys());
 		for (const name of existingNames) {
@@ -7126,7 +7279,7 @@ export class AgentSession {
 			},
 		});
 
-		for (const customTool of mcpTools) {
+		for (const customTool of allowedMcpTools) {
 			const wrapped = wrapToolWithMetaNotice(CustomToolAdapter.wrap(customTool, getCustomToolContext) as AgentTool);
 			const finalTool = (
 				this.#extensionRunner ? new ExtensionToolWrapper(wrapped, this.#extensionRunner) : wrapped
@@ -7153,7 +7306,7 @@ export class AgentSession {
 			// activation — without it, getSelectedMCPToolNames() returns only
 			// already-active tools (circular deadlock: tools can only become
 			// active if they're already active).
-			const newMcpNames = mcpTools.map(t => t.name);
+			const newMcpNames = allowedMcpTools.map(t => t.name);
 			const nextActive = [...new Set([...this.#getActiveNonMCPToolNames(), ...newMcpNames])];
 			await this.#applyActiveToolsByName(nextActive, { previousSelectedMCPToolNames });
 			return;
@@ -7167,7 +7320,8 @@ export class AgentSession {
 	 * Replace RPC host-owned tools and refresh the active tool set before the next model call.
 	 */
 	async refreshRpcHostTools(rpcTools: AgentTool[]): Promise<void> {
-		const nextToolNames = rpcTools.map(tool => tool.name);
+		const allowedRpcTools = rpcTools.filter(tool => !isPiDisabledToolName(tool.name));
+		const nextToolNames = allowedRpcTools.map(tool => tool.name);
 		const uniqueToolNames = new Set(nextToolNames);
 		if (uniqueToolNames.size !== nextToolNames.length) {
 			throw new Error("RPC host tool names must be unique");
@@ -7186,7 +7340,7 @@ export class AgentSession {
 		}
 		this.#rpcHostToolNames.clear();
 
-		for (const tool of rpcTools) {
+		for (const tool of allowedRpcTools) {
 			const metaWrapped = wrapToolWithMetaNotice(tool);
 			const finalTool = (
 				this.#extensionRunner ? new ExtensionToolWrapper(metaWrapped, this.#extensionRunner) : metaWrapped
@@ -7204,7 +7358,7 @@ export class AgentSession {
 		const preservedRpcToolNames = previousActiveToolNames.filter(
 			name => previousRpcHostToolNames.has(name) && this.#rpcHostToolNames.has(name),
 		);
-		const autoActivatedRpcToolNames = rpcTools
+		const autoActivatedRpcToolNames = allowedRpcTools
 			.filter(tool => !tool.hidden && !previousRpcHostToolNames.has(tool.name))
 			.map(tool => tool.name);
 		await this.#applyActiveToolsByName(
@@ -7500,12 +7654,12 @@ export class AgentSession {
 		this.#goalModeState = state;
 	}
 
-	getVibeModeState(): VibeModeState | undefined {
-		return this.#vibeModeState;
+	getDelegateModeState(): DelegateModeState | undefined {
+		return this.#delegateModeState;
 	}
 
-	setVibeModeState(state: VibeModeState | undefined): void {
-		this.#vibeModeState = state;
+	setDelegateModeState(state: DelegateModeState | undefined): void {
+		this.#delegateModeState = state;
 	}
 
 	get goalRuntime(): GoalRuntime {
@@ -7640,8 +7794,8 @@ export class AgentSession {
 		);
 	}
 
-	async sendVibeModeContext(options?: { deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void> {
-		const message = this.#buildVibeModeMessage();
+	async sendDelegateModeContext(options?: { deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void> {
+		const message = this.#buildDelegateModeMessage();
 		if (!message) return;
 		await this.sendCustomMessage(
 			{
@@ -7674,7 +7828,7 @@ export class AgentSession {
 
 	/** Replace file-based slash commands used for prompt expansion. */
 	setSlashCommands(slashCommands: FileSlashCommand[]): void {
-		this.#slashCommands = [...slashCommands];
+		this.#slashCommands = slashCommands.filter(command => !isPiDisabledSlashCommandName(command.name));
 	}
 
 	/** Custom commands (TypeScript slash commands and MCP prompts) */
@@ -7690,7 +7844,7 @@ export class AgentSession {
 
 	/** Update the MCP prompt commands list. Called when server prompts are (re)loaded. */
 	setMCPPromptCommands(commands: LoadedCustomCommand[]): void {
-		this.#mcpPromptCommands = commands;
+		this.#mcpPromptCommands = commands.filter(command => !isPiDisabledSlashCommandName(command.command.name));
 		this.#notifyCommandMetadataChanged();
 	}
 
@@ -7783,12 +7937,12 @@ export class AgentSession {
 		};
 	}
 
-	#buildVibeModeMessage(): CustomMessage | null {
-		if (!this.#vibeModeState?.enabled) return null;
+	#buildDelegateModeMessage(): CustomMessage | null {
+		if (!this.#delegateModeState?.enabled) return null;
 		return {
 			role: "custom",
-			customType: "vibe-mode-context",
-			content: prompt.render(vibeModeActivePrompt),
+			customType: "delegate-mode-context",
+			content: prompt.render(delegateModeActivePrompt),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
@@ -7984,11 +8138,38 @@ export class AgentSession {
 	 * steer/follow-up. Callers that render a UI or manage turn lifecycle (e.g.
 	 * the ACP agent) use this to know whether to expect an `agent_end` event.
 	 */
+	async #runWithPluginPromptAdmission<T>(operation: () => Promise<T>): Promise<T> {
+		const pendingReload = this.#pluginReloadPromise;
+		if (pendingReload) {
+			try {
+				await pendingReload;
+			} catch {
+				// The reload caller observes candidate rejection. A concurrent prompt
+				// proceeds against the preserved last-known-good runtime.
+			}
+		}
+		this.#pluginPromptAdmissions++;
+		try {
+			return await operation();
+		} finally {
+			this.#pluginPromptAdmissions--;
+		}
+	}
+
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
+		return this.#runWithPluginPromptAdmission(() => this.#promptImpl(text, options));
+	}
+
+	async #promptImpl(text: string, options?: PromptOptions): Promise<boolean> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 
 		// Handle extension commands first (execute immediately, even during streaming)
 		if (expandPromptTemplates && text.startsWith("/")) {
+			const commandEnd = text.search(/[ :]/);
+			const commandName = text.slice(1, commandEnd === -1 ? undefined : commandEnd);
+			if (isPiDisabledSlashCommandName(commandName)) {
+				throw new Error(`Slash command "/${commandName}" is unavailable in Pi`);
+			}
 			const handled = await this.#tryExecuteExtensionCommand(text);
 			if (handled) {
 				return false;
@@ -8102,6 +8283,16 @@ export class AgentSession {
 	}
 
 	async promptCustomMessage<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
+		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice"> & {
+			queueChipText?: string;
+			queueOnly?: boolean;
+		},
+	): Promise<void> {
+		return this.#runWithPluginPromptAdmission(() => this.#promptCustomMessageImpl(message, options));
+	}
+
+	async #promptCustomMessageImpl<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
 		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice"> & {
 			queueChipText?: string;
@@ -8234,9 +8425,9 @@ export class AgentSession {
 			if (goalModeMessage) {
 				messages.push(goalModeMessage);
 			}
-			const vibeModeMessage = this.#buildVibeModeMessage();
-			if (vibeModeMessage) {
-				messages.push(vibeModeMessage);
+			const delegateModeMessage = this.#buildDelegateModeMessage();
+			if (delegateModeMessage) {
+				messages.push(delegateModeMessage);
 			}
 			if (options?.prependMessages) {
 				messages.push(...options.prependMessages);
@@ -8370,6 +8561,7 @@ export class AgentSession {
 		// Parse command name and args
 		const spaceIndex = text.indexOf(" ");
 		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+		if (isPiDisabledSlashCommandName(commandName)) return false;
 		const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
 
 		const command = this.#extensionRunner.getCommand(commandName);
@@ -8461,6 +8653,7 @@ export class AgentSession {
 		// Parse command name and args
 		const spaceIndex = text.indexOf(" ");
 		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+		if (isPiDisabledSlashCommandName(commandName)) return null;
 		const argsString = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
 
 		// Find matching command
@@ -9207,6 +9400,7 @@ export class AgentSession {
 	 * @returns true if completed, false if cancelled by hook
 	 */
 	async newSession(options?: NewSessionOptions): Promise<boolean> {
+		if (options?.drop && !piAllowsExtraSessionOperations()) return false;
 		const previousSessionFile = this.sessionFile;
 		const nextDiscoverySessionToolNames = this.#mcpDiscoveryEnabled
 			? [
@@ -9232,7 +9426,7 @@ export class AgentSession {
 		this.#cancelOwnAsyncJobs();
 		this.#closeAllProviderSessions("new session");
 		this.agent.reset();
-		if (options?.drop && previousSessionFile) {
+		if (piAllowsExtraSessionOperations() && options?.drop && previousSessionFile) {
 			// Detach the advisor recorder feed and drain its writer BEFORE deleting the
 			// old artifacts dir: `await this.abort()` only stops the primary, so a still-
 			// running advisor turn could otherwise finish, emit `message_end`, and recreate
@@ -9957,6 +10151,7 @@ export class AgentSession {
 	}
 
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
+		if (!piAllowsContextPruning()) return undefined;
 		const branchEntries = this.sessionManager.getBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
 		const result = pruneToolOutputs(
@@ -9997,6 +10192,7 @@ export class AgentSession {
 	 * provider prompt cache.
 	 */
 	async #pruneStaleToolResults(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
+		if (!piAllowsContextPruning()) return undefined;
 		const { supersedeReads, dropUseless } = this.settings.getGroup("compaction");
 		if (!supersedeReads && !dropUseless) return undefined;
 		const branchEntries = this.sessionManager.getBranch();
@@ -10039,6 +10235,9 @@ export class AgentSession {
 	 * skips the disk rewrite.
 	 */
 	async dropImages(): Promise<{ removed: number }> {
+		if (!piAllowsExtraSessionOperations()) {
+			throw new Error("Dropping persisted session images is unavailable in Pi");
+		}
 		const branchEntries = this.sessionManager.getBranch();
 		let removed = 0;
 		for (const entry of branchEntries) {
@@ -10090,6 +10289,9 @@ export class AgentSession {
 	 * No-op (zero counts) when nothing is eligible.
 	 */
 	async shake(mode: ShakeMode, opts: { config?: ShakeConfig; signal?: AbortSignal } = {}): Promise<ShakeResult> {
+		if (!piAllowsExtraSessionOperations()) {
+			throw new Error("Session shaking is unavailable in Pi");
+		}
 		if (mode === "images") {
 			const { removed } = await this.dropImages();
 			return { mode, toolResultsDropped: 0, blocksDropped: 0, imagesDropped: removed, tokensFreed: 0 };
@@ -10577,6 +10779,9 @@ export class AgentSession {
 	 * @returns The handoff document text, or undefined if cancelled/failed
 	 */
 	async handoff(customInstructions?: string, options?: SessionHandoffOptions): Promise<HandoffResult | undefined> {
+		if (!piAllowsExtraSessionOperations()) {
+			throw new Error("Session handoff is unavailable in Pi");
+		}
 		const entries = this.sessionManager.getBranch();
 		const messageCount = entries.filter(e => e.type === "message").length;
 
@@ -11339,6 +11544,10 @@ export class AgentSession {
 	}
 
 	async #handleEmptyAssistantStop(assistantMessage: AssistantMessage): Promise<boolean> {
+		if (!piAllowsAutomaticStopRecovery()) {
+			this.#emptyStopRetryCount = 0;
+			return false;
+		}
 		if (!this.#isEmptyAssistantStop(assistantMessage)) {
 			this.#emptyStopRetryCount = 0;
 			return false;
@@ -11411,7 +11620,8 @@ export class AgentSession {
 		});
 	}
 	async #handleUnexpectedAssistantStop(assistantMessage: AssistantMessage): Promise<boolean> {
-		if (!this.settings.get("features.unexpectedStopDetection")) {
+		if (!piAllowsAutomaticStopRecovery() || !this.settings.get("features.unexpectedStopDetection")) {
+			this.#unexpectedStopRetryCount = 0;
 			return false;
 		}
 		if (!isUnexpectedStopCandidate(assistantMessage)) {
@@ -11643,26 +11853,26 @@ export class AgentSession {
 		if (!checkpointState) {
 			return;
 		}
-		try {
-			this.sessionManager.branchWithSummary(checkpointState.checkpointEntryId, report, {
-				startedAt: checkpointState.startedAt,
-			});
-		} catch (error) {
-			logger.warn("Rewind branch checkpoint missing, falling back to root", {
-				error: error instanceof Error ? error.message : String(error),
-			});
-			this.sessionManager.branchWithSummary(null, report, { startedAt: checkpointState.startedAt });
-		}
-
 		const rewoundAt = new Date().toISOString();
 		const details = { report, startedAt: checkpointState.startedAt, rewoundAt };
-		this.sessionManager.appendCustomMessageEntry(
-			"rewind-report",
-			prompt.render(rewindReportTemplate, { report }),
-			false,
-			details,
-			"agent",
-		);
+		const retainedReport = prompt.render(rewindReportTemplate, { report });
+		try {
+			rewriteCheckpointConversation(this.sessionManager, {
+				branchFromId: checkpointState.checkpointEntryId,
+				content: retainedReport,
+				details,
+			});
+		} catch (error) {
+			logger.warn("Checkpoint conversation boundary missing, falling back to root", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			rewriteCheckpointConversation(this.sessionManager, {
+				branchFromId: null,
+				content: retainedReport,
+				details,
+			});
+		}
+
 		this.#lastCompletedRewind = { report, startedAt: checkpointState.startedAt, rewoundAt };
 
 		if (activeMessages) {
@@ -12878,6 +13088,7 @@ export class AgentSession {
 		signal: AbortSignal,
 		options: { skipElide: boolean; hasProgress: () => boolean },
 	): Promise<boolean> {
+		if (!piAllowsContextPruning()) return false;
 		if (signal.aborted) return false;
 		let elided = 0;
 		let elidedTokens = 0;
@@ -14412,10 +14623,7 @@ export class AgentSession {
 		options?: { allowModelFallback?: boolean; fireworksFastFallback?: boolean; hardErrorFallback?: boolean },
 	): Promise<boolean> {
 		const retrySettings = this.settings.getGroup("retry");
-		// The Fireworks Fast→base degrade is an intrinsic model-selection safety net,
-		// not a retry loop, so it runs even when the user disabled retries: it switches
-		// the model once and lets the base turn proceed.
-		if (!retrySettings.enabled && !options?.fireworksFastFallback) return false;
+		if (!retrySettings.enabled) return false;
 		const classifierRefusal = this.#isClassifierRefusal(message);
 
 		const generation = this.#promptGeneration;
@@ -14517,7 +14725,7 @@ export class AgentSession {
 			// of the role-fallback setting: it's intrinsic to the Fast contract (speed
 			// best-effort, degrade to Standard on failure) and triggers on hard router
 			// errors the generic retry classifier would otherwise reject.
-			if (!switchedModel && allowModelFallback && options?.fireworksFastFallback) {
+			if (!switchedModel && allowModelFallback && retrySettings.modelFallback && options?.fireworksFastFallback) {
 				switchedModel = await this.#tryFireworksFastFallback(currentSelector);
 			}
 			if (switchedModel) {
@@ -14720,6 +14928,7 @@ export class AgentSession {
 	 * @returns true if retry was initiated, false if no failed turn to retry or agent is busy
 	 */
 	async retry(): Promise<boolean> {
+		if (!piAllowsExtraSessionOperations()) return false;
 		if (this.isStreaming || this.isCompacting || this.isRetrying) return false;
 
 		const messages = this.agent.state.messages;
@@ -14887,6 +15096,9 @@ export class AgentSession {
 		onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean },
 	): Promise<PythonResult> {
+		if (!piAllowsEvalKernels()) {
+			throw new Error("Python kernel execution is unavailable in Pi");
+		}
 		const excludeFromContext = options?.excludeFromContext === true;
 		const cwd = this.sessionManager.getCwd();
 		this.assertEvalExecutionAllowed();
@@ -15445,6 +15657,15 @@ export class AgentSession {
 		const switchingToDifferentSession = previousSessionFile
 			? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
 			: true;
+		if (switchingToDifferentSession) {
+			const targetSession = await SessionManager.peekSessionInit(sessionPath);
+			if (
+				!targetSession ||
+				normalizePathForComparison(targetSession.cwd) !== normalizePathForComparison(this.sessionManager.getCwd())
+			) {
+				throw new Error("Cross-project session switching is unavailable in Pi");
+			}
+		}
 		// Emit session_before_switch event (can be cancelled)
 		if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
 			const result = (await this.#extensionRunner.emit({
@@ -15886,6 +16107,9 @@ export class AgentSession {
 		/** Raw session context built during navigation — pass to renderInitialMessages to skip a second O(N) walk. */
 		sessionContext?: SessionContext;
 	}> {
+		if (!piAllowsExtraSessionOperations()) {
+			throw new Error("Session tree navigation is unavailable in Pi");
+		}
 		const oldLeafId = this.sessionManager.getLeafId();
 
 		// No-op if already at target
@@ -16552,12 +16776,12 @@ export class AgentSession {
 	 * @returns Path to exported file
 	 */
 	async exportToHtml(outputPath?: string): Promise<string> {
-		// Public HTML export ships in the omp brand palette (collab-web
-		// pink/purple), matching my.omp.sh — not the host's terminal theme.
-		// Callers who want a themed export can pass `palette: "theme"` with
-		// `themeName` directly to `exportSessionToHtml`.
 		const { exportSessionToHtml } = await import("../export/html");
-		return exportSessionToHtml(this.sessionManager, this.state, { outputPath, palette: "web" });
+		return exportSessionToHtml(this.sessionManager, this.state, {
+			outputPath,
+			palette: "theme",
+			includeSubSessions: false,
+		});
 	}
 
 	// =========================================================================
@@ -16678,7 +16902,7 @@ export class AgentSession {
 			})),
 			messages: llmMessages,
 		};
-		const filePath = path.join(os.tmpdir(), `omp-llm-request-${Snowflake.next()}.json`);
+		const filePath = path.join(os.tmpdir(), `pi-llm-request-${Snowflake.next()}.json`);
 		await Bun.write(filePath, `${JSON.stringify(payload, null, 2)}\n`);
 		return filePath;
 	}

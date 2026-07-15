@@ -1208,7 +1208,7 @@ describe("buildSessionContext", () => {
 		expect((loaded.messages[0] as any).summary).toContain("Summary of 1,a,2,b");
 	});
 
-	it("re-attaches snapcompact frames from preserveData as compaction summary images", () => {
+	it("does not reattach snapcompact frames from legacy preserveData", () => {
 		const u1 = createMessageEntry(createUserMessage("1"));
 		const a1 = createMessageEntry(createAssistantMessage("a"));
 		const u2 = createMessageEntry(createUserMessage("2"));
@@ -1222,7 +1222,7 @@ describe("buildSessionContext", () => {
 		const loaded = buildSessionContext([u1, a1, u2, compaction, u3]);
 		const summaryMessage = loaded.messages[0] as { role: string; images?: unknown };
 		expect(summaryMessage.role).toBe("compactionSummary");
-		expect(summaryMessage.images).toEqual([{ type: "image", data: "ZmFrZQ==", mimeType: "image/png" }]);
+		expect(summaryMessage.images ?? []).toEqual([]);
 	});
 
 	it("transcript option keeps full history with every compaction inline at its position", () => {
@@ -1252,8 +1252,8 @@ describe("buildSessionContext", () => {
 		const second = transcript.messages[4] as { summary: string; images?: unknown };
 		expect(first.summary).toContain("First summary");
 		expect(second.summary).toContain("Second summary");
-		// Snapcompact frames ride along in the transcript too.
-		expect(second.images).toEqual([{ type: "image", data: "ZmFrZQ==", mimeType: "image/png" }]);
+		// Legacy expanded frame payloads stay persisted but are inert in Pi.
+		expect(second.images ?? []).toEqual([]);
 
 		// LLM context is untouched by the option: latest compaction replaces history.
 		const llm = buildSessionContext(entries);

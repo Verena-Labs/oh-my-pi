@@ -4,6 +4,7 @@ import { type } from "arktype";
 import {
 	deleteManagedSkill,
 	getManagedSkillsDir,
+	piAllowsManagedSkillMutation,
 	sanitizeSkillName,
 	writeManagedSkill,
 } from "../autolearn/managed-skills";
@@ -47,12 +48,17 @@ export class ManageSkillTool implements AgentTool<typeof manageSkillSchema> {
 
 	// No session state needed: createIf reads settings; writes target the
 	// home-based managed-skills dir directly.
-	static createIf(session: ToolSession): ManageSkillTool | null {
-		if (!session.settings.get("autolearn.enabled")) return null;
-		return new ManageSkillTool();
+	static createIf(_session: ToolSession): ManageSkillTool | null {
+		return null;
 	}
 
 	async execute(_id: string, params: ManageSkillParams): Promise<AgentToolResult> {
+		// Direct construction is not a supported escape hatch around Pi's registry
+		// boundary. Reject before resolving or touching any managed-skill path.
+		if (!piAllowsManagedSkillMutation()) {
+			throw new Error("Agent-managed skill mutation is unavailable in Pi.");
+		}
+
 		if (params.action === "delete") {
 			await deleteManagedSkill(params.name);
 			return {

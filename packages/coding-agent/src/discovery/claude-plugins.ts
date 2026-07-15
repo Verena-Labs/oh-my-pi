@@ -27,8 +27,8 @@ import {
 import { substitutePluginRoot } from "./substitute-plugin-root";
 
 const PROVIDER_ID = "claude-plugins";
-const DISPLAY_NAME = "Claude Code Marketplace";
-const PRIORITY = 70; // Below claude.ts (80) so user .claude/ overrides win
+const DISPLAY_NAME = "Claude-Compatible Marketplace";
+const PRIORITY = 70;
 
 interface ClaudePluginManifest {
 	skills?: string | string[];
@@ -470,7 +470,7 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 registerProvider<Skill>(skillCapability.id, {
 	id: PROVIDER_ID,
 	displayName: DISPLAY_NAME,
-	description: "Load skills from Claude Code marketplace plugins (~/.claude/plugins/cache/)",
+	description: "Load skills from Pi-managed Claude-compatible marketplace plugins",
 	priority: PRIORITY,
 	load: loadSkills,
 });

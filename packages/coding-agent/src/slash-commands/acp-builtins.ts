@@ -1,6 +1,7 @@
 import type { AvailableCommand } from "@agentclientprotocol/sdk";
 import { BUILTIN_SLASH_COMMANDS_INTERNAL, lookupBuiltinSlashCommand } from "./builtin-registry";
 import { parseSlashCommand } from "./helpers/parse";
+import { PI_DISABLED_SLASH_COMMAND_NAMES } from "./pi-policy";
 import type { AcpBuiltinSlashCommandResult, SlashCommandRuntime } from "./types";
 
 export type { AcpBuiltinSlashCommandResult } from "./types";
@@ -11,9 +12,10 @@ export type { AcpBuiltinSlashCommandResult } from "./types";
  * dispatch time (e.g. `models` is an alias for `/model`, so an extension
  * registering `models` would appear in the palette but execute the builtin).
  */
-export const ACP_BUILTIN_RESERVED_NAMES: ReadonlySet<string> = new Set(
-	BUILTIN_SLASH_COMMANDS_INTERNAL.filter(c => c.handle !== undefined).flatMap(c => [c.name, ...(c.aliases ?? [])]),
-);
+export const ACP_BUILTIN_RESERVED_NAMES: ReadonlySet<string> = new Set([
+	...PI_DISABLED_SLASH_COMMAND_NAMES,
+	...BUILTIN_SLASH_COMMANDS_INTERNAL.filter(c => c.handle !== undefined).flatMap(c => [c.name, ...(c.aliases ?? [])]),
+]);
 
 /**
  * Whether an extension command named `name` would be captured by ACP builtin

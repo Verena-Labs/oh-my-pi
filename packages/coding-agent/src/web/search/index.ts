@@ -20,13 +20,11 @@ import { throwIfAborted } from "../../tools/tool-errors";
 import {
 	formatSearchProviderFailure,
 	formatSearchProviderFailures,
-	getSearchProvider,
 	resolveProviderChain,
 	type SearchProvider,
 } from "./provider";
 import { renderSearchCall, renderSearchResult, type SearchRenderDetails } from "./render";
-import type { SearchProviderId, SearchResponse } from "./types";
-import { SearchProviderError } from "./types";
+import { isSearchProviderId, SearchProviderError, type SearchProviderId, type SearchResponse } from "./types";
 
 /** Web search tool parameters schema */
 export const webSearchSchema = type({
@@ -128,18 +126,21 @@ async function executeSearch(
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: SearchRenderDetails }> {
 	const { authStorage, sessionId, signal } = options;
 	const explicitProvider = params.provider;
+	let allowFallback = false;
+	try {
+		allowFallback = settings.get("providers.webSearchFallback");
+	} catch {
+		allowFallback = false;
+	}
 	let providers: SearchProvider[];
 	if (explicitProvider && explicitProvider !== "auto") {
-		const provider = await getSearchProvider(explicitProvider);
-		providers = (await provider.isExplicitlyAvailable(authStorage))
-			? [provider]
-			: await resolveProviderChain(authStorage, "auto");
+		providers = isSearchProviderId(explicitProvider)
+			? await resolveProviderChain(authStorage, explicitProvider, allowFallback)
+			: [];
 	} else if (explicitProvider === "auto") {
-		// Explicit `--provider auto` bypasses the configured preferred provider
-		// for this invocation; exclusions still apply.
-		providers = await resolveProviderChain(authStorage, "auto");
+		providers = await resolveProviderChain(authStorage, "auto", allowFallback);
 	} else {
-		providers = await resolveProviderChain(authStorage);
+		providers = await resolveProviderChain(authStorage, undefined, allowFallback);
 	}
 	if (providers.length === 0) {
 		const message = "No web search provider configured.";

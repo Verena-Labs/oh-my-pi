@@ -146,8 +146,8 @@ async function expectNoActiveCheckpointError(session: AgentSession): Promise<voi
 	);
 }
 
-describe("AgentSession checkpoint rewind branch context", () => {
-	it("rebuilds active history through branch_summary before the post-rewind assistant turn", async () => {
+describe("AgentSession checkpoint rewind conversation context", () => {
+	it("rebuilds active history with only the retained report before the post-rewind assistant turn", async () => {
 		const report = "findings: kept checkpoint; risks: stale signed thinking";
 		const { session, mock } = await createHarness([
 			{
@@ -175,14 +175,15 @@ describe("AgentSession checkpoint rewind branch context", () => {
 		expect(mock.calls.length).toBe(3);
 		const finalCall = mock.calls[2];
 		if (!finalCall) throw new Error("Expected final post-rewind provider call");
-		const summaryIndex = finalCall.context.messages.findIndex(
-			message => message.role === "user" && messageText(message).includes("summary of a branch"),
-		);
 		const reportIndex = finalCall.context.messages.findIndex(
 			message => message.role === "developer" && messageText(message).includes(report),
 		);
-		expect(summaryIndex).toBeGreaterThan(-1);
-		expect(reportIndex).toBeGreaterThan(summaryIndex);
+		expect(reportIndex).toBeGreaterThan(-1);
+		expect(
+			finalCall.context.messages.some(
+				message => message.role === "user" && messageText(message).includes("summary of a branch"),
+			),
+		).toBe(false);
 		const reportMessage = finalCall.context.messages[reportIndex];
 		if (!reportMessage) throw new Error("Expected rewind report context");
 		const reportText = messageText(reportMessage);
@@ -195,8 +196,9 @@ describe("AgentSession checkpoint rewind branch context", () => {
 		).toBe(false);
 
 		const activeRoles = session.messages.map(message => message.role);
-		expect(activeRoles).toEqual(["user", "assistant", "toolResult", "branchSummary", "custom", "assistant"]);
+		expect(activeRoles).toEqual(["user", "assistant", "toolResult", "custom", "assistant"]);
 		expect(activeRoles).toEqual(session.sessionManager.buildSessionContext().messages.map(message => message.role));
+		expect(session.sessionManager.getEntries().some(entry => entry.type === "branch_summary")).toBe(false);
 
 		const finalAssistant = expectLastAssistant(session.messages);
 		const finalThinking = finalAssistant.content.find((block): block is ThinkingContent => block.type === "thinking");

@@ -12,7 +12,7 @@ import {
 	type ExtensionFactory,
 } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { VIBE_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/vibe";
+import { DELEGATE_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/delegate";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 
@@ -221,24 +221,24 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
-	it("registers vibe tools only during explicit vibe activation", async () => {
+	it("registers delegate tools only during explicit delegate activation", async () => {
 		const tempDir = makeTempDir();
 		const { session } = await createAgentSession(baseOptions(tempDir));
 		const previousActiveToolNames = session.getActiveToolNames();
 
 		try {
-			for (const name of VIBE_TOOL_NAMES) {
+			for (const name of DELEGATE_TOOL_NAMES) {
 				expect(session.getToolByName(name)).toBeUndefined();
 			}
 
-			await session.activateVibeTools(["read"]);
-			for (const name of VIBE_TOOL_NAMES) {
+			await session.activateDelegateTools(["read"]);
+			for (const name of DELEGATE_TOOL_NAMES) {
 				expect(session.getToolByName(name)).toBeDefined();
 				expect(session.getActiveToolNames()).toContain(name);
 			}
 
-			await session.deactivateVibeTools(previousActiveToolNames);
-			for (const name of VIBE_TOOL_NAMES) {
+			await session.deactivateDelegateTools(previousActiveToolNames);
+			for (const name of DELEGATE_TOOL_NAMES) {
 				expect(session.getToolByName(name)).toBeUndefined();
 			}
 			expect(session.getActiveToolNames()).toEqual(previousActiveToolNames);

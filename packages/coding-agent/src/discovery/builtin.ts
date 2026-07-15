@@ -6,7 +6,6 @@
 import * as path from "node:path";
 import { getAgentDir, logger, parseFrontmatter, tryParseJson } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
-import { getManagedSkillsDir, MANAGED_SKILLS_PROVIDER_ID } from "../autolearn/managed-skills";
 import { registerProvider } from "../capability";
 import { type ContextFile, contextFileCapability } from "../capability/context-file";
 import { type Extension, type ExtensionManifest, extensionCapability } from "../capability/extension";
@@ -16,7 +15,6 @@ import { type Hook, hookCapability } from "../capability/hook";
 import { type Instruction, instructionCapability } from "../capability/instruction";
 import { type MCPServer, mcpCapability } from "../capability/mcp";
 import { type Prompt, promptCapability } from "../capability/prompt";
-import { type Rule, ruleCapability } from "../capability/rule";
 import { type Settings, settingsCapability } from "../capability/settings";
 import { type Skill, skillCapability } from "../capability/skill";
 import { type SlashCommand, slashCommandCapability } from "../capability/slash-command";
@@ -25,7 +23,6 @@ import { type CustomTool, toolCapability } from "../capability/tool";
 import type { LoadContext, LoadResult } from "../capability/types";
 import { expandTilde } from "../tools/path-utils";
 import {
-	buildRuleFromMarkdown,
 	createSourceMeta,
 	discoverExtensionModulePaths,
 	expandEnvVarsDeep,
@@ -36,8 +33,8 @@ import {
 } from "./helpers";
 
 const PROVIDER_ID = "native";
-const DISPLAY_NAME = "OMP";
-const DESCRIPTION = "Native OMP configuration from ~/.omp and .omp/";
+const DISPLAY_NAME = "Pi";
+const DESCRIPTION = "Native Pi configuration from ~/.pi and .pi/";
 const PRIORITY = 100;
 
 const PATHS = SOURCE_PATHS.native;
@@ -296,34 +293,12 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 	};
 }
 
-// Managed skills (auto-learn) are a SEPARATE provider at the lowest skill
-// priority, so an authored skill of the same name from ANY other provider wins
-// the capability-level priority dedup. Discovery is unconditional (an empty
-// managed dir is a no-op); only writing/nudging is gated by `autolearn.enabled`.
-const MANAGED_SKILLS_PRIORITY = 5;
-async function loadManagedSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
-	return scanSkillsFromDir(ctx, {
-		dir: getManagedSkillsDir(),
-		providerId: MANAGED_SKILLS_PROVIDER_ID,
-		level: "user",
-		requireDescription: true,
-	});
-}
-
 registerProvider<Skill>(skillCapability.id, {
 	id: PROVIDER_ID,
 	displayName: DISPLAY_NAME,
 	description: DESCRIPTION,
 	priority: PRIORITY,
 	load: loadSkills,
-});
-
-registerProvider<Skill>(skillCapability.id, {
-	id: MANAGED_SKILLS_PROVIDER_ID,
-	displayName: "Managed Skills (auto-learn)",
-	description: "Auto-generated managed skills from ~/.omp/agent/managed-skills",
-	priority: MANAGED_SKILLS_PRIORITY,
-	load: loadManagedSkills,
 });
 
 // Slash Commands
@@ -356,64 +331,6 @@ registerProvider<SlashCommand>(slashCommandCapability.id, {
 	description: DESCRIPTION,
 	priority: PRIORITY,
 	load: loadSlashCommands,
-});
-
-// Rules
-async function loadRules(ctx: LoadContext): Promise<LoadResult<Rule>> {
-	const items: Rule[] = [];
-	const warnings: string[] = [];
-
-	for (const { dir, level } of await getConfigDirs(ctx)) {
-		const rulesDir = path.join(dir, "rules");
-		const result = await loadFilesFromDir<Rule>(ctx, rulesDir, PROVIDER_ID, level, {
-			extensions: ["md", "mdc"],
-			transform: (name, content, path, source) =>
-				buildRuleFromMarkdown(name, content, path, source, { stripNamePattern: /\.(md|mdc)$/ }),
-		});
-		items.push(...result.items);
-		if (result.warnings) warnings.push(...result.warnings);
-	}
-
-	// Top-level RULES.md is a sticky always-apply rule. Documented in
-	// https://omp.sh/docs/context-files as the file that gets "re-injected near
-	// the current turn so they keep hold across long conversations".
-	// User scope:    ~/.omp/agent/RULES.md
-	// Project scope: nearest .omp/RULES.md walking up from cwd to repoRoot
-	const userRulesFile = path.join(getAgentDir(), "RULES.md");
-	const userRule = await loadStickyRulesFile(userRulesFile, "user");
-	if (userRule) items.push(userRule);
-
-	const nearestProjectConfigDir = await findNearestProjectConfigDir(ctx.cwd, ctx.repoRoot);
-	if (nearestProjectConfigDir) {
-		const projectRulesFile = path.join(nearestProjectConfigDir.dir, "RULES.md");
-		const projectRule = await loadStickyRulesFile(projectRulesFile, "project");
-		if (projectRule) items.push(projectRule);
-	}
-
-	return { items, warnings };
-}
-
-/**
- * Read a top-level `RULES.md` and synthesize an always-apply rule.
- * Returns null when the file is absent or empty so callers can short-circuit.
- */
-async function loadStickyRulesFile(filePath: string, level: "user" | "project"): Promise<Rule | null> {
-	const content = await readFile(filePath);
-	if (!content) return null;
-	const source = createSourceMeta(PROVIDER_ID, filePath, level);
-	const ruleName = level === "project" ? "RULES@project" : "RULES";
-	const rule = buildRuleFromMarkdown("RULES.md", content, filePath, source, { ruleName });
-	// Force alwaysApply regardless of frontmatter — the whole point of RULES.md
-	// is to be reattached every turn.
-	return { ...rule, alwaysApply: true };
-}
-
-registerProvider<Rule>(ruleCapability.id, {
-	id: PROVIDER_ID,
-	displayName: DISPLAY_NAME,
-	description: DESCRIPTION,
-	priority: PRIORITY,
-	load: loadRules,
 });
 
 // Prompts
@@ -929,7 +846,7 @@ async function loadContextFiles(ctx: LoadContext): Promise<LoadResult<ContextFil
 registerProvider<ContextFile>(contextFileCapability.id, {
 	id: PROVIDER_ID,
 	displayName: DISPLAY_NAME,
-	description: "Load AGENTS.md from .omp/ directories",
+	description: "Load AGENTS.md from .pi/ directories",
 	priority: PRIORITY,
 	load: loadContextFiles,
 });

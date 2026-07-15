@@ -748,7 +748,7 @@ function splitPdfImageMemberReadPath(readPath: string): { pdfPath: string; membe
 
 const readSchema = type({
 	path: type("string").describe(
-		'Local path, internal URI (e.g. "omp://", "issue://123", "pr://123"), or URL. Inline :<sel> is still accepted for compatibility.',
+		'Local path, selected Pi internal URI (e.g. "pi://pi.md", "memory://root", "artifact://<id>"), or URL. Inline :<sel> is still accepted for compatibility.',
 	),
 	"selector?": type("string").describe(
 		'selector without a leading colon (e.g. "50-100", "raw", "raw:50-100", "conflicts"); keeps `path` literal when filenames contain colons',
@@ -2198,7 +2198,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			return executeReadUrl(this.session, { path: parsedUrlTarget.path, raw: urlRaw }, signal);
 		}
 
-		// Handle internal URLs (agent://, artifact://, memory://, skill://, rule://, local://, mcp://, omp://, issue://, pr://).
+		// Handle selected Pi internal URLs (local://, agent://, artifact://,
+		// history://, mcp://, memory://, skill://, vault://, ssh://, and pi://).
 		// Use the internal-URL-aware splitter so malformed selectors are peeled
 		// off the URL and surfaced via parseSel rather than confusing handlers.
 		const internalRouter = InternalUrlRouter.instance();

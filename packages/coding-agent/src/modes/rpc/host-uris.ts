@@ -23,6 +23,13 @@ type PendingUriRequest = {
 	reject: (error: Error) => void;
 };
 
+export const PI_HOST_URI_SCHEME_REGISTRATION_ERROR = "Host URI scheme registration is unavailable in Pi";
+
+/** Pi keeps its selected internal-resource protocol set fixed at build time. */
+export function piAllowsHostUriSchemeRegistration(): boolean {
+	return false;
+}
+
 /** Type guard for inbound `host_uri_result` frames coming from the host. */
 export function isRpcHostUriResult(value: unknown): value is RpcHostUriResult {
 	if (!value || typeof value !== "object") return false;
@@ -85,6 +92,9 @@ export class RpcHostUriBridge {
 	 * router; surviving and new schemes get fresh handler instances.
 	 */
 	setSchemes(schemes: RpcHostUriSchemeDefinition[]): string[] {
+		if (!piAllowsHostUriSchemeRegistration()) {
+			throw new Error(PI_HOST_URI_SCHEME_REGISTRATION_ERROR);
+		}
 		const normalized = new Map<string, RpcHostUriSchemeDefinition>();
 		for (const raw of schemes) {
 			const scheme = typeof raw?.scheme === "string" ? raw.scheme.trim().toLowerCase() : "";

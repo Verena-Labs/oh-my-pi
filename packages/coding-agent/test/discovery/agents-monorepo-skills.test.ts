@@ -11,9 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { clearCache, readFile } from "@oh-my-pi/pi-coding-agent/capability/fs";
-import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import type { LoadContext } from "@oh-my-pi/pi-coding-agent/capability/types";
-import { getProjectPathCandidates } from "@oh-my-pi/pi-coding-agent/discovery/agents";
 import {
 	buildRuleFromMarkdown,
 	calculateDepth,
@@ -21,6 +19,8 @@ import {
 	scanSkillsFromDir,
 } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import type { Rule } from "../../src/capability/rule";
+import { getProjectPathCandidates } from "../../src/discovery/agents";
 
 const PROVIDER_ID = "agents";
 

@@ -137,7 +137,10 @@ const baseOptions = {
 	task: "do work",
 	index: 0,
 	id: "subagent-guards",
-	modelRegistry: { refresh: async () => {} } as unknown as ModelRegistry,
+	modelRegistry: {
+		authStorage: { enforceSingleCredentialPolicy: () => {} },
+		refresh: async () => {},
+	} as unknown as ModelRegistry,
 	enableLsp: false,
 };
 

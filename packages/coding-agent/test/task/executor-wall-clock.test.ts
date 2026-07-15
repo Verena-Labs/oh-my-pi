@@ -86,7 +86,10 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		task: "do work",
 		index: 0,
 		id: "subagent-walltime",
-		modelRegistry: { refresh: async () => {} } as unknown as ModelRegistry,
+		modelRegistry: {
+			authStorage: { enforceSingleCredentialPolicy: () => {} },
+			refresh: async () => {},
+		} as unknown as ModelRegistry,
 		enableLsp: false,
 	};
 

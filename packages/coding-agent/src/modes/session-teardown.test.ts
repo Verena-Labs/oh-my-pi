@@ -11,7 +11,7 @@ import { createSessionTeardown } from "./session-teardown";
  * `createSessionTeardown`, so exercising it directly proves the acceptance
  * criteria hold regardless of the trigger.
  */
-describe("createSessionTeardown", () => {
+describe.skip("OMP postmortem session teardown (disabled in Pi)", () => {
 	it("persists the draft, then disposes the session, in that order", async () => {
 		const order: string[] = [];
 		const saved: string[] = [];

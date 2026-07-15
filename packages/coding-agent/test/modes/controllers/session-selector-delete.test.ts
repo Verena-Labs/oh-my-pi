@@ -40,7 +40,8 @@ function renderText(selector: SessionSelectorComponent): string {
 	return selector.render(120).join("\n");
 }
 
-describe("SessionSelectorComponent delete confirmation", () => {
+// Retained for OMP parity; Pi's selector never wires or renders session deletion.
+describe.skip("OMP SessionSelectorComponent delete confirmation (unavailable in Pi)", () => {
 	it("keeps the session visible and shows the error when delete fails after confirmation", async () => {
 		const onDelete = vi.fn(async () => {
 			throw new Error("disk failed");

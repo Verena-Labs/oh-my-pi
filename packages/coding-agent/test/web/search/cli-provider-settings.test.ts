@@ -1,11 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import {
-	SEARCH_PROVIDER_ORDER,
-	setExcludedSearchProviders,
-	setPreferredSearchProvider,
-} from "@oh-my-pi/pi-coding-agent/web/search/provider";
+import { setExcludedSearchProviders, setPreferredSearchProvider } from "@oh-my-pi/pi-coding-agent/web/search/provider";
 import { __resetDirsFromEnvForTests, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { runSearchCommand } from "../../../src/cli/web-search-cli";
 
@@ -50,20 +46,10 @@ function makeFetchMock(): typeof fetch {
 	return Object.assign(
 		async (input: string | Request | URL, _init?: RequestInit): Promise<Response> => {
 			const url = responseUrl(input);
-			if (url.startsWith("https://s.jina.ai/")) {
+			if (url === "https://html.duckduckgo.com/html/") {
 				return new Response(
-					JSON.stringify({ data: [{ title: "Jina result", url: "https://jina.example", content: "jina" }] }),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				);
-			}
-			if (url === "https://api.tavily.com/search") {
-				return new Response(
-					JSON.stringify({
-						answer: "Tavily answer",
-						results: [{ title: "Tavily result", url: "https://tavily.example", content: "tavily" }],
-						request_id: "req-test",
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
+					'<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fddg.example">DDG result</a><a class="result__snippet">duck</a></div><div class="nav-link"></div>',
+					{ status: 200, headers: { "Content-Type": "text/html" } },
 				);
 			}
 			return new Response(`unexpected URL: ${url}`, { status: 500 });
@@ -75,8 +61,6 @@ function makeFetchMock(): typeof fetch {
 beforeEach(async () => {
 	originalEnv = Object.fromEntries(WEB_SEARCH_ENV_KEYS.map(key => [key, process.env[key]]));
 	for (const key of WEB_SEARCH_ENV_KEYS) delete process.env[key];
-	process.env.JINA_API_KEY = "test-jina-key";
-	process.env.TAVILY_API_KEY = "test-tavily-key";
 	originalExitCode = process.exitCode;
 	process.exitCode = undefined;
 
@@ -115,7 +99,7 @@ afterEach(async () => {
 });
 
 describe("runSearchCommand provider settings", () => {
-	it("applies configured web-search preference and exclusions before resolving the implicit chain", async () => {
+	it("ignores legacy broad-provider settings and uses a selected Pi provider", async () => {
 		vi.spyOn(globalThis, "fetch").mockImplementation(makeFetchMock());
 
 		let stdout = "";
@@ -127,27 +111,21 @@ describe("runSearchCommand provider settings", () => {
 		await runSearchCommand({ query: "provider selection smoke test", limit: 1, expanded: false });
 
 		const plain = stripVTControlCharacters(stdout);
-		expect(plain).toContain("Provider: Tavily (API)");
-		expect(plain).not.toContain("Provider: Jina");
+		expect(plain).toContain("Provider: DuckDuckGo");
+		expect(plain).not.toContain("Tavily");
+		expect(plain).not.toContain("Jina");
 	});
 
-	it("treats explicit --provider auto as a one-shot override of the configured preferred provider", async () => {
-		// Tavily is the configured preference, but `--provider auto` overrides it and walks the
-		// chain. Restrict eligibility to Jina + Tavily so an ambient broker/OAuth provider
-		// (gemini, anthropic, codex, perplexity…) can't win on a dev machine; the chain order
-		// (Jina before Tavily) still decides between the two.
+	it("keeps explicit auto inside Pi's selected provider set", async () => {
 		const currentTempDir = tempAgentDir;
 		if (!currentTempDir) throw new Error("tempAgentDir missing");
-		// Drive the exclusion through settings too — Settings.init re-applies
-		// `providers.webSearchExclude`, overwriting a bare setExcludedSearchProviders() call.
-		const onlyJinaTavily = SEARCH_PROVIDER_ORDER.filter(id => id !== "jina" && id !== "tavily");
 		resetSettingsForTest();
 		setPreferredSearchProvider("auto");
-		setExcludedSearchProviders(onlyJinaTavily);
+		setExcludedSearchProviders([]);
 		await Settings.init({
 			inMemory: true,
 			cwd: currentTempDir.path(),
-			overrides: { "providers.webSearch": "tavily", "providers.webSearchExclude": onlyJinaTavily },
+			overrides: { "providers.webSearch": "tavily", "providers.webSearchExclude": ["jina"] },
 		});
 
 		vi.spyOn(globalThis, "fetch").mockImplementation(makeFetchMock());
@@ -161,7 +139,8 @@ describe("runSearchCommand provider settings", () => {
 		await runSearchCommand({ query: "explicit auto chain", provider: "auto", limit: 1, expanded: false });
 
 		const plain = stripVTControlCharacters(stdout);
-		expect(plain).toContain("Provider: Jina");
-		expect(plain).not.toContain("Provider: Tavily (API)");
+		expect(plain).toContain("Provider: DuckDuckGo");
+		expect(plain).not.toContain("Tavily");
+		expect(plain).not.toContain("Jina");
 	});
 });

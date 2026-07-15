@@ -13,10 +13,8 @@ import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
-import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { TtsrManager } from "@oh-my-pi/pi-coding-agent/export/ttsr";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -24,6 +22,8 @@ import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
+import type { Rule } from "../src/capability/rule";
+import { TtsrManager } from "../src/export/ttsr";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 // Mock stream that mimics AssistantMessageEventStream
@@ -541,7 +541,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		expect(extensionRunner.emitSessionStop).toHaveBeenCalledTimes(9);
 	});
 
-	it("emits session_stop only after empty-stop recovery reaches a final stop", async () => {
+	it("emits session_stop immediately for an empty stop without auto-continuing", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({
 			responses: [{ content: [""] }, { content: ["Recovered"] }],
@@ -570,11 +570,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		await session.prompt("First message");
 		await session.waitForIdle();
 
-		expect(mock.calls).toHaveLength(2);
+		expect(mock.calls).toHaveLength(1);
 		expect(extensionRunner.emitSessionStop).toHaveBeenCalledTimes(1);
 	});
 
-	it("emits session_stop after empty-stop retry cap settles", async () => {
+	it("does not consume a legacy empty-stop retry sequence", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({
 			responses: [{ content: [""] }, { content: [""] }, { content: [""] }, { content: [""] }],
@@ -603,7 +603,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		await session.prompt("First message");
 		await session.waitForIdle();
 
-		expect(mock.calls).toHaveLength(4);
+		expect(mock.calls).toHaveLength(1);
 		expect(extensionRunner.emitSessionStop).toHaveBeenCalledTimes(1);
 	});
 
@@ -1044,7 +1044,8 @@ describe("AgentSession concurrent prompt guard", () => {
 	});
 });
 
-describe("AgentSession TTSR resume gate", () => {
+// Retained upstream behavioral coverage for dormant rulebook injection.
+describe.skip("AgentSession TTSR resume gate (disabled in Pi)", () => {
 	let session: AgentSession;
 	let tempDir: string;
 	const authStorages: AuthStorage[] = [];

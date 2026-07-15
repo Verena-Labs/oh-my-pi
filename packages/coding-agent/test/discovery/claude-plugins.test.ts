@@ -91,8 +91,34 @@ describe("listClaudePluginRoots", () => {
 		expect(result.warnings).toEqual([]);
 	});
 
+	test("ignores a foreign Claude registry while loading Pi's compatible marketplace registry", async () => {
+		const foreignDir = path.join(tempDir, ".claude", "plugins");
+		const piDir = path.join(tempDir, ".pi", "plugins");
+		await fs.mkdir(foreignDir, { recursive: true });
+		await fs.mkdir(piDir, { recursive: true });
+		const entry = (installPath: string) => ({
+			scope: "user",
+			installPath,
+			version: "1.0.0",
+			installedAt: "2026-07-14T00:00:00Z",
+			lastUpdated: "2026-07-14T00:00:00Z",
+		});
+		await fs.writeFile(
+			path.join(foreignDir, "installed_plugins.json"),
+			JSON.stringify({ version: 2, plugins: { "foreign@market": [entry("/foreign/plugin")] } }),
+		);
+		await fs.writeFile(
+			path.join(piDir, "installed_plugins.json"),
+			JSON.stringify({ version: 2, plugins: { "owned@market": [entry("/pi/plugin")] } }),
+		);
+
+		const result = await listClaudePluginRoots(tempDir);
+		expect(result.roots.map(root => root.id)).toEqual(["owned@market"]);
+		expect(result.roots[0]?.path).toBe("/pi/plugin");
+	});
+
 	test("parses plugin with user scope", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		await fs.mkdir(pluginsDir, { recursive: true });
 
 		const registry = {
@@ -125,7 +151,7 @@ describe("listClaudePluginRoots", () => {
 	});
 
 	test("parses plugin with project scope", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		await fs.mkdir(pluginsDir, { recursive: true });
 
 		const registry = {
@@ -151,7 +177,7 @@ describe("listClaudePluginRoots", () => {
 	});
 
 	test("handles multiple entries per plugin ID", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		await fs.mkdir(pluginsDir, { recursive: true });
 
 		const registry = {
@@ -188,7 +214,7 @@ describe("listClaudePluginRoots", () => {
 	});
 
 	test("warns on invalid plugin ID format", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		await fs.mkdir(pluginsDir, { recursive: true });
 
 		const registry = {
@@ -215,7 +241,7 @@ describe("listClaudePluginRoots", () => {
 	});
 
 	test("warns on entry without installPath", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		await fs.mkdir(pluginsDir, { recursive: true });
 
 		const registry = {
@@ -241,7 +267,7 @@ describe("listClaudePluginRoots", () => {
 	});
 
 	test("caches results for same home directory", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		await fs.mkdir(pluginsDir, { recursive: true });
 
 		const registry: {
@@ -295,7 +321,7 @@ describe("listClaudePluginRoots", () => {
 	});
 
 	test("defaults scope to user when not specified", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		await fs.mkdir(pluginsDir, { recursive: true });
 
 		const registry = {
@@ -319,7 +345,7 @@ describe("listClaudePluginRoots", () => {
 		expect(result.roots[0].scope).toBe("user");
 	});
 	test("reads skills directory from plugin manifest skills field", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-skills");
 		await fs.mkdir(path.join(pluginsDir), { recursive: true });
 		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
@@ -359,7 +385,7 @@ describe("listClaudePluginRoots", () => {
 		expect(found?.path).toContain(path.join(".claude", "skills", "manifest-skill", "SKILL.md"));
 	});
 	test("keeps plugin skills out of slash commands while loading them as skills", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "understand-anything");
 		await fs.mkdir(pluginsDir, { recursive: true });
 		await fs.mkdir(path.join(pluginPath, "skills", "understand"), { recursive: true });
@@ -395,7 +421,7 @@ describe("listClaudePluginRoots", () => {
 	});
 
 	test("expands env placeholders in marketplace plugin MCP url and headers", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "context7");
 		const originalApiKey = process.env.OMP_PLUGIN_MCP_API_KEY;
 		const originalUrl = process.env.OMP_PLUGIN_MCP_URL;
@@ -454,7 +480,7 @@ describe("listClaudePluginRoots", () => {
 	});
 
 	test("reads slash commands directory from plugin manifest slash-commands field", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-commands");
 		await fs.mkdir(path.join(pluginsDir), { recursive: true });
 		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
@@ -492,7 +518,7 @@ describe("listClaudePluginRoots", () => {
 	});
 
 	test("reads slash commands directory from plugin manifest commands field (standard Claude plugin format)", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-commands-key");
 		await fs.mkdir(path.join(pluginsDir), { recursive: true });
 		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
@@ -529,7 +555,7 @@ describe("listClaudePluginRoots", () => {
 	});
 
 	test("commands field takes precedence over slash-commands field when both are present", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-commands-precedence");
 		await fs.mkdir(path.join(pluginsDir), { recursive: true });
 		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
@@ -570,7 +596,7 @@ describe("listClaudePluginRoots", () => {
 		expect(notFound).toBeUndefined();
 	});
 	test("ignores manifest skills directory that resolves outside plugin root", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-skills-outside");
 		const outsideDir = path.join(tempDir, "outside-skills", "outside-skill");
 		await fs.mkdir(path.join(pluginsDir), { recursive: true });
@@ -610,7 +636,7 @@ describe("listClaudePluginRoots", () => {
 	});
 
 	test("ignores manifest slash commands directory that resolves outside plugin root", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-commands-outside");
 		const outsideDir = path.join(tempDir, "outside-commands");
 		await fs.mkdir(path.join(pluginsDir), { recursive: true });
@@ -650,7 +676,7 @@ describe("listClaudePluginRoots", () => {
 		// Mirrors real-world plugins such as addyosmani/agent-skills whose plugin.json
 		// declares `"commands": ["./.claude/commands", "./commands"]`. Both directories
 		// contribute; each command lands under the plugin's namespace.
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-commands-array");
 		await fs.mkdir(pluginsDir, { recursive: true });
 		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
@@ -697,7 +723,7 @@ describe("listClaudePluginRoots", () => {
 		// Claude plugins reference allows command paths to be either flat `.md`
 		// files or directories. A manifest-declared commands field still replaces
 		// default `commands/`; plugins that want defaults must list `./commands`.
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-commands-files");
 		await fs.mkdir(pluginsDir, { recursive: true });
 		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
@@ -736,7 +762,7 @@ describe("listClaudePluginRoots", () => {
 	});
 
 	test("array-form commands warns on out-of-root entries while loading valid ones", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-commands-mixed");
 		const outsideDir = path.join(tempDir, "outside-commands");
 		await fs.mkdir(pluginsDir, { recursive: true });
@@ -773,7 +799,7 @@ describe("listClaudePluginRoots", () => {
 	});
 
 	test("reads skills from array-form skills manifest field", async () => {
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-skills-array");
 		await fs.mkdir(pluginsDir, { recursive: true });
 		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
@@ -818,7 +844,7 @@ describe("listClaudePluginRoots", () => {
 		// Per Claude plugins reference "Path behavior rules":
 		// `skills` adds to the default `skills/` scan; the default is always loaded
 		// alongside any manifest-declared directories.
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-skills-merge");
 		await fs.mkdir(pluginsDir, { recursive: true });
 		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
@@ -863,7 +889,7 @@ describe("listClaudePluginRoots", () => {
 		// Claude path-behavior rules carve out marketplace entries whose source is the
 		// marketplace root: their manifest `skills` field selects the published
 		// subdirectories instead of also loading the root `skills/` directory.
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-skills-marketplace-root");
 		await fs.mkdir(pluginsDir, { recursive: true });
 		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
@@ -918,7 +944,7 @@ describe("listClaudePluginRoots", () => {
 		// Per Claude plugins reference: a skills path may point directly at a directory whose
 		// SKILL.md is the skill (frontmatter name → invocation, directory basename → fallback).
 		// Real plugins use `"skills": ["./"]` — that entry must not silently drop the skill.
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-skills-self");
 		await fs.mkdir(pluginsDir, { recursive: true });
 		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
@@ -957,7 +983,7 @@ describe("listClaudePluginRoots", () => {
 		// Per Claude plugins reference "Path behavior rules":
 		// `commands` REPLACES the default `commands/` scan when the manifest key is set.
 		// A plugin that wants both must list `./commands` explicitly.
-		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		const pluginsDir = path.join(tempDir, ".pi", "plugins");
 		const pluginPath = path.join(tempDir, "plugins", "manifest-commands-replace");
 		await fs.mkdir(pluginsDir, { recursive: true });
 		await fs.mkdir(path.join(pluginPath, ".claude-plugin"), { recursive: true });
@@ -1010,7 +1036,7 @@ describe("discoverAgents plugin precedence", () => {
 	});
 
 	test("prefers project-scoped plugin agent over user-scoped plugin agent", async () => {
-		const pluginRegistryDir = path.join(tempDir, ".claude", "plugins");
+		const pluginRegistryDir = path.join(tempDir, ".pi", "plugins");
 		const projectPluginPath = path.join(tempDir, "plugins", "project");
 		const userPluginPath = path.join(tempDir, "plugins", "user");
 		const agentName = "plugin-precedence-test-agent";

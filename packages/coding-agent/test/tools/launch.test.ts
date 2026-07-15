@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { DAEMON_BROKER_PROCESS_TITLE } from "../../src/launch/broker";
 import { createDaemonBrokerClient, type DaemonBrokerClient } from "../../src/launch/client";
 import { registerDaemonProjectPresence } from "../../src/launch/presence";
 import type { DaemonSpec } from "../../src/launch/protocol";
@@ -50,6 +51,10 @@ afterEach(async () => {
 });
 
 describe("daemon broker", () => {
+	it("uses Pi product identity in the retained broker process title", () => {
+		expect(DAEMON_BROKER_PROCESS_TITLE).toBe("pi daemon broker");
+	});
+
 	it("shares PTY output and input across project clients", async () => {
 		const projectDir = await tempDir("omp-daemon-project-");
 		const runtimeDir = await tempDir("omp-daemon-runtime-");

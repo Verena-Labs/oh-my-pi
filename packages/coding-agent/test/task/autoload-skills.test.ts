@@ -89,6 +89,7 @@ describe("autoloadSkills in executor", () => {
 		id: "subagent-1",
 		settings: Settings.isolated(),
 		modelRegistry: {
+			authStorage: { enforceSingleCredentialPolicy: () => {} },
 			refresh: async () => {},
 		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry,
 		enableLsp: false,

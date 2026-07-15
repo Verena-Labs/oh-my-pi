@@ -1,5 +1,5 @@
 /**
- * Harness documentation index for the `omp://` protocol.
+ * Harness documentation index for the `pi://` protocol.
  *
  * Compiled binaries and the prepacked npm bundle inline a compressed index of the
  * docs (injected via `process.env.PI_DOCS_EMBED` at build time). The format is two lines:
@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { gunzip } from "node:zlib";
-import { Glob } from "bun";
+import { PI_DOC_FILENAMES } from "./pi-docs-manifest";
 
 const docsEmbed = process.env.PI_DOCS_EMBED ?? "";
 
@@ -59,14 +59,11 @@ export function decodeDocsIndex(embed: string): DocsIndex | null {
 /** Dev tree / source checkout: build the index from the repo `docs/` directory. */
 function readDocsFromDisk(): DocsIndex {
 	const docsDir = path.resolve(import.meta.dir, "../../../../docs");
-	const filenames: string[] = [];
+	const filenames = [...PI_DOC_FILENAMES].sort();
 	const bodies: Record<string, string> = {};
-	for (const relativePath of new Glob("**/*.md").scanSync(docsDir)) {
-		const normalized = relativePath.split(path.sep).join("/");
-		filenames.push(normalized);
-		bodies[normalized] = readFileSync(path.join(docsDir, relativePath), "utf8");
+	for (const relativePath of filenames) {
+		bodies[relativePath] = readFileSync(path.join(docsDir, relativePath), "utf8");
 	}
-	filenames.sort();
 	return { filenames, getBody: relativePath => Promise.resolve(bodies[relativePath]) };
 }
 

@@ -17,7 +17,7 @@ import type {
 	SerializedAXNode,
 	Target,
 } from "puppeteer-core";
-import { JsRuntime, type RuntimeHooks } from "../../eval/js/shared/runtime";
+import type { JsRuntime } from "../../eval/js/shared/runtime";
 import { resizeImage } from "../../utils/image-resize";
 import { resolveToCwd } from "../path-utils";
 import { formatScreenshot } from "../render-utils";
@@ -44,6 +44,7 @@ import {
 	waitForBrowserRun,
 } from "./run-cancellation";
 import { cloneSafe, RunOutput } from "./run-output";
+import { type BrowserRuntimeHooks, createBrowserRuntime } from "./runtime";
 import type {
 	Observation,
 	ObservationEntry,
@@ -51,7 +52,6 @@ import type {
 	RunErrorPayload,
 	ScreenshotResult,
 	SessionSnapshot,
-	ToolReply,
 	Transport,
 	WorkerInbound,
 	WorkerInitPayload,
@@ -347,19 +347,6 @@ function errorPayload(error: unknown): RunErrorPayload {
 	return { name: "Error", message: String(error), isToolError: false, isAbort: false };
 }
 
-function replyError(payload: RunErrorPayload): Error {
-	if (payload.isAbort) {
-		const err = new ToolAbortError(payload.message || "Tool call aborted");
-		if (payload.stack) err.stack = payload.stack;
-		return err;
-	}
-	const Ctor = payload.isToolError ? ToolError : Error;
-	const err = new Ctor(payload.message);
-	if (payload.name) err.name = payload.name;
-	if (payload.stack) err.stack = payload.stack;
-	return err;
-}
-
 async function targetIdForTarget(target: Target): Promise<string> {
 	const raw = target as unknown as { _targetId?: unknown };
 	if (typeof raw._targetId === "string") return raw._targetId;
@@ -566,7 +553,6 @@ interface ActiveRun {
 	signal: AbortSignal;
 	output: RunOutput;
 	screenshots: ScreenshotResult[];
-	pendingTools: Map<string, { resolve(value: unknown): void; reject(error: Error): void }>;
 	/** Helper invocations currently awaiting the page/network, keyed by op id. */
 	inflight: Map<number, InflightOp>;
 	opCounter: number;
@@ -647,9 +633,6 @@ export class WorkerCore {
 						: new ToolAbortError();
 					this.#active.ac.abort(reason);
 				}
-				return;
-			case "tool-reply":
-				this.#deliverToolReply(msg.id, msg.reply);
 				return;
 			case "close":
 				await this.#close();
@@ -811,7 +794,6 @@ export class WorkerCore {
 			signal,
 			output,
 			screenshots,
-			pendingTools: new Map(),
 			inflight: new Map(),
 			opCounter: 0,
 		};
@@ -865,14 +847,6 @@ export class WorkerCore {
 				} else {
 					rejectCancel(abortError);
 				}
-				// Cancel in-flight tool calls so user code's awaited proxies reject promptly.
-				const toolAbort = timeoutSignal.aborted
-					? postmortem.markExpectedCleanupError(new ToolAbortError(undefined, { cause: timeoutSignal.reason }))
-					: abortError;
-				for (const pending of active.pendingTools.values()) {
-					pending.reject(toolAbort);
-				}
-				active.pendingTools.clear();
 			};
 			if (signal.aborted) onCancel();
 			else signal.addEventListener("abort", onCancel, { once: true });
@@ -880,7 +854,11 @@ export class WorkerCore {
 				const hooks = this.#hooksForActiveRun();
 				if (!hooks) throw new ToolError("Browser runtime started without an active run");
 				const returnValue = await Promise.race([
-					runtime.run(msg.code, `browser-run-${msg.id}.js`, hooks, { runId: msg.id, cwd: msg.session.cwd }),
+					runtime.run(msg.code, `browser-run-${msg.id}.js`, hooks, {
+						runId: msg.id,
+						cwd: msg.session.cwd,
+						timeoutMs: msg.timeoutMs,
+					}),
 					cancelRejection,
 				]);
 				await this.#postReadyInfo();
@@ -903,14 +881,11 @@ export class WorkerCore {
 
 	#ensureRuntime(session: SessionSnapshot): JsRuntime {
 		if (this.#runtime) return this.#runtime;
-		this.#runtime = new JsRuntime({
-			initialCwd: session.cwd,
-			sessionId: `browser-tab-${this.#targetId ?? "unknown"}`,
-		});
+		this.#runtime = createBrowserRuntime(session.cwd, `browser-tab-${this.#targetId ?? "unknown"}`);
 		return this.#runtime;
 	}
 
-	#hooksForActiveRun(): RuntimeHooks | null {
+	#hooksForActiveRun(): BrowserRuntimeHooks | null {
 		const active = this.#active;
 		if (!active) return null;
 		return {
@@ -923,29 +898,7 @@ export class WorkerCore {
 				throwIfAborted(active.signal);
 				active.output.pushDisplay(output);
 			},
-			callTool: (name, args) => {
-				throwIfAborted(active.signal);
-				return this.#callTool(active, name, args);
-			},
 		};
-	}
-
-	async #callTool(active: ActiveRun, name: string, args: unknown): Promise<unknown> {
-		const id = `tab-tc-${active.id}-${crypto.randomUUID()}`;
-		const { promise, resolve, reject } = Promise.withResolvers<unknown>();
-		active.pendingTools.set(id, { resolve, reject });
-		this.#transport.send({ type: "tool-call", id, runId: active.id, name, args });
-		return await promise;
-	}
-
-	#deliverToolReply(id: string, reply: ToolReply): void {
-		const active = this.#active;
-		if (!active) return;
-		const pending = active.pendingTools.get(id);
-		if (!pending) return;
-		active.pendingTools.delete(id);
-		if (reply.ok) pending.resolve(reply.value);
-		else pending.reject(replyError(reply.error));
 	}
 
 	/**

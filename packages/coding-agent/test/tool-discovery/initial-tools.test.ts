@@ -8,10 +8,8 @@ import {
 	createTools,
 	DEFAULT_ESSENTIAL_TOOL_NAMES,
 	filterInitialToolsForDiscoveryAll,
-	GithubTool,
 	IrcTool,
 	JobTool,
-	SshTool,
 } from "@oh-my-pi/pi-coding-agent/tools";
 
 const allToolsSettings = Settings.isolated({
@@ -48,8 +46,6 @@ async function getToolMetadata(): Promise<Map<string, { loadMode?: string; summa
 	const metadata = new Map(tools.map(tool => [tool.name, { loadMode: tool.loadMode, summary: tool.summary }]));
 	for (const tool of [
 		new AskTool({ ...toolSession, hasUI: true }),
-		new GithubTool(toolSession),
-		new SshTool(toolSession, [], new Map(), ""),
 		new JobTool(toolSession),
 		new IrcTool(toolSession),
 	]) {
@@ -82,19 +78,10 @@ describe("built-in tool loadMode annotations", () => {
 		expect(missing).toEqual([]);
 	});
 
-	it("marks eval essential so it survives tools.discoveryMode 'all'", async () => {
-		const metadata = await getToolMetadata();
-		expect(metadata.get("eval")?.loadMode).toBe("essential");
-		// Essential loadMode keeps eval active under discovery-all even when it is
-		// absent from the essential-names set — not relying on the names list.
-		const kept = filterInitialToolsForDiscoveryAll(["eval"], {
-			loadModeOf: name => metadata.get(name)?.loadMode as BuiltinToolLoadMode | undefined,
-			essentialNames: new Set<string>(),
-			explicitlyRequested: new Set<string>(),
-			restored: new Set<string>(),
-			forceActive: new Set<string>(),
-		});
-		expect(kept).toEqual(["eval"]);
+	it("does not mark disabled legacy tool IDs as essential", () => {
+		const disabled = ["debug", "eval", "github", "ssh"];
+		expect(DEFAULT_ESSENTIAL_TOOL_NAMES.filter(name => disabled.includes(name))).toEqual([]);
+		expect(disabled.filter(name => name in BUILTIN_TOOLS)).toEqual([]);
 	});
 });
 
