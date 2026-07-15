@@ -2,6 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import {
 	getCapabilityInfo,
 	getDisabledProviders,
@@ -19,6 +20,7 @@ import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { ULTRA_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { isSearchProviderExcluded, setExcludedSearchProviders } from "@oh-my-pi/pi-coding-agent/web/search/provider";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
@@ -111,6 +113,21 @@ export default function() {
 		const result = await loadCapability("tools", { cwd: ${JSON.stringify(cwd)} });
 		return result.providers;
 	})();
+}
+`;
+}
+
+function ultraListCollisionExtensionSource(): string {
+	return `
+export default function(pi) {
+	const { Type } = pi.typebox;
+	pi.registerTool({
+		name: "ultra_list",
+		label: "Colliding Ultra List",
+		description: "plugin collision for ultra_list",
+		parameters: Type.Object({}),
+		async execute() { return { content: [{ type: "text", text: "plugin collision" }] }; },
+	});
 }
 `;
 }
@@ -322,6 +339,69 @@ describe("runtime plugin reload", () => {
 			expect(session.getToolByName("extension_hot")?.description).toBe("extension four");
 			expect(modelRegistry.find("hot-provider", "hot-model")?.baseUrl).toBe("https://four.example/v1");
 			expect(failedMcpRefreshCalls).toBe(1);
+		} finally {
+			await session.dispose();
+			authStorage.close();
+		}
+	});
+
+	test("preserves the active Ultra tool when a reloaded extension declares the same name", async () => {
+		const tempDir = path.join(os.tmpdir(), `pi-plugin-reload-ultra-collision-${Snowflake.next()}`);
+		tempDirs.push(tempDir);
+		const extensionPath = path.join(tempDir, "ultra-collision-extension.ts");
+		fs.mkdirSync(tempDir, { recursive: true });
+		fs.writeFileSync(extensionPath, "export default function() {}\n");
+
+		const model = getBundledModel("openai", "gpt-5.5");
+		if (!model) throw new Error("Expected bundled OpenAI reasoning model");
+		const authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
+		const settings = await Settings.loadIsolated({ cwd: tempDir, agentDir: tempDir });
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			authStorage,
+			modelRegistry,
+			settings,
+			model,
+			sessionManager: SessionManager.inMemory(tempDir),
+			additionalExtensionPaths: [extensionPath],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+		});
+		await initializeExtensions(session, {
+			reportSendError: () => {},
+			reportRuntimeError: error => {
+				throw new Error(error.error);
+			},
+		});
+
+		try {
+			session.setThinkingLevel(ULTRA_THINKING);
+			await session.syncUltraPolicy();
+			const ultraList = session.getToolByName("ultra_list");
+			expect(ultraList).toBeDefined();
+			expect(session.getActiveToolNames()).toContain("ultra_list");
+
+			fs.writeFileSync(extensionPath, ultraListCollisionExtensionSource());
+			await session.reloadPlugins();
+
+			expect(
+				session.extensionRunner?.getAllRegisteredTools().find(tool => tool.definition.name === "ultra_list")
+					?.definition.description,
+			).toBe("plugin collision for ultra_list");
+			expect(session.getToolByName("ultra_list")).toBe(ultraList);
+			expect(session.getActiveToolNames()).toContain("ultra_list");
+			const result = await session.getToolByName("ultra_list")!.execute("call-ultra-list", {});
+			expect(result.content).toContainEqual({
+				type: "text",
+				text: "No ultra sessions. Spawn one with ultra_spawn.",
+			});
+			expect(result.details).toEqual({ op: "list", screens: [] });
 		} finally {
 			await session.dispose();
 			authStorage.close();

@@ -1,5 +1,5 @@
 /**
- * Contracts: delegate worker-session registry lifecycle.
+ * Contracts: Ultra worker-session registry lifecycle.
  *
  * 1. `spawn` returns immediately (session id + turn job id) while the turn
  *    runs in the background; the settled turn self-delivers a result carrying
@@ -17,23 +17,29 @@
  * 5. `kill` cancels the in-flight turn job and releases the worker session.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { DelegateSessionRegistry } from "@oh-my-pi/pi-coding-agent/delegate/runtime";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentProgress, SingleResult } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { AgentDefinition, AgentProgress, SingleResult } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { UltraSessionRegistry } from "@oh-my-pi/pi-coding-agent/ultra/runtime";
 
-function createSession(options: { manager?: AsyncJobManager } = {}): ToolSession {
+function createSession(
+	options: { manager?: AsyncJobManager; owner?: string; activeModel?: string | (() => string) } = {},
+): ToolSession {
 	return {
 		cwd: "/tmp",
 		hasUI: false,
 		settings: Settings.isolated({}),
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
+		getAgentId: () => options.owner ?? "Main",
+		getActiveModelString: () =>
+			typeof options.activeModel === "function" ? options.activeModel() : (options.activeModel ?? "prov/main-model"),
 		asyncJobManager: options.manager,
 	} as unknown as ToolSession;
 }
@@ -42,7 +48,7 @@ function makeResult(id: string, overrides: Partial<SingleResult> = {}): SingleRe
 	return {
 		index: 0,
 		id,
-		agent: "task",
+		agent: "ultra",
 		agentSource: "bundled",
 		task: "prompt",
 		exitCode: 0,
@@ -154,7 +160,7 @@ function progressSnapshot(id: string, overrides: Partial<AgentProgress> = {}): A
 	return {
 		index: 0,
 		id,
-		agent: "task",
+		agent: "ultra",
 		agentSource: "bundled",
 		status: "running",
 		task: "prompt",
@@ -169,7 +175,7 @@ function progressSnapshot(id: string, overrides: Partial<AgentProgress> = {}): A
 	};
 }
 
-describe("delegate session registry", () => {
+describe("ultra session registry", () => {
 	const managers: AsyncJobManager[] = [];
 
 	function createManager(): AsyncJobManager {
@@ -181,7 +187,7 @@ describe("delegate session registry", () => {
 	beforeEach(() => {
 		AgentRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
-		DelegateSessionRegistry.resetGlobalForTests();
+		UltraSessionRegistry.resetGlobalForTests();
 	});
 
 	afterEach(async () => {
@@ -189,7 +195,7 @@ describe("delegate session registry", () => {
 		for (const manager of managers.splice(0)) {
 			await manager.dispose({ timeoutMs: 1000 });
 		}
-		DelegateSessionRegistry.resetGlobalForTests();
+		UltraSessionRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
 	});
@@ -197,6 +203,14 @@ describe("delegate session registry", () => {
 	it("spawn returns immediately and self-delivers a turn result with activity trace + response", async () => {
 		const gate = deferred();
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			expect(options.agent.name).toBe("ultra");
+			expect(options.agent.model).toBeUndefined();
+			expect(options.agent.thinkingLevel).toBe(ThinkingLevel.XHigh);
+			expect(options.agent.spawns).toBeUndefined();
+			expect(options.modelOverride).toBe("prov/main-model");
+			expect(options.parentActiveModelPattern).toBe("prov/main-model");
+			expect(options.thinkingLevel).toBe(ThinkingLevel.XHigh);
+			expect(options.ultraWorker).toBe(true);
 			AgentRegistry.global().register({
 				id: options.id,
 				displayName: options.id,
@@ -213,7 +227,7 @@ describe("delegate session registry", () => {
 						{ tool: "read", args: "src/foo.ts", endMs: 1 },
 					],
 					lastIntent: "Running tests",
-					resolvedModel: "prov/fast-model",
+					resolvedModel: "prov/main-model",
 				}),
 			);
 			await gate.promise;
@@ -223,15 +237,15 @@ describe("delegate session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = DelegateSessionRegistry.global();
+		const registry = UltraSessionRegistry.global();
 
-		const { id, jobId } = await registry.spawn(session, { cli: "fast", name: "Fast", prompt: "Build the widget." });
-		expect(id).toBe("Fast");
+		const { id, jobId } = await registry.spawn(session, { name: "Builder", prompt: "Build the widget." });
+		expect(id).toBe("Builder");
 
 		// Ack is immediate: the job is still running behind the gate.
 		const job = manager.getJob(jobId)!;
 		expect(job.status).toBe("running");
-		expect(registry.screens("Main")[0]?.cli).toBe("fast");
+		expect(registry.screens("Main")[0]?.id).toBe("Builder");
 
 		gate.resolve();
 		await job.promise;
@@ -239,8 +253,8 @@ describe("delegate session registry", () => {
 		expect(job.status).toBe("completed");
 		const text = job.resultText ?? "";
 		// Envelope + summarized activity (compressed tool trace, oldest first) + response.
-		expect(text).toContain('<delegate-turn session="Fast" cli="fast" turn="1" status="completed"');
-		expect(text).toContain('model="prov/fast-model"');
+		expect(text).toContain('<ultra-turn session="Builder" turn="1" status="completed"');
+		expect(text).toContain('model="prov/main-model"');
 		expect(text.indexOf("read(src/foo.ts)")).toBeGreaterThan(-1);
 		expect(text.indexOf("read(src/foo.ts)")).toBeLessThan(text.indexOf("bash(bun test)"));
 		expect(text).toContain("Implemented the widget.");
@@ -248,6 +262,108 @@ describe("delegate session registry", () => {
 		const entry = registry.screens("Main")[0]!;
 		expect(entry.state).toBe("idle");
 		expect(entry.turns).toBe(1);
+	});
+
+	it("pins recursive descendants to their root worker model after the main session switches", async () => {
+		const gates = new Map<string, Deferred>();
+		const launches = new Map<string, Parameters<typeof executorModule.runSubprocess>[0]>();
+		const workerSessions = new Map<string, ToolSession>();
+		const manager = createManager();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			launches.set(options.id, options);
+			const modelOverride = options.modelOverride;
+			if (typeof modelOverride !== "string") {
+				throw new Error("Ultra workers must receive one pinned model selector");
+			}
+			const workerSession = createSession({
+				manager,
+				owner: options.id,
+				activeModel: modelOverride,
+			});
+			workerSessions.set(options.id, workerSession);
+			AgentRegistry.global().register({
+				id: options.id,
+				displayName: options.id,
+				kind: "sub",
+				parentId: options.parentAgentId ?? "Main",
+				session: workerSession as unknown as AgentSession,
+				status: "running",
+			});
+			const gate = deferred();
+			gates.set(options.id, gate);
+			await gate.promise;
+			AgentRegistry.global().setStatus(options.id, "idle");
+			return makeResult(options.id, { resolvedModel: modelOverride });
+		});
+
+		let mainModel = "prov/root-pinned-model";
+		const mainSession = createSession({ manager, activeModel: () => mainModel });
+		const registry = UltraSessionRegistry.global();
+		const root = await registry.spawn(mainSession, { name: "Root", prompt: "Start the root workstream." });
+		await pollUntil(() => workerSessions.has("Root"));
+		expect(launches.get("Root")?.modelOverride).toBe("prov/root-pinned-model");
+
+		mainModel = "prov/main-later-model";
+		const nested = await registry.spawn(workerSessions.get("Root")!, {
+			name: "Nested",
+			prompt: "Handle the nested workstream.",
+		});
+		await pollUntil(() => launches.has("Nested"));
+
+		expect(launches.get("Nested")?.modelOverride).toBe("prov/root-pinned-model");
+		expect(launches.get("Nested")?.parentActiveModelPattern).toBe("prov/root-pinned-model");
+		expect(launches.get("Nested")?.modelOverride).not.toBe(mainModel);
+
+		for (const gate of gates.values()) gate.resolve();
+		await Promise.all([manager.getJob(root.jobId)!.promise, manager.getJob(nested.jobId)!.promise]);
+	});
+
+	it("snapshots the current main model independently for each direct worker", async () => {
+		const launches = new Map<string, { modelOverride: string | undefined; parentModel: string | undefined }>();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			const modelOverride = options.modelOverride;
+			if (typeof modelOverride !== "string") {
+				throw new Error("Ultra workers must receive one pinned model selector");
+			}
+			launches.set(options.id, {
+				modelOverride,
+				parentModel: options.parentActiveModelPattern,
+			});
+			AgentRegistry.global().register({
+				id: options.id,
+				displayName: options.id,
+				kind: "sub",
+				parentId: "Main",
+				session: createFakeWorkerSession().session,
+				status: "running",
+			});
+			options.onProgress?.(progressSnapshot(options.id, { resolvedModel: modelOverride }));
+			AgentRegistry.global().setStatus(options.id, "idle");
+			return makeResult(options.id, { resolvedModel: modelOverride });
+		});
+
+		const manager = createManager();
+		let mainModel = "prov/model-a";
+		const mainSession = createSession({ manager, activeModel: () => mainModel });
+		const registry = UltraSessionRegistry.global();
+
+		const workerA = await registry.spawn(mainSession, { name: "WorkerA", prompt: "Work on A." });
+		mainModel = "prov/model-b";
+		const workerB = await registry.spawn(mainSession, { name: "WorkerB", prompt: "Work on B." });
+		await Promise.all([manager.getJob(workerA.jobId)!.promise, manager.getJob(workerB.jobId)!.promise]);
+
+		expect(launches.get("WorkerA")).toEqual({
+			modelOverride: "prov/model-a",
+			parentModel: "prov/model-a",
+		});
+		expect(launches.get("WorkerB")).toEqual({
+			modelOverride: "prov/model-b",
+			parentModel: "prov/model-b",
+		});
+		expect(registry.screens("Main").map(({ id, model }) => ({ id, model }))).toEqual([
+			{ id: "WorkerA", model: "prov/model-a" },
+			{ id: "WorkerB", model: "prov/model-b" },
+		]);
 	});
 
 	it("send steers a streaming mid-turn worker and queues for a non-steerable one", async () => {
@@ -274,18 +390,18 @@ describe("delegate session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = DelegateSessionRegistry.global();
-		const { jobId } = await registry.spawn(session, { cli: "good", name: "Good", prompt: "Design it." });
-		await pollUntil(() => AgentRegistry.global().get("Good") !== undefined);
+		const registry = UltraSessionRegistry.global();
+		const { jobId } = await registry.spawn(session, { name: "Designer", prompt: "Design it." });
+		await pollUntil(() => AgentRegistry.global().get("Designer") !== undefined);
 
 		// Streaming worker → steering.
-		const steered = await registry.send(session, { session: "Good", message: "Focus on the API first." });
+		const steered = await registry.send(session, { session: "Designer", message: "Focus on the API first." });
 		expect(steered.mode).toBe("steered");
 		expect(fake.steers).toEqual(["Focus on the API first."]);
 
 		// Not streaming → queued for the next turn.
 		fake.setStreaming(false);
-		const queued = await registry.send(session, { session: "Good", message: "Then write tests." });
+		const queued = await registry.send(session, { session: "Designer", message: "Then write tests." });
 		expect(queued.mode).toBe("queued");
 		expect(registry.screens("Main")[0]?.queued).toBe(1);
 
@@ -293,7 +409,7 @@ describe("delegate session registry", () => {
 		gate.resolve();
 		await manager.getJob(jobId)!.promise;
 		await pollUntil(() => followUps.length === 1);
-		expect(followUps[0]).toEqual({ id: "Good", message: "Then write tests." });
+		expect(followUps[0]).toEqual({ id: "Designer", message: "Then write tests." });
 	});
 
 	it("send to an idle session starts a follow-up turn on the same worker", async () => {
@@ -325,17 +441,17 @@ describe("delegate session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = DelegateSessionRegistry.global();
-		const spawn = await registry.spawn(session, { cli: "fast", name: "Fast", prompt: "First task." });
+		const registry = UltraSessionRegistry.global();
+		const spawn = await registry.spawn(session, { name: "Worker", prompt: "First task." });
 		gate.resolve();
 		await manager.getJob(spawn.jobId)!.promise;
 
-		const outcome = await registry.send(session, { session: "Fast", message: "Now rename the helpers." });
+		const outcome = await registry.send(session, { session: "Worker", message: "Now rename the helpers." });
 		expect(outcome.mode).toBe("turn");
 		const turnJob = manager.getJob(outcome.jobId!)!;
 		await turnJob.promise;
 
-		expect(followUps).toEqual([{ id: "Fast", message: "Now rename the helpers." }]);
+		expect(followUps).toEqual([{ id: "Worker", message: "Now rename the helpers." }]);
 		const text = turnJob.resultText ?? "";
 		expect(text).toContain('turn="2"');
 		expect(text).toContain("edit(src/foo.ts)");
@@ -353,7 +469,13 @@ describe("delegate session registry", () => {
 			session: fake.session,
 			status: "idle",
 		});
-		const agent = { name: "task", description: "worker", systemPrompt: "sp", source: "bundled" as const };
+		const agent: AgentDefinition = {
+			name: "ultra",
+			description: "worker",
+			systemPrompt: "sp",
+			source: "bundled",
+			thinkingLevel: ThinkingLevel.XHigh,
+		};
 
 		fake.setScript({ events: yieldTurnEvents({ report: "did the first thing" }), responseText: "first summary" });
 		const progressSnapshots: AgentProgress[] = [];
@@ -396,25 +518,25 @@ describe("delegate session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = DelegateSessionRegistry.global();
-		const fast = await registry.spawn(session, { cli: "fast", name: "Fast", prompt: "Task A." });
-		const good = await registry.spawn(session, { cli: "good", name: "Good", prompt: "Task B." });
+		const registry = UltraSessionRegistry.global();
+		const first = await registry.spawn(session, { name: "Alpha", prompt: "Task A." });
+		const second = await registry.spawn(session, { name: "Beta", prompt: "Task B." });
 		await pollUntil(() => gates.size === 2);
 
-		const waitPromise = registry.wait(session, { sessions: ["Fast", "Good"], timeoutMs: 5000 });
-		gates.get("Fast")!.resolve();
+		const waitPromise = registry.wait(session, { sessions: ["Alpha", "Beta"], timeoutMs: 5000 });
+		gates.get("Alpha")!.resolve();
 		const outcome = await waitPromise;
 
 		expect(outcome.timedOut).toBe(false);
-		expect(outcome.settled.map(entry => entry.id)).toEqual(["Fast"]);
-		expect(outcome.settled[0]!.resultText).toContain("Fast finished.");
-		expect(outcome.stillRunning).toEqual(["Good"]);
+		expect(outcome.settled.map(entry => entry.id)).toEqual(["Alpha"]);
+		expect(outcome.settled[0]!.resultText).toContain("Alpha finished.");
+		expect(outcome.stillRunning).toEqual(["Beta"]);
 		// The reported result must not be delivered a second time as a follow-up.
-		expect(manager.isDeliverySuppressed(fast.jobId)).toBe(true);
-		expect(manager.isDeliverySuppressed(good.jobId)).toBe(false);
+		expect(manager.isDeliverySuppressed(first.jobId)).toBe(true);
+		expect(manager.isDeliverySuppressed(second.jobId)).toBe(false);
 
-		gates.get("Good")!.resolve();
-		await manager.getJob(good.jobId)!.promise;
+		gates.get("Beta")!.resolve();
+		await manager.getJob(second.jobId)!.promise;
 	});
 
 	it("wait reports the settled turn even when a queued follow-up starts immediately", async () => {
@@ -440,16 +562,16 @@ describe("delegate session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = DelegateSessionRegistry.global();
-		const { jobId } = await registry.spawn(session, { cli: "fast", name: "Fast", prompt: "Task A." });
-		await pollUntil(() => AgentRegistry.global().get("Fast") !== undefined);
+		const registry = UltraSessionRegistry.global();
+		const { jobId } = await registry.spawn(session, { name: "Worker", prompt: "Task A." });
+		await pollUntil(() => AgentRegistry.global().get("Worker") !== undefined);
 
 		// Queued while mid-turn: #finishTurn starts this follow-up turn inside
 		// the settling job's callback, BEFORE the watched job's promise resolves.
-		const queued = await registry.send(session, { session: "Fast", message: "Task B." });
+		const queued = await registry.send(session, { session: "Worker", message: "Task B." });
 		expect(queued.mode).toBe("queued");
 
-		const waitPromise = registry.wait(session, { sessions: ["Fast"], timeoutMs: 5000 });
+		const waitPromise = registry.wait(session, { sessions: ["Worker"], timeoutMs: 5000 });
 		firstGate.resolve();
 		const outcome = await waitPromise;
 
@@ -459,10 +581,10 @@ describe("delegate session registry", () => {
 		expect(outcome.settled[0]!.resultText).toContain("First turn done.");
 		expect(manager.isDeliverySuppressed(jobId)).toBe(true);
 		// … while the drained-queue follow-up shows as still running.
-		expect(outcome.stillRunning).toEqual(["Fast"]);
+		expect(outcome.stillRunning).toEqual(["Worker"]);
 
 		followUpGate.resolve();
-		await manager.getJob("Fast-t2")!.promise;
+		await manager.getJob("Worker-t2")!.promise;
 	});
 
 	it("kill cancels the in-flight turn and releases the worker session", async () => {
@@ -483,8 +605,8 @@ describe("delegate session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = DelegateSessionRegistry.global();
-		const { jobId } = await registry.spawn(session, { cli: "fast", name: "Doomed", prompt: "Never mind." });
+		const registry = UltraSessionRegistry.global();
+		const { jobId } = await registry.spawn(session, { name: "Doomed", prompt: "Never mind." });
 		await pollUntil(() => AgentRegistry.global().get("Doomed") !== undefined);
 
 		const outcome = await registry.kill(session, "Doomed");
@@ -495,6 +617,40 @@ describe("delegate session registry", () => {
 		expect(registry.screens("Main")[0]?.state).toBe("dead");
 		await expect(registry.send(session, { session: "Doomed", message: "hello?" })).rejects.toThrow("dead");
 
+		gate.resolve();
+	});
+
+	it("keeps sessions isolated by owner", async () => {
+		const gate = deferred();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			AgentRegistry.global().register({
+				id: options.id,
+				displayName: options.id,
+				kind: "sub",
+				parentId: "Main",
+				session: createFakeWorkerSession().session,
+				status: "running",
+			});
+			await gate.promise;
+			return makeResult(options.id);
+		});
+
+		const manager = createManager();
+		const ownerSession = createSession({ manager, owner: "Main" });
+		const otherSession = createSession({ manager, owner: "Other" });
+		const registry = UltraSessionRegistry.global();
+		await registry.spawn(ownerSession, { name: "Owned", prompt: "Private work." });
+		await pollUntil(() => AgentRegistry.global().get("Owned") !== undefined);
+
+		expect(registry.listIds("Other")).toEqual([]);
+		expect(registry.screens("Other")).toEqual([]);
+		await expect(registry.send(otherSession, { session: "Owned", message: "intrude" })).rejects.toThrow(
+			/Unknown ultra session/u,
+		);
+		await expect(registry.kill(otherSession, "Owned")).rejects.toThrow(/Unknown ultra session/u);
+		expect(registry.listIds("Main")).toEqual(["Owned"]);
+
+		await registry.kill(ownerSession, "Owned");
 		gate.resolve();
 	});
 
@@ -517,9 +673,9 @@ describe("delegate session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
-		const registry = DelegateSessionRegistry.global();
-		await registry.spawn(session, { cli: "fast", name: "One", prompt: "A." });
-		await registry.spawn(session, { cli: "good", name: "Two", prompt: "B." });
+		const registry = UltraSessionRegistry.global();
+		await registry.spawn(session, { name: "One", prompt: "A." });
+		await registry.spawn(session, { name: "Two", prompt: "B." });
 		await pollUntil(() => gates.size === 2);
 
 		const killed = await registry.killAll("Main", manager);

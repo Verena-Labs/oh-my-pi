@@ -6,11 +6,13 @@ import { Effort, type FetchImpl } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { ModelRegistry, type ProviderConfigInput } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession, type ExtensionFactory } from "@oh-my-pi/pi-coding-agent/sdk";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { ULTRA_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
 describe("createAgentSession deferred model pattern resolution", () => {
@@ -22,8 +24,13 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		fs.mkdirSync(tempDir, { recursive: true });
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		vi.restoreAllMocks();
+		const asyncJobManager = AsyncJobManager.instance();
+		if (asyncJobManager) {
+			await asyncJobManager.dispose({ timeoutMs: 1_000 });
+			if (AsyncJobManager.instance() === asyncJobManager) AsyncJobManager.setInstance(undefined);
+		}
 		for (const authStorage of authStoragesToClose) {
 			authStorage.close();
 		}
@@ -286,6 +293,59 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		// The extension model has no explicit ladder; the inferred fallback tops
 		// out at xhigh, so the real max level clamps down.
 		expect(session.thinkingLevel).toBe(Effort.XHigh);
+	});
+
+	test("preserves Ultra as the configured policy while applying concrete xhigh to the agent", async () => {
+		const { session } = await createAgentSession({
+			...(await buildSessionOptions("runtime-provider/runtime-reasoning-model")),
+			thinkingLevel: ULTRA_THINKING,
+		});
+
+		try {
+			expect(session.configuredThinkingLevel()).toBe(ULTRA_THINKING);
+			expect(session.thinkingLevel).toBe(Effort.XHigh);
+			expect(session.agent.state.thinkingLevel).toBe(Effort.XHigh);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("rejects an explicit Ultra request on a model without controllable reasoning", async () => {
+		await expect(
+			createAgentSession({
+				...(await buildSessionOptions("runtime-provider/runtime-model")),
+				thinkingLevel: ULTRA_THINKING,
+			}),
+		).rejects.toThrow("Ultra requires a model with controllable reasoning effort.");
+	});
+
+	test("surfaces a warning when a persisted Ultra default cannot be restored", async () => {
+		const settings = Settings.isolated({ defaultThinkingLevel: ULTRA_THINKING });
+		const { session, modelFallbackMessage } = await createAgentSession({
+			...(await buildSessionOptions("runtime-provider/runtime-model")),
+			settings,
+		});
+
+		try {
+			expect(session.configuredThinkingLevel()).not.toBe(ULTRA_THINKING);
+			expect(modelFallbackMessage).toContain("Ultra requires a model with controllable reasoning effort.");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("rejects Ultra in a secondary top-level session without worker delivery ownership", async () => {
+		const first = await createAgentSession(await buildSessionOptions("runtime-provider/runtime-model"));
+		try {
+			await expect(
+				createAgentSession({
+					...(await buildSessionOptions("runtime-provider/runtime-reasoning-model")),
+					thinkingLevel: ULTRA_THINKING,
+				}),
+			).rejects.toThrow("Ultra requires a session with background worker execution.");
+		} finally {
+			await first.session.dispose();
+		}
 	});
 
 	test("selects the settings default model without synchronously validating auth", async () => {

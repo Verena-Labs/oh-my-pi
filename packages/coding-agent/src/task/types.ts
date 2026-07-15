@@ -2,7 +2,7 @@ import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 import { type BaseType, type } from "arktype";
 import type { AgentSessionEvent } from "../session/agent-session";
-import type { ConfiguredThinkingLevel } from "../thinking";
+import type { NamedAgentThinkingLevel } from "../thinking";
 import type { NestedRepoPatch } from "./worktree";
 
 /** Source of an agent definition */
@@ -298,7 +298,7 @@ export interface AgentDefinition {
 	tools?: string[];
 	spawns?: string[] | "*";
 	model?: string[];
-	thinkingLevel?: ConfiguredThinkingLevel;
+	thinkingLevel?: NamedAgentThinkingLevel;
 	output?: unknown;
 	blocking?: boolean;
 	autoloadSkills?: string[];

@@ -26,7 +26,12 @@ import { getModelMatchPreferences, resolveModelRoleValue } from "../../config/mo
 import { getKnownRoleIds, getRoleInfo, MODEL_ROLE_IDS } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
 import type { ModelPerfStats } from "../../session/agent-storage";
-import { AUTO_THINKING, type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../../thinking";
+import {
+	AUTO_THINKING,
+	type ConfiguredThinkingLevel,
+	parseConfiguredThinkingLevel,
+	ULTRA_THINKING,
+} from "../../thinking";
 import { type ThemeColor, theme } from "../theme/theme";
 import {
 	matchesSelectCancel,
@@ -234,6 +239,8 @@ export function thinkingLevelGlyph(level: ConfiguredThinkingLevel): string {
 	switch (level) {
 		case AUTO_THINKING:
 			return glyphOf(theme.thinking.autoPending);
+		case ULTRA_THINKING:
+			return glyphOf(theme.thinking.xhigh);
 		case ThinkingLevel.Off:
 			return theme.status.disabled;
 		case ThinkingLevel.Minimal:

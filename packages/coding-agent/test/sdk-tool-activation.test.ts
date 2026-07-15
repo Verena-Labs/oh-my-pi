@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:te
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -12,7 +13,8 @@ import {
 	type ExtensionFactory,
 } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { DELEGATE_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/delegate";
+import { ULTRA_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
+import { ULTRA_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/ultra";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 
@@ -221,29 +223,70 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
-	it("registers delegate tools only during explicit delegate activation", async () => {
+	it("registers Ultra tools only for Ultra thinking without replacing the active toolset", async () => {
 		const tempDir = makeTempDir();
-		const { session } = await createAgentSession(baseOptions(tempDir));
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			model: getBundledModel("openai", "gpt-5.5"),
+		});
 		const previousActiveToolNames = session.getActiveToolNames();
 
 		try {
-			for (const name of DELEGATE_TOOL_NAMES) {
+			for (const name of ULTRA_TOOL_NAMES) {
 				expect(session.getToolByName(name)).toBeUndefined();
 			}
 
-			await session.activateDelegateTools(["read"]);
-			for (const name of DELEGATE_TOOL_NAMES) {
+			session.setThinkingLevel(ULTRA_THINKING);
+			await session.syncUltraPolicy();
+			for (const name of ULTRA_TOOL_NAMES) {
 				expect(session.getToolByName(name)).toBeDefined();
 				expect(session.getActiveToolNames()).toContain(name);
 			}
+			for (const name of previousActiveToolNames) {
+				expect(session.getActiveToolNames()).toContain(name);
+			}
+			expect(session.getActiveToolNames().toSorted()).toEqual(
+				[...new Set([...previousActiveToolNames, ...ULTRA_TOOL_NAMES])].toSorted(),
+			);
 
-			await session.deactivateDelegateTools(previousActiveToolNames);
-			for (const name of DELEGATE_TOOL_NAMES) {
+			session.setThinkingLevel(ThinkingLevel.XHigh);
+			await session.syncUltraPolicy();
+			for (const name of ULTRA_TOOL_NAMES) {
 				expect(session.getToolByName(name)).toBeUndefined();
 			}
 			expect(session.getActiveToolNames()).toEqual(previousActiveToolNames);
 		} finally {
 			await session.dispose();
+		}
+	});
+
+	it("keeps recursive Ultra workers outside the named-agent task surface", async () => {
+		const parentTempDir = makeTempDir();
+		const workerTempDir = makeTempDir();
+		const { session: parentSession } = await createAgentSession({
+			...baseOptions(parentTempDir),
+			model: getBundledModel("openai", "gpt-5.5"),
+			thinkingLevel: ULTRA_THINKING,
+		});
+		const { session } = await createAgentSession({
+			...baseOptions(workerTempDir),
+			model: getBundledModel("openai", "gpt-5.5"),
+			thinkingLevel: ULTRA_THINKING,
+			ultraWorker: true,
+			taskDepth: 1,
+			parentTaskPrefix: "ultra-worker",
+		});
+
+		try {
+			expect(session.getToolByName("task")).toBeUndefined();
+			expect(session.getActiveToolNames()).not.toContain("task");
+			for (const name of ULTRA_TOOL_NAMES) {
+				expect(session.getToolByName(name)).toBeDefined();
+				expect(session.getActiveToolNames()).toContain(name);
+			}
+		} finally {
+			await session.dispose();
+			await parentSession.dispose();
 		}
 	});
 

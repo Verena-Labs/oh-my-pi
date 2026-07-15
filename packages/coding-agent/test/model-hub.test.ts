@@ -13,7 +13,7 @@ import {
 	resetProviderAutoRefreshGuard,
 } from "@oh-my-pi/pi-coding-agent/modes/components/model-hub";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
+import { AUTO_THINKING, ULTRA_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import type { TUI } from "@oh-my-pi/pi-tui";
 
 function normalize(lines: readonly string[]): string {
@@ -207,6 +207,23 @@ describe("ModelHub", () => {
 			expect(defaultRow).toContain("auto");
 			expect(defaultRow).not.toContain("inherit");
 			expect(smolRow).toContain("auto");
+		});
+
+		test("roles view preserves Ultra as the default model policy", () => {
+			const model = getBundledModel("openai", "gpt-5.5");
+			if (!model) throw new Error("Expected bundled model openai/gpt-5.5");
+			const settings = Settings.isolated({
+				defaultThinkingLevel: ULTRA_THINKING,
+				modelRoles: { default: `${model.provider}/${model.id}` },
+			});
+			const { hub } = createHub({ models: [model], scoped: true, settings });
+			installTestTheme();
+
+			hub.handleInput(UP);
+			const lines = hub.render(220).map(line => stripVTControlCharacters(line));
+			const defaultRow = lines.find(line => line.includes("DEFAULT"));
+			expect(defaultRow).toContain("ultra");
+			expect(defaultRow).not.toContain("xhigh");
 		});
 
 		test("x clears a configured role back to auto-selection", () => {

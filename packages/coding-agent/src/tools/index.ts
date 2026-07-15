@@ -71,7 +71,6 @@ export * from "./ast-grep";
 export * from "./bash";
 export * from "./browser";
 export * from "./checkpoint";
-export * from "./delegate";
 export * from "./glob";
 export * from "./grep";
 export * from "./image-gen";
@@ -90,6 +89,7 @@ export * from "./resolve";
 export * from "./review";
 export * from "./search-tool-bm25";
 export * from "./todo";
+export * from "./ultra";
 export * from "./write";
 export * from "./yield";
 
@@ -191,6 +191,8 @@ export interface ToolSession {
 	requireYieldTool?: boolean;
 	/** Task recursion depth (0 = top-level, 1 = first child, etc.) */
 	taskDepth?: number;
+	/** Internal Ultra workers recurse through `ultra_spawn`, never the named-agent `task` surface. */
+	ultraWorker?: boolean;
 	/** Get shared eval executor session ID. Subagents inherit this to share JS/Python/Ruby/Julia state. */
 	getEvalSessionId?: () => string | null;
 	/** Get session file */
@@ -541,7 +543,10 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			return ["hindsight", "mnemopi", "local"].includes(session.settings.get("memory.backend") ?? "");
 		}
 		if (name === "task") {
-			return canSpawnAtDepth(session.settings.get("task.maxRecursionDepth") ?? 2, session.taskDepth ?? 0);
+			return (
+				session.ultraWorker !== true &&
+				canSpawnAtDepth(session.settings.get("task.maxRecursionDepth") ?? 2, session.taskDepth ?? 0)
+			);
 		}
 		return true;
 	};

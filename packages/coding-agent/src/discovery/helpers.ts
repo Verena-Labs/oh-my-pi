@@ -16,7 +16,7 @@ import { invalidate as invalidateFsCache, readDirEntries, readFile } from "../ca
 import { parseRuleConditionAndScope, type Rule, type RuleFrontmatter } from "../capability/rule";
 import type { Skill, SkillFrontmatter } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
-import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
+import { type NamedAgentThinkingLevel, parseNamedAgentThinkingLevel } from "../thinking";
 import { normalizeToolNames } from "../tools/builtin-names";
 
 import { buildPluginDirRoot } from "./plugin-dir-roots";
@@ -228,7 +228,7 @@ export interface ParsedAgentFields {
 	spawns?: string[] | "*";
 	model?: string[];
 	output?: unknown;
-	thinkingLevel?: ConfiguredThinkingLevel;
+	thinkingLevel?: NamedAgentThinkingLevel;
 	autoloadSkills?: string[];
 	readSummarize?: boolean;
 	blocking?: boolean;
@@ -282,7 +282,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 				? frontmatter.thinking
 				: undefined;
 
-	const thinkingLevel = parseConfiguredThinkingLevel(rawThinkingLevel);
+	const thinkingLevel = parseNamedAgentThinkingLevel(rawThinkingLevel);
 	const model = parseModelList(frontmatter.model);
 	const blocking = parseBoolean(frontmatter.blocking);
 	const readSummarize = parseBoolean(frontmatter.readSummarize);

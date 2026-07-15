@@ -194,7 +194,6 @@ import {
 	validateProviderMaxInFlightRequests,
 } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
-import type { DelegateModeState } from "../delegate/state";
 import { loadCapability } from "../discovery";
 import { expandApplyPatchToEntries, normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
 import { getFileSnapshotStore } from "../edit/file-snapshot-store";
@@ -261,7 +260,6 @@ import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with {
 import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
 import parentIrcSteerTemplate from "../prompts/steering/parent-irc.md" with { type: "text" };
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
-import delegateModeActivePrompt from "../prompts/system/delegate-mode-active.md" with { type: "text" };
 import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
@@ -285,8 +283,9 @@ import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redire
 import toolCallLoopRedirectTemplate from "../prompts/system/tool-call-loop-redirect.md" with { type: "text" };
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
 import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" with { type: "text" };
+import ultraThinkingActivePrompt from "../prompts/system/ultra-thinking-active.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
-import { AgentRegistry } from "../registry/agent-registry";
+import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import {
 	deobfuscateAssistantContent,
 	deobfuscateSessionContext,
@@ -302,11 +301,13 @@ import {
 	type ConfiguredThinkingLevel,
 	clampAutoThinkingEffort,
 	concreteThinkingLevel,
+	getAvailableConfiguredThinkingLevels,
 	parseConfiguredThinkingLevel,
 	resolveProvisionalAutoLevel,
 	resolveThinkingLevelForModel,
 	shouldDisableReasoning,
 	toReasoningEffort,
+	ULTRA_THINKING,
 } from "../thinking";
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 import { shutdownTinyTitleClient } from "../tiny/title-client";
@@ -331,6 +332,7 @@ import { buildResolveReminderMessage, type ResolveToolDetails, runResolveInvocat
 import { getLatestTodoPhasesFromEntries, type TodoItem, type TodoPhase } from "../tools/todo";
 import { ToolAbortError, ToolError } from "../tools/tool-errors";
 import { clampTimeout } from "../tools/tool-timeouts";
+import { UltraSessionRegistry } from "../ultra/runtime";
 import { parseCommandArgs } from "../utils/command-args";
 import { type EditMode, resolveEditMode } from "../utils/edit-mode";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
@@ -762,6 +764,8 @@ export interface AgentSessionConfig {
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	/** Initial session thinking selector. */
 	thinkingLevel?: ConfiguredThinkingLevel;
+	/** True for the private generic worker created by Ultra orchestration. */
+	ultraWorker?: boolean;
 	/** Prewalk from the starting model to a fast/cheap target at the first edit/write once the todo list exists. */
 	prewalk?: Prewalk;
 	/** Force read-only plan mode at start, auto-approve on the model's first
@@ -795,8 +799,8 @@ export interface AgentSessionConfig {
 	modelRegistry: ModelRegistry;
 	/** Tool registry for LSP and settings */
 	toolRegistry?: Map<string, AgentTool>;
-	/** Creates the tools registered only while `/delegate` mode is active. */
-	createDelegateTools?: () => AgentTool[];
+	/** Creates the orchestration tools registered while Ultra thinking is active. */
+	createUltraTools?: () => AgentTool[];
 	/** Tool names whose current registry entry is still the built-in implementation. */
 	builtInToolNames?: Iterable<string>;
 	/** Update tool-session predicates that render guidance from the live active tool set. */
@@ -944,6 +948,14 @@ export interface AgentSessionConfig {
 	 * cwd change via {@link AgentSession.setTitleSystemPrompt}.
 	 */
 	titleSystemPrompt?: string;
+}
+
+interface UltraThinkingRollbackSnapshot {
+	configured: ConfiguredThinkingLevel | undefined;
+	thinkingLevel: ThinkingLevel | undefined;
+	autoResolvedLevel: Effort | undefined;
+	restorePersistedDefault: boolean;
+	persistedDefaultThinkingLevel: Effort | typeof AUTO_THINKING | typeof ULTRA_THINKING;
 }
 
 /** Options for AgentSession.prompt() */
@@ -1714,6 +1726,10 @@ export class AgentSession {
 	#thinkingLevel: ThinkingLevel | undefined;
 	/** True when the user configured `auto`; the effective level is resolved per turn. */
 	#autoThinking: boolean = false;
+	/** True when the user configured Ultra; the agent itself receives a concrete, clamped effort. */
+	#ultraThinking = false;
+	/** Private Ultra workers use their bounded worker prompt, never the main player-coach context. */
+	#ultraWorker = false;
 	/** The level `auto` last resolved to (for UI); undefined until a turn is classified. */
 	#autoResolvedLevel: Effort | undefined;
 	#prewalk: Prewalk | undefined;
@@ -1750,7 +1766,6 @@ export class AgentSession {
 	#advisorPrimaryTurnsCompleted = 0;
 	#advisorInterruptImmuneTurnStart: number | undefined;
 	#planModeState: PlanModeState | undefined;
-	#delegateModeState: DelegateModeState | undefined;
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
 	#advisorEnabled = false;
@@ -1893,8 +1908,13 @@ export class AgentSession {
 
 	// Tool registry and prompt builder for extensions
 	#toolRegistry: Map<string, AgentTool>;
-	#createDelegateTools: (() => AgentTool[]) | undefined;
-	#installedDelegateToolNames = new Set<string>();
+	#createUltraTools: (() => AgentTool[]) | undefined;
+	#installedUltraToolNames = new Set<string>();
+	#ultraPolicyActive = false;
+	#ultraPolicyTransition: Promise<void> = Promise.resolve();
+	#ultraPolicyError: Error | undefined;
+	#ultraActivationRollback: UltraThinkingRollbackSnapshot | undefined;
+	#ultraDeactivationRollback: UltraThinkingRollbackSnapshot | undefined;
 	#transformContext: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 	#onPayload: SimpleStreamOptions["onPayload"] | undefined;
 	#onResponse: SimpleStreamOptions["onResponse"] | undefined;
@@ -2466,6 +2486,7 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settings = config.settings;
+		this.#ultraWorker = config.ultraWorker === true;
 		this.#autoApprove = config.autoApprove === true;
 		// Power assertions are taken per turn (see #beginInFlight); nothing acquired here.
 		this.#evalKernelOwnerId = config.evalKernelOwnerId ?? `agent-session:${Snowflake.next()}`;
@@ -2479,6 +2500,9 @@ export class AgentSession {
 			// the first user turn is classified.
 			this.#autoThinking = true;
 			this.#thinkingLevel = resolveProvisionalAutoLevel(this.model);
+		} else if (config.thinkingLevel === ULTRA_THINKING) {
+			this.#ultraThinking = true;
+			this.#thinkingLevel = resolveThinkingLevelForModel(this.model, ThinkingLevel.XHigh);
 		} else {
 			this.#thinkingLevel = config.thinkingLevel;
 		}
@@ -2520,7 +2544,7 @@ export class AgentSession {
 		this.#pruneToolDescriptions = config.pruneToolDescriptions === true;
 		this.#validateRetryFallbackChains();
 		this.#toolRegistry = config.toolRegistry ?? new Map();
-		this.#createDelegateTools = config.createDelegateTools;
+		this.#createUltraTools = config.createUltraTools;
 		this.#builtInToolNames = new Set(config.builtInToolNames ?? []);
 		this.#requestedToolNames = config.requestedToolNames;
 		this.#transformContext = config.transformContext ?? (messages => messages);
@@ -6149,6 +6173,11 @@ export class AgentSession {
 		const postPromptDrain = this.#cancelPostPromptTasks();
 		this.agent.abort();
 		await postPromptDrain;
+		try {
+			await this.#killUltraWorkers();
+		} catch (error) {
+			logger.warn("Failed to terminate Ultra workers during session disposal", { error: String(error) });
+		}
 		// Cancel jobs this agent registered so a subagent's teardown doesn't
 		// leak its background bash/task work into the parent's manager. Only
 		// the session that owns the manager goes on to dispose it (which itself
@@ -6255,6 +6284,11 @@ export class AgentSession {
 		this.#eventListeners = [];
 	}
 
+	/** Terminate every Ultra worker owned by the current transcript before its session id changes. */
+	async #killUltraWorkers(): Promise<number> {
+		return UltraSessionRegistry.global().killAll(this.#agentId ?? MAIN_AGENT_ID, this.#asyncJobManager);
+	}
+
 	#closeAllProviderSessions(reason: string): void {
 		for (const [providerKey, state] of this.#providerSessionState) {
 			try {
@@ -6303,19 +6337,26 @@ export class AgentSession {
 		return this.agent.state.model;
 	}
 
-	/** Effective thinking level applied to the agent (the resolved level when `auto`). */
+	/** Effective thinking level applied to the agent (the resolved level for configured policies). */
 	get thinkingLevel(): ThinkingLevel | undefined {
 		return this.#thinkingLevel;
 	}
 
-	/** The selector the user configured: `auto` when auto mode is active, else the effective level. */
+	/** The selector the user configured, preserving session-local policy sentinels. */
 	configuredThinkingLevel(): ConfiguredThinkingLevel | undefined {
-		return this.#autoThinking ? AUTO_THINKING : this.#thinkingLevel;
+		if (this.#autoThinking) return AUTO_THINKING;
+		if (this.#ultraThinking) return ULTRA_THINKING;
+		return this.#thinkingLevel;
 	}
 
 	/** True when `auto` thinking mode is active. */
 	get isAutoThinking(): boolean {
 		return this.#autoThinking;
+	}
+
+	/** True when the Ultra reasoning and orchestration policy is configured. */
+	get isUltraThinking(): boolean {
+		return this.#ultraThinking;
 	}
 
 	/** The level `auto` resolved to for the current turn (undefined until classified). */
@@ -6481,42 +6522,186 @@ export class AgentSession {
 		return this.#extensionRunner ? new ExtensionToolWrapper(wrapped, this.#extensionRunner) : wrapped;
 	}
 
-	/**
-	 * Registers the ephemeral delegate tools and activates them alongside `baseToolNames`.
-	 *
-	 * @throws When this session cannot create delegate tools or the factory returns duplicate names.
-	 */
-	async activateDelegateTools(baseToolNames: string[]): Promise<void> {
-		const createDelegateTools = this.#createDelegateTools;
-		if (!createDelegateTools) {
-			throw new Error("Delegate tools are unavailable in this session.");
-		}
-
-		const tools = createDelegateTools();
-		const delegateToolNames = tools.map(tool => tool.name);
-		if (new Set(delegateToolNames).size !== delegateToolNames.length) {
-			throw new Error("Delegate tool names must be unique.");
-		}
-
-		for (const tool of tools) {
-			if (this.#toolRegistry.has(tool.name)) continue;
-			this.#toolRegistry.set(tool.name, this.#wrapRuntimeTool(tool));
-			this.#builtInToolNames.add(tool.name);
-			this.#installedDelegateToolNames.add(tool.name);
-		}
-
-		await this.#applyActiveToolsByName([...new Set([...baseToolNames, ...delegateToolNames])]);
+	#captureUltraThinkingRollback(restorePersistedDefault: boolean): UltraThinkingRollbackSnapshot {
+		return {
+			configured: this.configuredThinkingLevel(),
+			thinkingLevel: this.#thinkingLevel,
+			autoResolvedLevel: this.#autoResolvedLevel,
+			restorePersistedDefault,
+			persistedDefaultThinkingLevel: this.settings.get("defaultThinkingLevel"),
+		};
 	}
 
-	/** Removes tools installed by {@link activateDelegateTools} and activates `nextToolNames`. */
-	async deactivateDelegateTools(nextToolNames: string[]): Promise<void> {
-		for (const name of this.#installedDelegateToolNames) {
+	#restoreUltraThinkingRollback(snapshot: UltraThinkingRollbackSnapshot): void {
+		this.#autoThinking = snapshot.configured === AUTO_THINKING;
+		this.#ultraThinking = snapshot.configured === ULTRA_THINKING;
+		this.#thinkingLevel = snapshot.thinkingLevel;
+		this.#autoResolvedLevel = snapshot.autoResolvedLevel;
+		this.#applyThinkingLevelToAgent(snapshot.thinkingLevel);
+		this.#clearInheritedProviderPromptCacheKey();
+		this.sessionManager.appendThinkingLevelChange(snapshot.thinkingLevel, snapshot.configured);
+		if (snapshot.restorePersistedDefault) {
+			this.settings.set("defaultThinkingLevel", snapshot.persistedDefaultThinkingLevel);
+		}
+		this.#emit({
+			type: "thinking_level_changed",
+			thinkingLevel: snapshot.thinkingLevel,
+			configured: snapshot.configured,
+			resolved: snapshot.configured === AUTO_THINKING ? snapshot.autoResolvedLevel : undefined,
+		});
+	}
+
+	#supportsUltraThinking(): boolean {
+		return this.model?.reasoning === true && getSupportedEfforts(this.model).length > 0;
+	}
+
+	#ultraPolicyMatches(desired: boolean): boolean {
+		if (!desired) return !this.#ultraPolicyActive && this.#installedUltraToolNames.size === 0;
+		if (!this.#ultraPolicyActive || this.#installedUltraToolNames.size === 0) return false;
+		const activeNames = new Set(this.getActiveToolNames());
+		return [...this.#installedUltraToolNames].every(name => activeNames.has(name));
+	}
+
+	#createUltraPolicyTools(): AgentTool[] {
+		const createUltraTools = this.#createUltraTools;
+		if (!createUltraTools) {
+			throw new Error("Ultra orchestration is unavailable in this session.");
+		}
+		const tools = createUltraTools();
+		const names = tools.map(tool => tool.name);
+		if (new Set(names).size !== names.length) {
+			throw new Error("Ultra tool names must be unique.");
+		}
+		return tools;
+	}
+
+	async #activateUltraPolicy(): Promise<void> {
+		if (this.#ultraPolicyActive) {
+			const missingRegistryNames = [...this.#installedUltraToolNames].filter(name => !this.#toolRegistry.has(name));
+			if (missingRegistryNames.length > 0) {
+				const recreatedByName = new Map(this.#createUltraPolicyTools().map(tool => [tool.name, tool] as const));
+				for (const name of missingRegistryNames) {
+					const tool = recreatedByName.get(name);
+					if (!tool) throw new Error(`Ultra tool factory no longer provides "${name}".`);
+					this.#toolRegistry.set(name, this.#wrapRuntimeTool(tool));
+					this.#builtInToolNames.add(name);
+				}
+			}
+			await this.#applyActiveToolsByName([
+				...new Set([...this.getActiveToolNames(), ...this.#installedUltraToolNames]),
+			]);
+			return;
+		}
+		if (!this.#supportsUltraThinking()) {
+			throw new Error("Ultra requires a model with controllable reasoning effort.");
+		}
+		const tools = this.#createUltraPolicyTools();
+		const names = tools.map(tool => tool.name);
+		const collision = names.find(name => this.#toolRegistry.has(name));
+		if (collision) {
+			throw new Error(`Ultra tool "${collision}" conflicts with an existing tool.`);
+		}
+
+		const previousActiveNames = this.getActiveToolNames();
+		try {
+			for (const tool of tools) {
+				this.#toolRegistry.set(tool.name, this.#wrapRuntimeTool(tool));
+				this.#builtInToolNames.add(tool.name);
+				this.#installedUltraToolNames.add(tool.name);
+			}
+			await this.#applyActiveToolsByName([...new Set([...previousActiveNames, ...names])]);
+			this.#ultraPolicyActive = true;
+			this.#ultraActivationRollback = undefined;
+		} catch (error) {
+			for (const name of this.#installedUltraToolNames) {
+				this.#toolRegistry.delete(name);
+				this.#builtInToolNames.delete(name);
+				this.#selectedDiscoveredToolNames.delete(name);
+			}
+			this.#installedUltraToolNames.clear();
+			await this.#applyActiveToolsByName(previousActiveNames).catch(rollbackError => {
+				logger.warn("Failed to restore tools after Ultra activation error", { error: String(rollbackError) });
+			});
+			throw error;
+		}
+	}
+
+	async #deactivateUltraPolicy(): Promise<void> {
+		if (!this.#ultraPolicyActive && this.#installedUltraToolNames.size === 0) return;
+		const owner = this.#agentId ?? MAIN_AGENT_ID;
+		await UltraSessionRegistry.global().killAll(owner, this.#asyncJobManager);
+		const previousActiveNames = this.getActiveToolNames();
+		const nextActiveNames = previousActiveNames.filter(name => !this.#installedUltraToolNames.has(name));
+		try {
+			await this.#applyActiveToolsByName(nextActiveNames);
+		} catch (error) {
+			await this.#applyActiveToolsByName(previousActiveNames).catch(rollbackError => {
+				logger.warn("Failed to restore tools after Ultra deactivation error", { error: String(rollbackError) });
+			});
+			throw error;
+		}
+		for (const name of this.#installedUltraToolNames) {
 			this.#toolRegistry.delete(name);
 			this.#builtInToolNames.delete(name);
 			this.#selectedDiscoveredToolNames.delete(name);
 		}
-		this.#installedDelegateToolNames.clear();
-		await this.#applyActiveToolsByName(nextToolNames);
+		this.#installedUltraToolNames.clear();
+		this.#ultraPolicyActive = false;
+		this.#ultraDeactivationRollback = undefined;
+	}
+
+	#scheduleUltraPolicySync(): void {
+		const desired = this.#ultraThinking;
+		this.#ultraPolicyError = undefined;
+		this.#ultraPolicyTransition = this.#ultraPolicyTransition.then(async () => {
+			if (this.#isDisposed) return;
+			if (desired !== this.#ultraThinking || this.#ultraPolicyMatches(desired)) return;
+			// Never mutate the callable tool set underneath an in-flight provider
+			// turn. The next prompt awaits this same transition as a hard barrier.
+			if (this.agent.state.isStreaming) await this.agent.waitForIdle();
+			if (this.#isDisposed || desired !== this.#ultraThinking || this.#ultraPolicyMatches(desired)) return;
+			try {
+				if (desired) {
+					await this.#activateUltraPolicy();
+				} else {
+					await this.#deactivateUltraPolicy();
+				}
+			} catch (error) {
+				const policyError = error instanceof Error ? error : new Error(String(error));
+				if (desired === this.#ultraThinking) {
+					const rollback = desired ? this.#ultraActivationRollback : this.#ultraDeactivationRollback;
+					if (rollback) this.#restoreUltraThinkingRollback(rollback);
+					this.#ultraActivationRollback = undefined;
+					this.#ultraDeactivationRollback = undefined;
+					this.#ultraPolicyError = policyError;
+				}
+				logger.warn("Failed to synchronize Ultra policy", {
+					desired,
+					error: policyError.message,
+				});
+			}
+		});
+	}
+
+	/** Hard barrier used before prompts and after session construction/switching. */
+	async syncUltraPolicy(): Promise<void> {
+		await this.#ultraPolicyTransition;
+		if (this.#ultraPolicyError) {
+			const policyError = this.#ultraPolicyError;
+			this.#ultraPolicyError = undefined;
+			throw policyError;
+		}
+		if (this.#ultraPolicyMatches(this.#ultraThinking)) return;
+		this.#scheduleUltraPolicySync();
+		await this.#ultraPolicyTransition;
+		if (this.#ultraPolicyError) {
+			const policyError = this.#ultraPolicyError;
+			this.#ultraPolicyError = undefined;
+			throw policyError;
+		}
+		if (!this.#ultraPolicyMatches(this.#ultraThinking)) {
+			throw new Error("Ultra policy did not reach the configured state.");
+		}
 	}
 
 	#getEditModeSession() {
@@ -6948,7 +7133,13 @@ export class AgentSession {
 
 		const nextTools = new Map<string, AgentTool>();
 		for (const tool of update.tools) {
-			if (isPiDisabledToolName(tool.name) || isPiProtectedBuiltinToolName(tool.name)) continue;
+			if (
+				isPiDisabledToolName(tool.name) ||
+				isPiProtectedBuiltinToolName(tool.name) ||
+				this.#installedUltraToolNames.has(tool.name)
+			) {
+				continue;
+			}
 			nextTools.set(tool.name, tool);
 		}
 		const previousPluginToolNames = new Set(this.#pluginToolNames);
@@ -7654,14 +7845,6 @@ export class AgentSession {
 		this.#goalModeState = state;
 	}
 
-	getDelegateModeState(): DelegateModeState | undefined {
-		return this.#delegateModeState;
-	}
-
-	setDelegateModeState(state: DelegateModeState | undefined): void {
-		this.#delegateModeState = state;
-	}
-
 	get goalRuntime(): GoalRuntime {
 		return this.#goalRuntime;
 	}
@@ -7781,21 +7964,6 @@ export class AgentSession {
 
 	async sendGoalModeContext(options?: { deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void> {
 		const message = this.#buildGoalModeMessage();
-		if (!message) return;
-		await this.sendCustomMessage(
-			{
-				customType: message.customType,
-				content: message.content,
-				display: message.display,
-				details: message.details,
-				attribution: message.attribution,
-			},
-			options ? { deliverAs: options.deliverAs } : undefined,
-		);
-	}
-
-	async sendDelegateModeContext(options?: { deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void> {
-		const message = this.#buildDelegateModeMessage();
 		if (!message) return;
 		await this.sendCustomMessage(
 			{
@@ -7937,12 +8105,12 @@ export class AgentSession {
 		};
 	}
 
-	#buildDelegateModeMessage(): CustomMessage | null {
-		if (!this.#delegateModeState?.enabled) return null;
+	#buildUltraModeMessage(): CustomMessage | null {
+		if (!this.#ultraPolicyActive || this.#ultraWorker) return null;
 		return {
 			role: "custom",
-			customType: "delegate-mode-context",
-			content: prompt.render(delegateModeActivePrompt),
+			customType: "ultra-thinking-context",
+			content: prompt.render(ultraThinkingActivePrompt),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
@@ -8400,6 +8568,10 @@ export class AgentSession {
 				);
 			}
 
+			// Ultra changes the active tool set and policy context. Wait for the
+			// serialized transition before any part of this turn is constructed.
+			await this.syncUltraPolicy();
+
 			// Check if we need to compact before sending (catches aborted responses). Run
 			// inline (allowDefer=false) so the handoff/maintenance fully settles before this
 			// prompt's agent loop starts — otherwise a deferred handoff would fire on the
@@ -8425,9 +8597,9 @@ export class AgentSession {
 			if (goalModeMessage) {
 				messages.push(goalModeMessage);
 			}
-			const delegateModeMessage = this.#buildDelegateModeMessage();
-			if (delegateModeMessage) {
-				messages.push(delegateModeMessage);
+			const ultraModeMessage = this.#buildUltraModeMessage();
+			if (ultraModeMessage) {
+				messages.push(ultraModeMessage);
 			}
 			if (options?.prependMessages) {
 				messages.push(...options.prependMessages);
@@ -9423,6 +9595,7 @@ export class AgentSession {
 
 		this.#disconnectFromAgent();
 		await this.abort();
+		await this.#killUltraWorkers();
 		this.#cancelOwnAsyncJobs();
 		this.#closeAllProviderSessions("new session");
 		this.agent.reset();
@@ -9529,6 +9702,7 @@ export class AgentSession {
 		if (!forkResult) {
 			return false;
 		}
+		await this.#killUltraWorkers();
 
 		// Copy artifacts directory if it exists
 		const oldArtifactDir = forkResult.oldSessionFile.slice(0, -6);
@@ -9734,7 +9908,9 @@ export class AgentSession {
 	 * settings. Shared with role cycling and the plan-approval model slider.
 	 */
 	async applyRoleModel(entry: ResolvedRoleModel): Promise<void> {
+		const preserveUltra = this.#ultraThinking;
 		await this.setModel(entry.model, entry.role);
+		if (preserveUltra && this.#ultraThinking) return;
 		if (entry.explicitThinkingLevel && entry.thinkingLevel !== undefined) {
 			this.setThinkingLevel(entry.thinkingLevel);
 		}
@@ -9803,8 +9979,14 @@ export class AgentSession {
 		this.sessionManager.appendModelChange(`${next.model.provider}/${next.model.id}`);
 		this.settings.getStorage()?.recordModelUsage(`${next.model.provider}/${next.model.id}`);
 
-		// Apply the scoped model's configured thinking level, preserving auto.
-		this.setThinkingLevel(this.#autoThinking ? AUTO_THINKING : next.thinkingLevel);
+		// Session-level policies survive model cycling. Ultra re-clamps for the new
+		// model (or exits clearly when it is unsupported); ordinary sessions apply
+		// the scoped model's configured effort.
+		if (this.#autoThinking || this.#ultraThinking) {
+			this.#reapplyThinkingLevel();
+		} else {
+			this.setThinkingLevel(next.thinkingLevel);
+		}
 		await this.#syncAfterModelChange(previousEditMode);
 
 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
@@ -9861,39 +10043,81 @@ export class AgentSession {
 	}
 
 	/**
-	 * Set the thinking level. `auto` enables per-turn classification; the selector
-	 * itself is never written to the session log, but resolved concrete levels are
-	 * persisted when real user turns are classified so resumed sessions keep the
-	 * last resolved effort instead of reverting to pending auto.
+	 * Set the configured thinking selector. Policy sentinels stay in the coding-agent
+	 * layer while the provider-facing Agent always receives a concrete clamped effort.
 	 */
 	setThinkingLevel(level: ConfiguredThinkingLevel | undefined, persist: boolean = false): void {
 		if (level === AUTO_THINKING) {
+			const ultraRollback = this.#ultraThinking ? this.#captureUltraThinkingRollback(persist) : undefined;
 			const provisional = resolveProvisionalAutoLevel(this.model);
 			const wasAuto = this.#autoThinking;
+			const wasUltra = this.#ultraThinking;
+			const previousLevel = this.#thinkingLevel;
 			this.#autoThinking = true;
+			this.#ultraThinking = false;
 			this.#autoResolvedLevel = undefined;
 			this.#thinkingLevel = provisional;
-			if (!wasAuto) {
+			if (!wasAuto || wasUltra) {
 				this.#clearInheritedProviderPromptCacheKey();
 			}
 			this.#applyThinkingLevelToAgent(provisional);
+			if (wasUltra) {
+				this.#ultraActivationRollback = undefined;
+				this.#ultraDeactivationRollback = ultraRollback;
+				this.sessionManager.appendThinkingLevelChange(provisional, AUTO_THINKING);
+				this.#scheduleUltraPolicySync();
+			}
 			if (persist) {
 				this.settings.set("defaultThinkingLevel", AUTO_THINKING);
 			}
-			if (!wasAuto || this.#thinkingLevel !== provisional) {
+			if (!wasAuto || wasUltra || previousLevel !== provisional) {
 				this.#emit({ type: "thinking_level_changed", thinkingLevel: provisional, configured: AUTO_THINKING });
 			}
 			return;
 		}
 
+		if (level === ULTRA_THINKING) {
+			if (!this.#supportsUltraThinking()) {
+				throw new Error("Ultra requires a model with controllable reasoning effort.");
+			}
+			const effectiveLevel = resolveThinkingLevelForModel(this.model, ThinkingLevel.XHigh);
+			const wasAuto = this.#autoThinking;
+			const wasUltra = this.#ultraThinking;
+			if (!wasUltra) {
+				this.#ultraActivationRollback = this.#captureUltraThinkingRollback(persist);
+				this.#ultraDeactivationRollback = undefined;
+			}
+			const isChanging = wasAuto || !wasUltra || effectiveLevel !== this.#thinkingLevel;
+			this.#autoThinking = false;
+			this.#ultraThinking = true;
+			this.#autoResolvedLevel = undefined;
+			this.#thinkingLevel = effectiveLevel;
+			this.#applyThinkingLevelToAgent(effectiveLevel);
+			if (isChanging) {
+				this.#clearInheritedProviderPromptCacheKey();
+				this.sessionManager.appendThinkingLevelChange(effectiveLevel, ULTRA_THINKING);
+				if (persist) this.settings.set("defaultThinkingLevel", ULTRA_THINKING);
+				this.#emit({
+					type: "thinking_level_changed",
+					thinkingLevel: effectiveLevel,
+					configured: ULTRA_THINKING,
+				});
+			}
+			if (!wasUltra) this.#scheduleUltraPolicySync();
+			return;
+		}
+
+		const ultraRollback = this.#ultraThinking ? this.#captureUltraThinkingRollback(persist) : undefined;
 		const wasAuto = this.#autoThinking;
+		const wasUltra = this.#ultraThinking;
 		this.#autoThinking = false;
+		this.#ultraThinking = false;
 		this.#autoResolvedLevel = undefined;
 		const effectiveLevel = resolveThinkingLevelForModel(this.model, level);
 		// Leaving auto must persist even when the resolved effort is unchanged (e.g.
 		// auto resolved to medium, then the user pins medium): otherwise the latest
 		// session entry keeps `configured: "auto"` and resume re-enables auto.
-		const isChanging = wasAuto || effectiveLevel !== this.#thinkingLevel;
+		const isChanging = wasAuto || wasUltra || effectiveLevel !== this.#thinkingLevel;
 
 		this.#thinkingLevel = effectiveLevel;
 		this.#applyThinkingLevelToAgent(effectiveLevel);
@@ -9906,15 +10130,28 @@ export class AgentSession {
 			}
 			this.#emit({ type: "thinking_level_changed", thinkingLevel: effectiveLevel });
 		}
+		if (wasUltra) {
+			this.#ultraActivationRollback = undefined;
+			this.#ultraDeactivationRollback = ultraRollback;
+			this.#scheduleUltraPolicySync();
+		}
 	}
 
 	/**
-	 * Re-apply the active thinking selection after a model change. Preserves `auto`
-	 * (re-clamping the provisional level to the new model); otherwise re-applies the
-	 * preferred default or the current effective level.
+	 * Re-apply the active thinking selection after a model change, preserving policy
+	 * sentinels while re-clamping their effective provider effort.
 	 */
 	#reapplyThinkingLevel(preferredDefault?: ThinkingLevel): void {
-		this.setThinkingLevel(this.#autoThinking ? AUTO_THINKING : (preferredDefault ?? this.#thinkingLevel));
+		if (this.#ultraThinking && !this.#supportsUltraThinking()) {
+			this.setThinkingLevel(preferredDefault ?? resolveThinkingLevelForModel(this.model, this.#thinkingLevel));
+			return;
+		}
+		const configured = this.#autoThinking
+			? AUTO_THINKING
+			: this.#ultraThinking
+				? ULTRA_THINKING
+				: (preferredDefault ?? this.#thinkingLevel);
+		this.setThinkingLevel(configured);
 	}
 
 	/**
@@ -9927,7 +10164,7 @@ export class AgentSession {
 		const levels: ConfiguredThinkingLevel[] = [
 			ThinkingLevel.Off,
 			AUTO_THINKING,
-			...this.getAvailableThinkingLevels(),
+			...getAvailableConfiguredThinkingLevels(this.model),
 		];
 		const configured = this.configuredThinkingLevel();
 		const currentLevel = configured === ThinkingLevel.Inherit ? ThinkingLevel.Off : configured;
@@ -10903,6 +11140,7 @@ export class AgentSession {
 				}
 			}
 			await this.sessionManager.flush();
+			await this.#killUltraWorkers();
 			this.#cancelOwnAsyncJobs();
 			await this.sessionManager.newSession(previousSessionFile ? { parentSession: previousSessionFile } : undefined);
 
@@ -15681,6 +15919,7 @@ export class AgentSession {
 
 		this.#disconnectFromAgent();
 		await this.abort({ goalReason: "internal" });
+		await this.#killUltraWorkers();
 
 		// Flush pending writes before switching so restore snapshots reflect committed state.
 		await this.sessionManager.flush();
@@ -15705,6 +15944,7 @@ export class AgentSession {
 		const previousModel = this.model;
 		const previousThinkingLevel = this.#thinkingLevel;
 		const previousAutoThinking = this.#autoThinking;
+		const previousUltraThinking = this.#ultraThinking;
 		const previousAutoResolvedLevel = this.#autoResolvedLevel;
 		const previousServiceTierByFamily = this.#serviceTierByFamily;
 		const previousSelectedMCPToolNames = new Set(this.#selectedMCPToolNames);
@@ -15818,24 +16058,35 @@ export class AgentSession {
 			// With no thinking entry, fall back to the global default so fresh sessions
 			// still classify their first turn.
 			const restoredConfigured = sessionContext.configuredThinkingLevel;
+			const defaultIsPolicy = defaultThinkingLevel === AUTO_THINKING || defaultThinkingLevel === ULTRA_THINKING;
 			const restoredThinkingLevel: ConfiguredThinkingLevel | undefined =
-				hasThinkingEntry || (defaultThinkingLevel === AUTO_THINKING && sessionContext.thinkingLevel !== "off")
-					? restoredConfigured === AUTO_THINKING
-						? AUTO_THINKING
+				hasThinkingEntry || (defaultIsPolicy && sessionContext.thinkingLevel !== "off")
+					? restoredConfigured === AUTO_THINKING || restoredConfigured === ULTRA_THINKING
+						? restoredConfigured
 						: (sessionContext.thinkingLevel as ThinkingLevel | undefined)
 					: defaultThinkingLevel;
 			if (restoredThinkingLevel === AUTO_THINKING) {
 				this.#autoThinking = true;
+				this.#ultraThinking = false;
 				// Resume in auto (pending) like a fresh auto session: the next user
 				// turn reclassifies. We intentionally do not seed the last resolved
 				// effort, so the cold (--continue) and in-app switch paths display
 				// identically as `auto` until then.
 				this.#autoResolvedLevel = undefined;
 				this.#thinkingLevel = resolveProvisionalAutoLevel(this.model);
+			} else if (restoredThinkingLevel === ULTRA_THINKING && this.#supportsUltraThinking()) {
+				this.#autoThinking = false;
+				this.#ultraThinking = true;
+				this.#autoResolvedLevel = undefined;
+				this.#thinkingLevel = resolveThinkingLevelForModel(this.model, ThinkingLevel.XHigh);
 			} else {
 				this.#autoThinking = false;
+				this.#ultraThinking = false;
 				this.#autoResolvedLevel = undefined;
-				this.#thinkingLevel = resolveThinkingLevelForModel(this.model, restoredThinkingLevel);
+				this.#thinkingLevel = resolveThinkingLevelForModel(
+					this.model,
+					restoredThinkingLevel === ULTRA_THINKING ? this.model?.thinking?.defaultLevel : restoredThinkingLevel,
+				);
 			}
 			this.#applyThinkingLevelToAgent(this.#thinkingLevel);
 			this.#serviceTierByFamily = hasServiceTierEntry
@@ -15846,6 +16097,7 @@ export class AgentSession {
 				await this.#resetMemoryContextForNewTranscript();
 			}
 			this.#reconnectToAgent();
+			await this.syncUltraPolicy();
 			try {
 				await this.#sessionSwitchReconciler?.();
 			} catch (error) {
@@ -15900,12 +16152,16 @@ export class AgentSession {
 			}
 			this.#thinkingLevel = previousThinkingLevel;
 			this.#autoThinking = previousAutoThinking;
+			this.#ultraThinking = previousUltraThinking;
 			this.#autoResolvedLevel = previousAutoResolvedLevel;
 			this.#applyThinkingLevelToAgent(previousThinkingLevel);
 			this.#serviceTierByFamily = previousServiceTierByFamily;
 			this.#syncTodoPhasesFromBranch();
 			this.#resetAllAdvisorRuntimes();
 			this.#reconnectToAgent();
+			await this.syncUltraPolicy().catch(policyError => {
+				logger.warn("Failed to restore Ultra policy after switch error", { error: String(policyError) });
+			});
 			if (restoreMcpError) {
 				throw restoreMcpError;
 			}
@@ -15956,6 +16212,7 @@ export class AgentSession {
 
 		// Flush pending writes before branching
 		await this.sessionManager.flush();
+		await this.#killUltraWorkers();
 		this.#cancelOwnAsyncJobs();
 
 		if (!selectedEntry.parentId) {
@@ -16048,6 +16305,7 @@ export class AgentSession {
 			this.agent.replaceQueues([], []);
 		}
 		await this.sessionManager.flush();
+		await this.#killUltraWorkers();
 		this.#cancelOwnAsyncJobs();
 
 		this.sessionManager.createBranchedSession(leafId);

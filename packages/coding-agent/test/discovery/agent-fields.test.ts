@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { parseAgentFields } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
+import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 
 describe("parseAgentFields", () => {
@@ -65,6 +66,22 @@ describe("parseAgentFields", () => {
 		});
 
 		expect(fields?.thinkingLevel).toBe(AUTO_THINKING);
+	});
+
+	test("does not accept Ultra as an ordinary named-agent thinking level", () => {
+		const agent = parseAgent(
+			"project-ultra.md",
+			`---
+name: project-ultra
+description: Ordinary project agent
+thinkingLevel: ultra
+---
+Do the assigned work.`,
+			"project",
+		);
+
+		expect(agent.name).toBe("project-ultra");
+		expect(agent.thinkingLevel).toBeUndefined();
 	});
 
 	test("rejects unknown thinking selectors", () => {
