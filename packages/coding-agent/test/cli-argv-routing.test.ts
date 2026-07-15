@@ -68,7 +68,7 @@ describe("resolveCliArgv routes subcommands hidden behind leading global flags",
 			error: "Live collaboration is not available in Pi.",
 		});
 		expect(resolveCliArgv(["update"])).toEqual({
-			error: "Pi executable updates are owned by the pi-dotfiles repository.",
+			error: "Pi executable updates are owned by the consuming distribution.",
 		});
 	});
 

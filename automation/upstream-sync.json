@@ -1,0 +1,29 @@
+{
+	"schemaVersion": 1,
+	"downstreamRepository": "Verena-Labs/oh-my-pi",
+	"integrationBranch": "main",
+	"upstream": {
+		"repository": "can1357/oh-my-pi",
+		"url": "https://github.com/can1357/oh-my-pi.git",
+		"tag": "v16.5.0",
+		"commit": "3047c27c332c5629c8e063283d349384c10c9a56"
+	},
+	"sync": {
+		"branchPrefix": "sync/upstream-v",
+		"strategy": "merge-exact-upstream-tag",
+		"history": "merge-commit"
+	},
+	"release": {
+		"tag": "pi-v16.5.0-r1",
+		"revision": 1,
+		"tagPattern": "pi-v<upstream>-r<revision>",
+		"sourceOnly": true,
+		"mutable": false,
+		"publishes": []
+	},
+	"baselineEvidence": {
+		"sourceRepository": "hachoj/pi-dotfiles",
+		"sourceCommit": "14829aa",
+		"forkBaselineCommit": "cb60845d8"
+	}
+}

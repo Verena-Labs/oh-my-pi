@@ -1,31 +1,29 @@
-# Pi vendored runtime
+# Pi downstream runtime
 
-This directory contains the runtime shipped by this repository as one command:
-`pi`. It is built from the pinned Oh My Pi (OMP) source snapshot recorded in
-[PI_VENDOR.md](PI_VENDOR.md), then narrowed by the replayable downstream patch
-series under [`../vendor-patches/omp/`](../vendor-patches/omp/).
+This repository is Verena Labs' canonical downstream fork of Oh My Pi (OMP).
+It exposes the selected runtime as one public command, `pi`, while retaining
+internal `@oh-my-pi/*` package names for compatibility and provenance.
 
-The authoritative product boundary is
-[`../OH_MY_PI_FEATURE_MATRIX.md`](../OH_MY_PI_FEATURE_MATRIX.md). Disabled OMP
-source may remain in this vendored tree for clean upstream replay, but it is not
-registered, advertised by the runtime, or initialized by Pi.
+[OH_MY_PI_FEATURE_MATRIX.md](OH_MY_PI_FEATURE_MATRIX.md) is the authoritative
+product boundary, and [PI_ACCEPTANCE_TESTS.md](PI_ACCEPTANCE_TESTS.md) is its
+shared behavioral acceptance contract. Disabled OMP source may remain in the
+fork for clean upstream synchronization, but it is not registered, advertised
+by the runtime, or initialized by Pi.
 
-## Runtime identity and state
+## Runtime and distribution boundaries
 
 - The public executable and completion command are `pi`; no `omp` executable is
   emitted.
 - Pi uses one permanent user environment at `~/.pi`, with agent state under
   `~/.pi/agent`.
 - Named profiles and alternate permanent config or agent homes are unavailable.
-- Installation and updates are owned by the parent `pi-dotfiles` repository.
-  OMP installers, startup update checks, self-update, and direct binary
-  replacement are unavailable.
-- This personal release advertises `darwin-arm64` in an
-  `xterm-256color`-compatible PTY. Other cross-build code remains replayable
-  substrate, not a support claim.
-
-This branch is still in the staged reset workflow described by
-[`../plan.md`](../plan.md); it does not yet define the final Phase 5 installer.
+- This fork publishes source-only tags. It does not publish an installer or
+  claim platform, architecture, terminal, package-manager, or distribution
+  support on a consumer's behalf.
+- OMP installers, startup executable-update checks, self-update, and direct
+  binary replacement are unavailable. Installation, executable updates,
+  artifact verification, supported-target claims, and rollback are owned by
+  each consuming distribution.
 
 ## Selected capabilities
 
@@ -113,7 +111,6 @@ Fresh source checkouts require the Bun workspace and native addon:
 bun install --frozen-lockfile
 bun run build:native
 bun --cwd=packages/coding-agent run build
-bun scripts/ci-release-build-binaries.ts --targets darwin-arm64
 ```
 
 Useful checks:
@@ -122,21 +119,25 @@ Useful checks:
 bun run check
 bun packages/coding-agent/src/cli.ts --version
 bun packages/coding-agent/src/cli.ts --help
+node scripts/check-pi-product-docs.mjs
+node --test scripts/check-pi-product-docs.test.mjs
+node scripts/check-pi-phase4-evidence.mjs
+node --test scripts/check-pi-phase4-evidence.test.mjs
 ```
 
-The development build emits `packages/coding-agent/dist/pi`; the supported
-release pipeline emits `packages/coding-agent/binaries/pi-darwin-arm64` for the
-parent installer to expose as `pi`. Internal npm package names remain under
-`@oh-my-pi/*` because they are implementation and provenance identifiers, not
-a second public executable.
+The development build emits `packages/coding-agent/dist/pi`. A consuming
+distribution compiles, packages, hashes, installs, and smokes its own final
+artifact from an immutable downstream source tag. Internal npm package names
+remain under `@oh-my-pi/*` because they are implementation and provenance
+identifiers, not a second public executable.
 
 ## Upstream provenance
 
-OMP is a fork of Mario Zechner's
-[Pi](https://github.com/badlogic/pi-mono). The pinned upstream OMP repository is
-[can1357/oh-my-pi](https://github.com/can1357/oh-my-pi). See
-[PI_VENDOR.md](PI_VENDOR.md) for the immutable release, commit, patch order,
-oracle build, and update procedure used by this downstream distribution.
+This repository is downstream of
+[can1357/oh-my-pi](https://github.com/can1357/oh-my-pi), which is a fork of Mario
+Zechner's [Pi](https://github.com/badlogic/pi-mono). See
+[PI_VENDOR.md](PI_VENDOR.md) for the exact upstream provenance and
+[PI_FORK.md](PI_FORK.md) for source-tag and upstream-sync policy.
 
 MIT licensed; retain the upstream copyright and license notices in
 [LICENSE](LICENSE).

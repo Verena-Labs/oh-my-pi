@@ -97,6 +97,12 @@
     "@ark/schema": "0.56.2"
   },
   "scripts": {
+    "downstream:contracts": "node scripts/check-pi-product-docs.mjs && node scripts/check-pi-phase4-evidence.mjs",
+    "downstream:update:check": "node scripts/upstream-sync.mjs check",
+    "downstream:update:record": "node scripts/upstream-sync.mjs record",
+    "downstream:test:update": "bun test scripts/upstream-sync.test.mjs",
+    "downstream:test": "bun test scripts/check-pi-product-docs.test.mjs scripts/check-pi-phase4-evidence.test.mjs scripts/upstream-sync.test.mjs",
+    "downstream:check": "bun run downstream:update:check && bun run downstream:contracts",
     "setup": "bun install && bun run build:native && bun --cwd=packages/coding-agent run build",
     "dev": "bun --cwd=packages/coding-agent src/cli.ts",
     "dev:timing": "PI_TIMING=x bun --cwd=packages/coding-agent --preload ../utils/src/module-timer.ts src/cli.ts",

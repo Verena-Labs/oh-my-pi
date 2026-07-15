@@ -68,7 +68,7 @@ const DISABLED_TOP_LEVEL_WORDS = new Map<string, string>([
 	["ssh", "Dedicated SSH commands are not available in Pi; ssh:// resources remain supported."],
 	["token", "Credential-pool token selection is not available in Pi."],
 	["ttsr", "TTSR rule forging is not available in Pi."],
-	["update", "Pi executable updates are owned by the pi-dotfiles repository."],
+	["update", "Pi executable updates are owned by the consuming distribution."],
 ]);
 
 export function reservedTopLevelWordMessage(first: string | undefined, argc = 1): string | undefined {
