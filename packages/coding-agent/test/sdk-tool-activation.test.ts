@@ -223,13 +223,14 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
-	it("registers Ultra tools only for Ultra thinking without replacing the active toolset", async () => {
+	it("registers an exclusive Ultra tool surface and restores the prior active toolset", async () => {
 		const tempDir = makeTempDir();
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
 			model: getBundledModel("openai", "gpt-5.5"),
 		});
 		const previousActiveToolNames = session.getActiveToolNames();
+		expect(previousActiveToolNames).toContain("task");
 
 		try {
 			for (const name of ULTRA_TOOL_NAMES) {
@@ -238,15 +239,14 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 			session.setThinkingLevel(ULTRA_THINKING);
 			await session.syncUltraPolicy();
+			expect(session.getToolByName("task")).toBeUndefined();
+			expect(session.getActiveToolNames()).not.toContain("task");
 			for (const name of ULTRA_TOOL_NAMES) {
 				expect(session.getToolByName(name)).toBeDefined();
 				expect(session.getActiveToolNames()).toContain(name);
 			}
-			for (const name of previousActiveToolNames) {
-				expect(session.getActiveToolNames()).toContain(name);
-			}
 			expect(session.getActiveToolNames().toSorted()).toEqual(
-				[...new Set([...previousActiveToolNames, ...ULTRA_TOOL_NAMES])].toSorted(),
+				[...new Set([...previousActiveToolNames.filter(name => name !== "task"), ...ULTRA_TOOL_NAMES])].toSorted(),
 			);
 
 			session.setThinkingLevel(ThinkingLevel.XHigh);
@@ -254,6 +254,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			for (const name of ULTRA_TOOL_NAMES) {
 				expect(session.getToolByName(name)).toBeUndefined();
 			}
+			expect(session.getToolByName("task")).toBeDefined();
 			expect(session.getActiveToolNames()).toEqual(previousActiveToolNames);
 		} finally {
 			await session.dispose();

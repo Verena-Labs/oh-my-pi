@@ -21,6 +21,12 @@
   `/ultra` slash command and no `/delegate`, `/vibe`, `delegate_*`, or `vibe_*`
   compatibility surface.
 
+### Fixed
+
+- Aligned the completion, active-tool restoration, Phase 4 evidence, and
+  fork-owned release provenance contracts with Ultra's shipped exclusive
+  orchestration surface.
+
 ## [16.5.0] - 2026-07-13
 
 ### Breaking Changes
