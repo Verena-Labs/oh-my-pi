@@ -68,7 +68,12 @@ import { SessionManager } from "../../session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands, toAcpAvailableCommands } from "../../slash-commands/available-commands";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS } from "../../stt/models";
-import { AUTO_THINKING, parseConfiguredThinkingLevel } from "../../thinking";
+import {
+	AUTO_THINKING,
+	getAvailableConfiguredThinkingLevels,
+	getConfiguredThinkingLevelMetadata,
+	parseConfiguredThinkingLevel,
+} from "../../thinking";
 import { normalizeLocalScheme } from "../../tools/path-utils";
 import { runResolveInvocation } from "../../tools/resolve";
 import { ToolError } from "../../tools/tool-errors";
@@ -1571,10 +1576,10 @@ export class AcpAgent implements Agent {
 		return [
 			{ value: THINKING_OFF, name: "Off" },
 			{ value: AUTO_THINKING, name: "Auto", description: "Auto-detect per prompt (low–xhigh)" },
-			...session.getAvailableThinkingLevels().map(level => ({
-				value: level,
-				name: level,
-			})),
+			...getAvailableConfiguredThinkingLevels(session.model).map(level => {
+				const metadata = getConfiguredThinkingLevelMetadata(level);
+				return { value: level, name: metadata.label, description: metadata.description };
+			}),
 		];
 	}
 	#getConfiguredThinkingLevel(session: AgentSession): string | undefined {

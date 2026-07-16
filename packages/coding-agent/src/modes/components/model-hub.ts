@@ -12,7 +12,6 @@
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
-import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { getCatalogProviderEntry } from "@oh-my-pi/pi-catalog/provider-models";
 import {
 	type Component,
@@ -31,7 +30,13 @@ import type { ModelRegistry } from "../../config/model-registry";
 import { getKnownRoleIds, getRoleInfo } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
 import { isPiLockedSetting } from "../../config/settings-schema";
-import { AUTO_THINKING, type ConfiguredThinkingLevel, getConfiguredThinkingLevelMetadata } from "../../thinking";
+import {
+	AUTO_THINKING,
+	type ConfiguredThinkingLevel,
+	getAvailableConfiguredThinkingLevels,
+	getConfiguredThinkingLevelMetadata,
+	ULTRA_THINKING,
+} from "../../thinking";
 import { theme } from "../theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import {
@@ -758,7 +763,7 @@ export class ModelHubComponent implements Component {
 		const current = this.#roles[role];
 		let level: ConfiguredThinkingLevel = ThinkingLevel.Inherit;
 		if (current && !current.autoSelected) {
-			const supported = this.#thinkingOptionsFor(item.model);
+			const supported = this.#thinkingOptionsFor(item.model, role);
 			level = supported.includes(current.thinkingLevel) ? current.thinkingLevel : ThinkingLevel.Inherit;
 		}
 		this.#callbacks.onAssign(item.model, role, level, item.selector);
@@ -773,8 +778,11 @@ export class ModelHubComponent implements Component {
 		this.#refreshAfterMutation();
 	}
 
-	#thinkingOptionsFor(model: Model): ConfiguredThinkingLevel[] {
-		return [ThinkingLevel.Inherit, ThinkingLevel.Off, AUTO_THINKING, ...getSupportedEfforts(model)];
+	#thinkingOptionsFor(model: Model, role: string): ConfiguredThinkingLevel[] {
+		const runtimeLevels = getAvailableConfiguredThinkingLevels(model).filter(
+			level => role === "default" || level !== ULTRA_THINKING,
+		);
+		return [ThinkingLevel.Inherit, ThinkingLevel.Off, AUTO_THINKING, ...runtimeLevels];
 	}
 
 	#openRoleStrip(item: ModelBrowserItem): void {
@@ -815,7 +823,7 @@ export class ModelHubComponent implements Component {
 	}
 
 	#openThinkingStrip(item: ModelBrowserItem, role: string, returnToRoles: boolean): void {
-		const options = this.#thinkingOptionsFor(item.model);
+		const options = this.#thinkingOptionsFor(item.model, role);
 		const current = this.#roles[role]?.thinkingLevel ?? ThinkingLevel.Inherit;
 		const chips: StripChip[] = options.map(level => {
 			const label = getConfiguredThinkingLevelMetadata(level).label;

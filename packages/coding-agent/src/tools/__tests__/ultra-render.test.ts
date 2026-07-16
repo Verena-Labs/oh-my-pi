@@ -1,5 +1,5 @@
 /**
- * Contracts: delegate tool renderers.
+ * Contracts: Ultra orchestration-tool renderers.
  *
  * 1. spawn/send render a mini composer — the message typed into a tiny CLI
  *    frame with a prompt glyph and (while pending) a blinking cursor.
@@ -13,19 +13,20 @@
  * 4. Every emitted line respects the render width (sanitized, truncated).
  */
 import { beforeAll, describe, expect, it } from "bun:test";
+import { type } from "arktype";
 import { Settings } from "../../config/settings";
-import type { DelegateScreenSnapshot } from "../../delegate/runtime";
 import { getThemeByName, setThemeInstance, type Theme } from "../../modes/theme/theme";
-import { createDelegateToolRenderer, type DelegateToolDetails } from "../delegate";
+import type { UltraScreenSnapshot } from "../../ultra/runtime";
+import type { ToolSession } from "../index";
 import { toolRenderers } from "../renderers";
+import { createUltraToolRenderer, UltraSpawnTool, type UltraToolDetails } from "../ultra";
 
 const strip = (lines: readonly string[]): string[] =>
 	lines.map(line => line.replace(/\x1b\]8;[^\x1b\x07]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-9;]*m/g, ""));
 
-function makeScreen(overrides: Partial<DelegateScreenSnapshot> = {}): DelegateScreenSnapshot {
+function makeScreen(overrides: Partial<UltraScreenSnapshot> = {}): UltraScreenSnapshot {
 	return {
 		id: "Anna",
-		cli: "fast",
 		state: "running",
 		turns: 1,
 		queued: 0,
@@ -40,7 +41,7 @@ function renderLines(component: { render(width: number): readonly string[] }, wi
 	return strip(component.render(width));
 }
 
-describe("delegate tool renderers", () => {
+describe("Ultra tool renderers", () => {
 	let uiTheme: Theme;
 
 	beforeAll(async () => {
@@ -51,14 +52,44 @@ describe("delegate tool renderers", () => {
 		setThemeInstance(uiTheme);
 	});
 
-	it("retains read-only renderers for legacy transcript tool blocks", () => {
-		for (const name of ["vibe_spawn", "vibe_send", "vibe_wait", "vibe_kill", "vibe_list"]) {
+	it("registers only the public Ultra orchestration-tool names", () => {
+		for (const name of ["ultra_spawn", "ultra_send", "ultra_wait", "ultra_kill", "ultra_list"]) {
 			expect(toolRenderers[name]).toBeDefined();
+		}
+		for (const legacy of [
+			"delegate_spawn",
+			"delegate_send",
+			"delegate_wait",
+			"delegate_kill",
+			"delegate_list",
+			"vibe_spawn",
+			"vibe_send",
+			"vibe_wait",
+			"vibe_kill",
+			"vibe_list",
+		]) {
+			expect(toolRenderers[legacy]).toBeUndefined();
+		}
+	});
+
+	it("accepts only optional name and required prompt in the public spawn schema", () => {
+		const tool = new UltraSpawnTool({} as ToolSession);
+
+		expect(tool.parameters({ prompt: "Investigate the failure." }) instanceof type.errors).toBe(false);
+		expect(tool.parameters({ name: "Investigator", prompt: "Investigate the failure." }) instanceof type.errors).toBe(
+			false,
+		);
+		expect(tool.parameters({ name: "Investigator" }) instanceof type.errors).toBe(true);
+
+		for (const selector of ["model", "thinking", "thinkingLevel", "agent"]) {
+			expect(
+				tool.parameters({ prompt: "Investigate the failure.", [selector]: "forbidden" }) instanceof type.errors,
+			).toBe(true);
 		}
 	});
 
 	it("send composer types the message into a mini CLI frame with a blinking cursor while pending", () => {
-		const renderer = createDelegateToolRenderer("send");
+		const renderer = createUltraToolRenderer("send");
 		const component = renderer.renderCall(
 			{ session: "Anna", message: "Focus on the API first.\nThen tests." },
 			{ expanded: false, isPartial: true, spinnerFrame: 0 },
@@ -66,7 +97,7 @@ describe("delegate tool renderers", () => {
 		) as { render(width: number): readonly string[] };
 		const text = renderLines(component).join("\n");
 
-		expect(text).toContain("delegate send → Anna");
+		expect(text).toContain("ultra send → Anna");
 		expect(text).toContain("> Focus on the API first.");
 		expect(text).toContain("Then tests.▌");
 		expect(text).toContain("delivering…");
@@ -82,7 +113,7 @@ describe("delegate tool renderers", () => {
 	});
 
 	it("composer cursor re-derives from mutated options on the same component", () => {
-		const renderer = createDelegateToolRenderer("send");
+		const renderer = createUltraToolRenderer("send");
 		const options = { expanded: false, isPartial: true, spinnerFrame: 0 };
 		const component = renderer.renderCall({ session: "Anna", message: "Hi" }, options, uiTheme) as {
 			render(width: number): readonly string[];
@@ -95,8 +126,8 @@ describe("delegate tool renderers", () => {
 	});
 
 	it("wait wall spinner re-derives from mutated options on the same component", () => {
-		const renderer = createDelegateToolRenderer("wait");
-		const details: DelegateToolDetails = {
+		const renderer = createUltraToolRenderer("wait");
+		const details: UltraToolDetails = {
 			op: "wait",
 			screens: [makeScreen({ currentTool: "edit" })],
 			wait: { settled: [], stillRunning: ["Anna"], timedOut: false, waiting: true },
@@ -114,8 +145,8 @@ describe("delegate tool renderers", () => {
 	});
 
 	it("send result frames the ack under the composer", () => {
-		const renderer = createDelegateToolRenderer("send");
-		const details: DelegateToolDetails = {
+		const renderer = createUltraToolRenderer("send");
+		const details: UltraToolDetails = {
 			op: "send",
 			screens: [makeScreen()],
 			send: { id: "Anna", mode: "steered" },
@@ -128,20 +159,19 @@ describe("delegate tool renderers", () => {
 		) as { render(width: number): readonly string[] };
 		const text = renderLines(component).join("\n");
 
-		expect(text).toContain("delegate send → Anna");
+		expect(text).toContain("ultra send → Anna");
 		expect(text).toContain("> Focus on the API first.");
 		expect(text).toContain("steered into the running turn");
 		expect(text).not.toContain("▌");
 	});
 
 	it("wait renders stacked TV screens: live trace + streamed text, idle gist, settled footer", () => {
-		const renderer = createDelegateToolRenderer("wait");
-		const details: DelegateToolDetails = {
+		const renderer = createUltraToolRenderer("wait");
+		const details: UltraToolDetails = {
 			op: "wait",
 			screens: [
 				makeScreen({
 					id: "Anna",
-					cli: "fast",
 					state: "running",
 					turnStartedAt: Date.now() - 5000,
 					turnMessage: "Build the widget",
@@ -149,9 +179,9 @@ describe("delegate tool renderers", () => {
 					currentTool: "edit",
 					lastIntent: "Fixing the parser",
 					outputTail: ["The parser now accepts nested arrays"],
-					model: "prov/fast-model",
+					model: "prov/worker-model",
 				}),
-				makeScreen({ id: "Bob", cli: "good", state: "idle", turns: 2, lastActivity: "turn 2 completed" }),
+				makeScreen({ id: "Bob", state: "idle", turns: 2, lastActivity: "turn 2 completed" }),
 			],
 			wait: {
 				settled: [{ id: "Bob", jobId: "Bob-t2", status: "completed" }],
@@ -173,14 +203,12 @@ describe("delegate tool renderers", () => {
 		expect(lines.filter(line => line.startsWith("╰─")).length).toBe(2);
 		// Live screen: header, typed turn message, trace, current tool, streamed tail.
 		expect(text).toContain("Anna");
-		// Badge glyphs are theme-driven (⟦fast⟧ on dark); assert the flavor label itself.
-		expect(text).toMatch(/fast.\s*Anna/u);
 		expect(text).toContain("> Build the widget");
 		expect(text).toContain("read(src/foo.ts)");
 		expect(text).toContain("bash(bun test)");
 		expect(text).toContain("edit: Fixing the parser");
 		expect(text).toContain("The parser now accepts nested arrays");
-		expect(text).toContain("prov/fast-model");
+		expect(text).toContain("prov/worker-model");
 		// Idle screen + settled footer.
 		expect(text).toContain("Bob");
 		expect(text).toContain("turn 2 completed");
@@ -190,8 +218,8 @@ describe("delegate tool renderers", () => {
 	});
 
 	it("clamps every TV line to the render width", () => {
-		const renderer = createDelegateToolRenderer("list");
-		const details: DelegateToolDetails = {
+		const renderer = createUltraToolRenderer("list");
+		const details: UltraToolDetails = {
 			op: "list",
 			screens: [
 				makeScreen({

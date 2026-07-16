@@ -214,22 +214,6 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
-		name: "delegate",
-		description: "Toggle delegate mode (direct persistent fast/good worker sessions; read-only toolset)",
-		inlineHint: "[prompt]",
-		allowArgs: true,
-		getTuiAutocompleteDescription: runtime => {
-			if (runtime.ctx.delegateModeEnabled) return "Delegate: on";
-			if (runtime.ctx.planModeEnabled) return "Delegate: blocked by plan mode";
-			if (runtime.ctx.goalModeEnabled) return "Delegate: blocked by goal mode";
-			return "Delegate: off";
-		},
-		handleTui: async (command, runtime) => {
-			await runtime.ctx.handleDelegateModeCommand(command.args || undefined);
-			runtime.ctx.editor.setText("");
-		},
-	},
-	{
 		name: "goal",
 		description: "Toggle goal mode (persistent autonomous objective for this session)",
 		subcommands: [

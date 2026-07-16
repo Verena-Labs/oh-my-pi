@@ -60,9 +60,9 @@ export interface ThinkingLevelChangeEntry extends SessionEntryBase {
 	type: "thinking_level_change";
 	thinkingLevel?: string | null;
 	/**
-	 * The user-configured selector at the time of this change: `"auto"` when auto
-	 * mode was active, otherwise the concrete level. Absent on entries written
-	 * before auto-mode persistence existed; readers fall back to `thinkingLevel`.
+	 * The user-configured selector at the time of this change: a coding-agent
+	 * policy sentinel (`"auto"`/`"ultra"`) or the concrete level. Absent on older
+	 * entries; readers fall back to `thinkingLevel`.
 	 */
 	configured?: string | null;
 }

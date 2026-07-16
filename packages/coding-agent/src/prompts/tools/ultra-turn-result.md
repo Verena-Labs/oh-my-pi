@@ -1,4 +1,4 @@
-<delegate-turn session="{{id}}" cli="{{cli}}" turn="{{turn}}" status="{{status}}" duration="{{duration}}"{{#if model}} model="{{model}}"{{/if}}>
+<ultra-turn session="{{id}}" turn="{{turn}}" status="{{status}}" duration="{{duration}}"{{#if model}} model="{{model}}"{{/if}}>
 <activity tool-calls="{{toolCount}}" requests="{{requests}}">
 {{#each trace}}
 - {{this}}
@@ -14,6 +14,6 @@
 <error>{{error}}</error>
 {{/if}}
 {{#if alive}}
-Session `{{id}}` is idle and retains this conversation — continue it with delegate_send. Transcript: history://{{id}}
+Session `{{id}}` is idle and retains this conversation — continue it with ultra_send. Transcript: history://{{id}}
 {{/if}}
-</delegate-turn>
+</ultra-turn>

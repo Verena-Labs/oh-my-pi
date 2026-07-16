@@ -11,7 +11,8 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { getRestorableSessionModels } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
+import { AUTO_THINKING, ULTRA_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
+import { ULTRA_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/ultra";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 describe("AgentSession model persistence", () => {
@@ -158,6 +159,20 @@ describe("AgentSession model persistence", () => {
 		});
 		session = result.session;
 		return result;
+	}
+	async function appendUltraThinkingEntry(targetSessionFile: string): Promise<void> {
+		const existing = await Bun.file(targetSessionFile).text();
+		await Bun.write(
+			targetSessionFile,
+			`${existing}${JSON.stringify({
+				type: "thinking_level_change",
+				id: "ultra-thinking",
+				parentId: "smol-model",
+				timestamp: "2026-06-01T00:00:01.000Z",
+				thinkingLevel: Effort.XHigh,
+				configured: ULTRA_THINKING,
+			})}\n`,
+		);
 	}
 	it("switches the active model without persisting by default", async () => {
 		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
@@ -423,6 +438,25 @@ describe("AgentSession model persistence", () => {
 
 		expect(result.session.model?.id).toBe(defaultModel.id);
 		expect(result.session.configuredThinkingLevel()).toBe(AUTO_THINKING);
+	});
+
+	it("restores the complete Ultra policy on startup resume", async () => {
+		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-6");
+		const targetSessionFile = await writeRoleModelSession(
+			modelValue(defaultModel),
+			modelValue(defaultModel),
+			"default",
+		);
+		await appendUltraThinkingEntry(targetSessionFile);
+		const settings = Settings.isolated();
+		settings.setModelRole("default", modelValue(defaultModel));
+
+		const result = await createStartupResumeSession(targetSessionFile, settings);
+
+		expect(result.session.configuredThinkingLevel()).toBe(ULTRA_THINKING);
+		for (const name of ULTRA_TOOL_NAMES) {
+			expect(result.session.getActiveToolNames()).toContain(name);
+		}
 	});
 
 	it("lists restorable temporary model before the default fallback", () => {

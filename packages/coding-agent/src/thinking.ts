@@ -134,12 +134,25 @@ export function resolveThinkingLevelForModel(
  */
 export const AUTO_THINKING = "auto" as const;
 
-/** A thinking selector as configured by the user — a concrete level or `auto`. */
-export type ConfiguredThinkingLevel = ThinkingLevel | typeof AUTO_THINKING;
+/**
+ * Sentinel selector for the coding-agent Ultra policy. Like {@link AUTO_THINKING},
+ * this value never crosses the provider boundary. Sessions resolve it to a
+ * concrete, model-clamped XHigh effort while separately activating the Ultra
+ * orchestration policy.
+ */
+export const ULTRA_THINKING = "ultra" as const;
 
-/** Maps the session-level `auto` sentinel to `undefined`; concrete levels pass through. */
+/** Thinking selectors accepted by ordinary named-agent definitions. */
+export type NamedAgentThinkingLevel = ThinkingLevel | typeof AUTO_THINKING;
+
+/** A thinking selector as configured by the user. */
+export type ConfiguredThinkingLevel = ThinkingLevel | typeof AUTO_THINKING | typeof ULTRA_THINKING;
+
+/** Maps configured sentinels to their concrete provider-facing starting level. */
 export function concreteThinkingLevel(level: ConfiguredThinkingLevel | undefined): ThinkingLevel | undefined {
-	return level === AUTO_THINKING ? undefined : level;
+	if (level === AUTO_THINKING) return undefined;
+	if (level === ULTRA_THINKING) return ThinkingLevel.XHigh;
+	return level;
 }
 
 /** Metadata used to render the `auto` selector value alongside concrete levels. */
@@ -155,6 +168,12 @@ const AUTO_THINKING_METADATA: ConfiguredThinkingLevelMetadata = {
 	description: "Auto-detect per prompt (low–xhigh)",
 };
 
+const ULTRA_THINKING_METADATA: ConfiguredThinkingLevelMetadata = {
+	value: ULTRA_THINKING,
+	label: "ultra",
+	description: "Extra-high reasoning with proactive parallel workers",
+};
+
 /**
  * Parses a configured thinking selector, accepting `auto` in addition to every
  * value {@link parseThinkingLevel} accepts. {@link parseThinkingLevel} itself
@@ -162,12 +181,45 @@ const AUTO_THINKING_METADATA: ConfiguredThinkingLevelMetadata = {
  */
 export function parseConfiguredThinkingLevel(value: string | null | undefined): ConfiguredThinkingLevel | undefined {
 	if (value === AUTO_THINKING) return AUTO_THINKING;
+	if (value === ULTRA_THINKING) return ULTRA_THINKING;
+	return parseThinkingLevel(value);
+}
+
+/**
+ * Parses the thinking selector on an ordinary named-agent definition. Ultra is
+ * a session policy with its own private worker runtime, not a named-agent
+ * thinking level, so this boundary accepts only concrete levels and `auto`.
+ */
+export function parseNamedAgentThinkingLevel(value: string | null | undefined): NamedAgentThinkingLevel | undefined {
+	if (value === AUTO_THINKING) return AUTO_THINKING;
 	return parseThinkingLevel(value);
 }
 
 /** Returns display metadata for a configured selector, including `auto`. */
 export function getConfiguredThinkingLevelMetadata(level: ConfiguredThinkingLevel): ConfiguredThinkingLevelMetadata {
-	return level === AUTO_THINKING ? AUTO_THINKING_METADATA : getThinkingLevelMetadata(level);
+	if (level === AUTO_THINKING) return AUTO_THINKING_METADATA;
+	if (level === ULTRA_THINKING) return ULTRA_THINKING_METADATA;
+	return getThinkingLevelMetadata(level);
+}
+
+/**
+ * Runtime thinking choices for a model. Ultra remains distinct from ordinary
+ * XHigh while resolving to that effort internally. On models whose supported
+ * ceiling is lower, provider clamping still applies; models without a
+ * controllable effort surface do not advertise Ultra.
+ */
+export function getAvailableConfiguredThinkingLevels(model: Model | undefined): ConfiguredThinkingLevel[] {
+	const efforts = model ? getSupportedEfforts(model) : [...THINKING_EFFORTS];
+	if (!model?.reasoning || efforts.length === 0) return [...efforts];
+	const levels: ConfiguredThinkingLevel[] = [...efforts];
+	const xhighIndex = levels.indexOf(ThinkingLevel.XHigh);
+	if (xhighIndex >= 0) {
+		levels.splice(xhighIndex + 1, 0, ULTRA_THINKING);
+		return levels;
+	}
+	const maxIndex = levels.indexOf(ThinkingLevel.Max);
+	levels.splice(maxIndex >= 0 ? maxIndex : levels.length, 0, ULTRA_THINKING);
+	return levels;
 }
 
 /**
@@ -176,7 +228,12 @@ export function getConfiguredThinkingLevelMetadata(level: ConfiguredThinkingLeve
  * for the flag's `options` list, shell completions, and the "invalid level"
  * warning so all three stay in sync.
  */
-export const CLI_THINKING_LEVELS: readonly string[] = [ThinkingLevel.Off, ...THINKING_EFFORTS, AUTO_THINKING];
+export const CLI_THINKING_LEVELS: readonly string[] = [
+	ThinkingLevel.Off,
+	AUTO_THINKING,
+	...THINKING_EFFORTS,
+	ULTRA_THINKING,
+];
 
 /**
  * Parses a `--thinking` CLI value. Accepts every {@link parseConfiguredThinkingLevel}

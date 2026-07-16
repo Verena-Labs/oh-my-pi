@@ -17,7 +17,6 @@ import { astGrepToolRenderer } from "./ast-grep";
 import { bashToolRenderer } from "./bash";
 import { browserToolRenderer } from "./browser/render";
 import { debugToolRenderer } from "./debug";
-import { createDelegateToolRenderer } from "./delegate";
 import { evalToolRenderer } from "./eval-render";
 import { githubToolRenderer } from "./gh-renderer";
 import { globToolRenderer } from "./glob";
@@ -32,6 +31,7 @@ import { resolveToolRenderer } from "./resolve";
 import { searchToolBm25Renderer } from "./search-tool-bm25";
 import { sshToolRenderer } from "./ssh";
 import { todoToolRenderer } from "./todo";
+import { createUltraToolRenderer } from "./ultra";
 import { writeToolRenderer } from "./write";
 
 /**
@@ -114,17 +114,10 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	github: githubToolRenderer as ToolRenderer,
 	goal: goalToolRenderer as ToolRenderer,
 	web_search: webSearchToolRenderer as ToolRenderer,
-	delegate_spawn: createDelegateToolRenderer("spawn") as ToolRenderer,
-	delegate_send: createDelegateToolRenderer("send") as ToolRenderer,
-	delegate_wait: createDelegateToolRenderer("wait") as ToolRenderer,
-	delegate_kill: createDelegateToolRenderer("kill") as ToolRenderer,
-	delegate_list: createDelegateToolRenderer("list") as ToolRenderer,
-	// Read-only transcript compatibility for sessions recorded before the public
-	// Delegate rename. These keys do not register callable legacy tools.
-	vibe_spawn: createDelegateToolRenderer("spawn") as ToolRenderer,
-	vibe_send: createDelegateToolRenderer("send") as ToolRenderer,
-	vibe_wait: createDelegateToolRenderer("wait") as ToolRenderer,
-	vibe_kill: createDelegateToolRenderer("kill") as ToolRenderer,
-	vibe_list: createDelegateToolRenderer("list") as ToolRenderer,
+	ultra_spawn: createUltraToolRenderer("spawn") as ToolRenderer,
+	ultra_send: createUltraToolRenderer("send") as ToolRenderer,
+	ultra_wait: createUltraToolRenderer("wait") as ToolRenderer,
+	ultra_kill: createUltraToolRenderer("kill") as ToolRenderer,
+	ultra_list: createUltraToolRenderer("list") as ToolRenderer,
 	write: writeToolRenderer as ToolRenderer,
 };

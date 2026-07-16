@@ -4,7 +4,12 @@ import { SHAPE_VARIANT_NAMES } from "@oh-my-pi/snapcompact";
 import { DEFAULT_RELAY_URL } from "../collab/protocol";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS, STT_MODEL_VALUES } from "../stt/models";
 import { STT_SUBMIT_TRIGGER_OPTIONS, STT_SUBMIT_TRIGGER_VALUES } from "../stt/submit-trigger";
-import { AUTO_THINKING, getConfiguredThinkingLevelMetadata, getThinkingLevelMetadata } from "../thinking";
+import {
+	AUTO_THINKING,
+	getConfiguredThinkingLevelMetadata,
+	getThinkingLevelMetadata,
+	ULTRA_THINKING,
+} from "../thinking";
 import {
 	TINY_MODEL_DEVICE_DEFAULT,
 	TINY_MODEL_DEVICE_SETTING_OPTIONS,
@@ -988,7 +993,7 @@ export const SETTINGS_SCHEMA = {
 	// Reasoning and prompts
 	defaultThinkingLevel: {
 		type: "enum",
-		values: [...THINKING_EFFORTS, AUTO_THINKING],
+		values: [...THINKING_EFFORTS, AUTO_THINKING, ULTRA_THINKING],
 		default: "high",
 		ui: {
 			tab: "model",
@@ -998,6 +1003,7 @@ export const SETTINGS_SCHEMA = {
 			options: [
 				getConfiguredThinkingLevelMetadata(AUTO_THINKING),
 				...THINKING_EFFORTS.map(getThinkingLevelMetadata),
+				getConfiguredThinkingLevelMetadata(ULTRA_THINKING),
 			],
 		},
 	},

@@ -58,7 +58,6 @@ import type { CollabHost } from "../collab/host";
 import { KeybindingsManager } from "../config/keybindings";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { isSettingsInitialized, onStatusLineSessionAccentChanged, Settings, settings } from "../config/settings";
-import { DelegateSessionRegistry } from "../delegate/runtime";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
 	AutocompleteProviderFactory,
@@ -93,7 +92,7 @@ import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" wit
 import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compact-instructions.md" with {
 	type: "text",
 };
-import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import type { AgentRegistry } from "../registry/agent-registry";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -434,7 +433,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	planModePaused = false;
 	goalModeEnabled = false;
 	goalModePaused = false;
-	delegateModeEnabled = false;
 	planModePlanFilePath: string | undefined = undefined;
 	loopModeEnabled = false;
 	loopPrompt: string | undefined = undefined;
@@ -527,7 +525,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #changelogMarkdown: string | undefined;
 	#planModePreviousTools: string[] | undefined;
 	#goalModePreviousTools: string[] | undefined;
-	#delegateModePreviousTools: string[] | undefined;
 	#goalContinuationTimer: NodeJS.Timeout | undefined;
 	#goalTurnHadToolCalls = false;
 	#goalContinuationTurnInFlight = false;
@@ -1936,11 +1933,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
-	#updateDelegateModeStatus(): void {
-		this.statusLine.setDelegateModeStatus(this.delegateModeEnabled ? { enabled: true } : undefined);
-		this.ui.requestRender();
-	}
-
 	#updateGoalModeStatus(): void {
 		const status =
 			this.goalModeEnabled || this.goalModePaused
@@ -2109,18 +2101,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#cancelGoalContinuation();
 			this.#updateGoalModeStatus();
 		}
-
-		if (this.delegateModeEnabled) {
-			await this.session.deactivateDelegateTools(this.#delegateModePreviousTools ?? []);
-			this.session.setDelegateModeState(undefined);
-			this.delegateModeEnabled = false;
-			this.#delegateModePreviousTools = undefined;
-			await DelegateSessionRegistry.global().killAll(
-				this.session.getAgentId() ?? MAIN_AGENT_ID,
-				this.session.asyncJobManager,
-			);
-			this.#updateDelegateModeStatus();
-		}
 	}
 
 	/** Reconcile mode state from session entries on resume/switch. */
@@ -2160,12 +2140,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		this.session.goalRuntime.clearAccounting();
-		// Resume old sessions written before the public Vibe -> Delegate rename,
-		// but persist and advertise only the new Delegate identity from now on.
-		if (sessionContext.mode === "delegate" || sessionContext.mode === "vibe") {
-			await this.#enterDelegateMode();
-			return;
-		}
 		if (!this.session.settings.get("plan.enabled")) {
 			// Clear stale plan/plan_paused mode so re-enabling the setting
 			// later doesn't unexpectedly restore an old plan session.
@@ -2192,11 +2166,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Exit goal mode first.");
 			return;
 		}
-		if (this.delegateModeEnabled) {
-			this.showWarning("Exit delegate mode first.");
-			return;
-		}
-
 		this.planModePaused = false;
 
 		const planFilePath = options?.planFilePath ?? (await this.#getPlanFilePath());
@@ -2361,10 +2330,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (this.planModeEnabled || this.planModePaused) {
 			this.showWarning("Exit plan mode first.");
-			return;
-		}
-		if (this.delegateModeEnabled) {
-			this.showWarning("Exit delegate mode first.");
 			return;
 		}
 		const previousTools = this.session.getActiveToolNames().filter(name => name !== "goal");
@@ -2883,10 +2848,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Exit goal mode first.");
 			return;
 		}
-		if (this.delegateModeEnabled) {
-			this.showWarning("Exit delegate mode first.");
-			return;
-		}
 		if (this.planModeEnabled) {
 			const planFilePath = this.planModePlanFilePath ?? (await this.#getPlanFilePath());
 			if (await this.#hasPlanModeDraftContent(planFilePath)) {
@@ -2922,82 +2883,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
-	/**
-	 * `/delegate` toggle. Entering installs the ephemeral delegate tools, strips the
-	 * active toolset down to `read` plus those tools, and injects the director
-	 * context. Exiting unregisters them, restores the previous toolset, and kills
-	 * every worker session so workers cannot outlive the mode that directs them.
-	 */
-	async handleDelegateModeCommand(initialPrompt?: string): Promise<void> {
-		if (this.delegateModeEnabled) {
-			await this.#exitDelegateMode();
-			return;
-		}
-		if (this.planModeEnabled || this.planModePaused) {
-			this.showWarning("Exit plan mode first.");
-			return;
-		}
-		if (this.goalModeEnabled || this.goalModePaused) {
-			this.showWarning("Exit goal mode first.");
-			return;
-		}
-		await this.#enterDelegateMode();
-		if (initialPrompt && this.onInputCallback) {
-			this.onInputCallback(this.startPendingSubmission({ text: initialPrompt }));
-		}
-	}
-
-	async #enterDelegateMode(): Promise<void> {
-		if (this.delegateModeEnabled) {
-			return;
-		}
-		if (this.planModeEnabled || this.planModePaused) {
-			this.showWarning("Exit plan mode first.");
-			return;
-		}
-		if (this.goalModeEnabled || this.goalModePaused) {
-			this.showWarning("Exit goal mode first.");
-			return;
-		}
-
-		const previousTools = this.session.getActiveToolNames();
-		await this.session.activateDelegateTools(["read"]);
-		this.#delegateModePreviousTools = previousTools;
-		this.delegateModeEnabled = true;
-		// Suppress cache-miss marker on the next turn: delegate mode changes the
-		// injected context, which predictably invalidates the cache.
-		this.lastAssistantUsage = undefined;
-		this.session.setDelegateModeState({ enabled: true });
-		if (this.session.isStreaming) {
-			await this.session.sendDelegateModeContext({ deliverAs: "steer" });
-		}
-		this.#updateDelegateModeStatus();
-		this.sessionManager.appendModeChange("delegate");
-		this.showStatus("Delegate mode enabled. You direct fast/good worker sessions; toolset is read + delegate tools.");
-	}
-
-	async #exitDelegateMode(): Promise<void> {
-		if (!this.delegateModeEnabled) {
-			return;
-		}
-		await this.session.deactivateDelegateTools(this.#delegateModePreviousTools ?? []);
-		this.session.setDelegateModeState(undefined);
-		this.delegateModeEnabled = false;
-		this.#delegateModePreviousTools = undefined;
-		this.lastAssistantUsage = undefined;
-		const killed = await DelegateSessionRegistry.global().killAll(
-			this.session.getAgentId() ?? MAIN_AGENT_ID,
-			this.session.asyncJobManager,
-		);
-		this.#updateDelegateModeStatus();
-		this.sessionManager.appendModeChange("none");
-		this.showStatus(
-			killed > 0
-				? `Delegate mode disabled. Killed ${killed} worker session${killed === 1 ? "" : "s"}.`
-				: "Delegate mode disabled.",
-		);
-	}
-
 	async #handleGoalBudgetCommand(rawBudget: string): Promise<void> {
 		const state = this.session.getGoalModeState();
 		if (!this.goalModeEnabled || !state?.enabled) {
@@ -3028,10 +2913,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		try {
 			if (this.planModeEnabled || this.planModePaused) {
 				this.showWarning("Exit plan mode first.");
-				return;
-			}
-			if (this.delegateModeEnabled) {
-				this.showWarning("Exit delegate mode first.");
 				return;
 			}
 			if (!this.session.settings.get("goal.enabled")) {

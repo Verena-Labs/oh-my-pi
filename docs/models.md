@@ -421,6 +421,13 @@ So a model can exist in registry but not be selectable until auth is available.
 - glob scope patterns in `--models` (e.g. `openai/*`, `*sonnet*`)
 - optional `:thinkingLevel` suffix (`off|minimal|low|medium|high|xhigh|max`)
 
+The coding-agent `ultra` composite selector is intentionally not a model suffix.
+It preserves the active model, requests `xhigh` clamped to that model's highest
+supported effort, and activates same-model Ultra workers. It is offered only for
+models with controllable reasoning effort. Ordinary `xhigh` remains a distinct
+selectable tier that changes only provider reasoning, and the independently
+configured `slow` role may select a different model.
+
 `--provider` is legacy; `--model` is preferred.
 
 Resolution precedence for exact selectors:
@@ -447,6 +454,13 @@ Supported model roles:
 - `default`, `smol`, `slow`, `vision`, `plan`, `designer`, `commit`, `tiny`, `task`, `advisor`
 
 The `tiny` role overrides the online model used for lightweight background tasks (session titles, memory, `auto`-thinking difficulty classification, unexpected-stop detection); when unset, these fall back to `@smol`. Pick one in `/models`.
+
+Ultra is not a model role and does not appear in this list. Its workers do not
+resolve `smol`, `slow`, `task`, or another named role. Each direct worker
+snapshots the main session's current model and clamped Ultra effort when spawned
+through a separate generic worker definition; every descendant inherits that
+root snapshot. Existing worker trees remain pinned to their spawn-time model and
+effort, while later direct spawns use the main session's newly selected model.
 
 Role aliases like `@smol` expand through `settings.modelRoles`; `*` selects `@default`. Quote `@` aliases in YAML values (`fable: "@slow"`). Each role value can also append a thinking selector such as `:minimal`, `:low`, `:medium`, or `:high`.
 

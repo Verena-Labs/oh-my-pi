@@ -37,7 +37,7 @@ Pi retains OMP's Pi-compatible core plus the matrix-selected native behavior:
   artifacts, Obsidian vaults, shell/PTY, LSP, browser, image inspection and
   conditional image generation;
 - plan/review, persistent goals and TODOs, typed subagents and durable results,
-  Agent Hub, peer messaging, advisor, Delegate Mode, Ask, jobs, bounded loops,
+  Agent Hub, peer messaging, advisor, Ultra orchestration, Ask, jobs, bounded loops,
   supervised processes, prewalk, and YAML workflows;
 - project memory plus local, Mnemopi, and Hindsight memory operations;
 - ordinary Pi extensions, custom tools/commands, the full plugin marketplace
@@ -56,6 +56,23 @@ memory_edit retain recall reflect learn
 `learn` is memory-only. Agent-managed skill creation remains unavailable.
 Conditional image generation is added only when its configured provider is
 available.
+
+Ultra is a composite thinking tier, not a slash-command mode or a model role.
+Selecting it keeps the main agent on its current model, requests `xhigh`
+reasoning clamped to the highest effort that model supports, preserves
+the main agent's complete active toolset, and adds `ultra_spawn`, `ultra_send`,
+`ultra_wait`, `ultra_kill`, and `ultra_list`. Ultra is offered only when the
+current model exposes controllable reasoning effort. Each direct Ultra worker
+snapshots the main agent's current model and clamped effort when spawned through
+one generic full-capability worker definition outside the ordinary named
+task-agent catalog; every descendant inherits that root snapshot. Existing
+worker trees remain pinned to their spawn-time model and effort, while later
+direct spawns use the main agent's newly selected model. There is no worker-model
+or worker-tier selector. Ordinary `xhigh`
+remains a separate reasoning-only selection. The existing Agent Hub,
+persistent-session lifecycle, and live multi-worker wall remain the inspection
+and control surfaces. `/ultra`, `/delegate`, `/vibe`, `delegate_*`, and
+`vibe_*` are not public or compatibility surfaces.
 
 ## Narrowed resources and web search
 

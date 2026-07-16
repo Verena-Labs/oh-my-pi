@@ -16,6 +16,7 @@ import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import { ULTRA_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import type { Rule } from "../../src/capability/rule";
 
@@ -212,5 +213,47 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(result.exitCode).toBe(0);
 		const forwarded = spy.mock.calls[0]?.[0];
 		expect(forwarded?.thinkingLevel).toBe(ThinkingLevel.Low);
+	});
+
+	it("preserves Ultra orchestration below the recursion limit", async () => {
+		const settings = Settings.isolated();
+		settings.set("task.maxRecursionDepth", 2);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "ultra-recursive-worker",
+			settings,
+			thinkingLevel: ThinkingLevel.XHigh,
+			ultraWorker: true,
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.taskDepth).toBe(1);
+		expect(forwarded?.ultraWorker).toBe(true);
+		expect(forwarded?.thinkingLevel).toBe(ULTRA_THINKING);
+	});
+
+	it("uses concrete xhigh for an Ultra worker at the recursion limit", async () => {
+		const settings = Settings.isolated();
+		settings.set("task.maxRecursionDepth", 1);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "ultra-terminal-worker",
+			settings,
+			thinkingLevel: ThinkingLevel.XHigh,
+			ultraWorker: true,
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.taskDepth).toBe(1);
+		expect(forwarded?.ultraWorker).toBe(true);
+		expect(forwarded?.thinkingLevel).toBe(ThinkingLevel.XHigh);
 	});
 });
