@@ -6,7 +6,7 @@
 
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
-import { recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
+import { recordHandoff, resolveTelemetry, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
 import { logger, popLoopPhase, prompt, pushLoopPhase, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Rule } from "../capability/rule";
@@ -42,7 +42,7 @@ import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import { SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
-import type { ConfiguredThinkingLevel } from "../thinking";
+import { type ConfiguredThinkingLevel, ULTRA_THINKING } from "../thinking";
 import type { ContextFileEntry, ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
 import { isIrcEnabled } from "../tools/irc";
@@ -315,6 +315,8 @@ export interface ExecutorOptions {
 	 */
 	parentActiveModelPattern?: string;
 	thinkingLevel?: ConfiguredThinkingLevel;
+	/** Marks this run as an Ultra worker whose descendants inherit Ultra orchestration. */
+	ultraWorker?: boolean;
 	outputSchema?: unknown;
 	/**
 	 * Caller supplied a schema that supersedes the agent's native output prompt.
@@ -2447,7 +2449,13 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					piAllowsModelFallback() && !model && modelOverride !== undefined
 						? `${SUBAGENT_RETRY_FALLBACK_ROLE_PREFIX}${id}`
 						: undefined,
-				thinkingLevel: effectiveThinkingLevel,
+				thinkingLevel:
+					options.ultraWorker === true
+						? atMaxDepth
+							? ThinkingLevel.XHigh
+							: ULTRA_THINKING
+						: effectiveThinkingLevel,
+				ultraWorker: options.ultraWorker,
 				toolNames,
 				outputSchema,
 				requireYieldTool: true,

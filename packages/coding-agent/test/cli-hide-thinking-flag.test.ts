@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
-import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
+import { AUTO_THINKING, ULTRA_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 
 describe("parseArgs — --hide-thinking flag", () => {
 	it("parses --hide-thinking as a boolean flag", () => {
@@ -52,9 +52,13 @@ describe("parseArgs — --thinking flag", () => {
 		expect(parseArgs(["--thinking=off"]).thinking).toBe(ThinkingLevel.Off);
 	});
 
-	it("accepts auto and every concrete effort including max", () => {
+	it("accepts auto, Ultra, and every concrete effort including distinct xhigh", () => {
 		expect(parseArgs(["--thinking", "auto"]).thinking).toBe(AUTO_THINKING);
+		expect(parseArgs(["--thinking", "ultra"]).thinking).toBe(ULTRA_THINKING);
+		expect(parseArgs(["--thinking=ultra"]).thinking).toBe(ULTRA_THINKING);
 		expect(parseArgs(["--thinking", "medium"]).thinking).toBe(Effort.Medium);
+		expect(parseArgs(["--thinking", "xhigh"]).thinking).toBe(Effort.XHigh);
+		expect(parseArgs(["--thinking", "xhigh"]).thinking).not.toBe(ULTRA_THINKING);
 		expect(parseArgs(["--thinking", "max"]).thinking).toBe(ThinkingLevel.Max);
 	});
 

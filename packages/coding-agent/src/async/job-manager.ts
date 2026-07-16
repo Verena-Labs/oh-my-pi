@@ -45,9 +45,9 @@ export interface AsyncJob {
 	 */
 	ownerId?: string;
 	/**
-	 * Registry id of the subagent this job runs (task/tan/delegate jobs). Lets
+	 * Registry id of the subagent this job runs (task/tan/Ultra jobs). Lets
 	 * job-view code link a job row to its AgentRegistry ref even when the job
-	 * id differs from the agent id (delegate turn jobs, tan clones).
+	 * id differs from the agent id (Ultra turn jobs, tan clones).
 	 */
 	agentId?: string;
 	/**

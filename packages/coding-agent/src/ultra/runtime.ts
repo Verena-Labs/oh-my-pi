@@ -1,8 +1,8 @@
 /**
- * Delegate mode worker-session runtime.
+ * Ultra worker-session runtime.
  *
- * Owns the persistent, addressable worker sessions ("CLIs") the delegate director
- * drives. Each worker is a real task-executor subagent with full tool access:
+ * Owns the persistent, addressable worker sessions the Ultra main agent drives.
+ * Each worker is a real task-executor subagent with full tool access:
  * spawned once through {@link runSubprocess} (keep-alive), continued
  * turn-by-turn through {@link runSubagentFollowUpTurn}. Between turns the
  * worker lives in the AgentRegistry / AgentLifecycleManager as an adopted idle
@@ -11,18 +11,20 @@
  *
  * Every turn runs as an AsyncJobManager job, so a completed turn self-delivers
  * into the director's conversation exactly like an async `task` result, and
- * `delegate_wait` can block on the first settling turn with `job`-poll semantics.
+ * `ultra_wait` can block on the first settling turn with `job`-poll semantics.
  */
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../async/job-manager";
-import { resolveAgentModelPatterns } from "../config/model-resolver";
+import { formatModelStringWithRouting } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
-import delegateTurnResultTemplate from "../prompts/tools/delegate-turn-result.md" with { type: "text" };
+import ultraWorkerPrompt from "../prompts/agents/ultra-worker.md" with { type: "text" };
+import ultraTurnResultTemplate from "../prompts/tools/ultra-turn-result.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { getBundledAgent } from "../task/agents";
@@ -34,26 +36,30 @@ import type { ToolSession } from "../tools";
 import { formatDuration } from "../tools/render-utils";
 import { ToolError } from "../tools/tool-errors";
 
-/** The two worker CLI flavors the director drives. */
-export type DelegateCli = "fast" | "good";
-
 /**
- * CLI flavor → bundled agent type. This IS the model-tier mapping: `sonic`
- * carries `model: "@smol"` (the configured fast/low-latency role) and `task`
- * carries `model: "@task"` (inherits the session's strong model).
- * Resolution goes through {@link resolveAgentModelPatterns} exactly like a
- * `task` spawn, so `task.agentModelOverrides` and model-role settings apply.
+ * Build the private Ultra worker definition from the general task prompt.
+ * The clone is never added to ordinary agent discovery: Ultra owns its public
+ * spawn surface, exact model, reasoning policy, and recursive orchestration.
  */
-export const DELEGATE_CLI_AGENT: Record<DelegateCli, string> = {
-	fast: "sonic",
-	good: "task",
-};
+function createUltraWorkerAgent(): AgentDefinition {
+	const taskAgent = getBundledAgent("task");
+	if (!taskAgent) throw new ToolError('Bundled agent "task" is unavailable for Ultra workers.');
+	return {
+		...taskAgent,
+		name: "ultra",
+		description: "Generic fully capable Ultra worker",
+		systemPrompt: prompt.render(ultraWorkerPrompt),
+		model: undefined,
+		thinkingLevel: ThinkingLevel.XHigh,
+		spawns: undefined,
+	};
+}
 
 /** Worker session lifecycle as shown to the director. */
-export type DelegateSessionState = "starting" | "running" | "idle" | "dead";
+export type UltraSessionState = "starting" | "running" | "idle" | "dead";
 
 /** One completed tool call in the per-turn activity trace. */
-interface DelegateTraceEntry {
+interface UltraTraceEntry {
 	tool: string;
 	args: string;
 	endMs: number;
@@ -63,35 +69,34 @@ interface DelegateTraceEntry {
 const TURN_TRACE_CAP = 40;
 /** Cap on a single rendered trace line. */
 const TRACE_LINE_MAX = 120;
-/** Default `delegate_wait` window when no timeout was given (ms). */
+/** Default `ultra_wait` window when no timeout was given (ms). */
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 /** Response text cap inside a delivered turn result; full output stays at agent://<id>. */
 const RESPONSE_PREVIEW_MAX = 6000;
 
-interface DelegateTurn {
+interface UltraTurn {
 	jobId: string;
 	message: string;
 	startedAt: number;
 	/** Trace of tool calls completed during this turn, oldest first. */
-	trace: DelegateTraceEntry[];
+	trace: UltraTraceEntry[];
 	/** Total completed tool calls (trace may be narrower than this). */
 	toolCount: number;
 }
 
-interface DelegateRecord {
+interface UltraRecord {
 	id: string;
-	cli: DelegateCli;
 	ownerId: string;
 	agent: AgentDefinition;
-	modelOverride?: string | string[];
-	state: DelegateSessionState;
+	modelOverride: string;
+	state: UltraSessionState;
 	createdAt: number;
 	lastActivityAt: number;
 	/** One-line gist of the latest activity (intent, tool, or result preview). */
 	lastActivity?: string;
 	/** Resolved model display string once known. */
 	resolvedModel?: string;
-	turn?: DelegateTurn;
+	turn?: UltraTurn;
 	/** Live view of the in-flight turn (current tool, intent, streamed text tail). */
 	live?: {
 		currentTool?: string;
@@ -113,10 +118,9 @@ interface DelegateRecord {
  * now (tool trace, current tool, streamed text tail) plus roster metadata.
  * Every string is already one-line sanitized.
  */
-export interface DelegateScreenSnapshot {
+export interface UltraScreenSnapshot {
 	id: string;
-	cli: DelegateCli;
-	state: DelegateSessionState;
+	state: UltraSessionState;
 	model?: string;
 	turns: number;
 	queued: number;
@@ -135,12 +139,12 @@ export interface DelegateScreenSnapshot {
 	lastActivityAt: number;
 }
 
-export interface DelegateSpawnOutcome {
+export interface UltraSpawnOutcome {
 	id: string;
 	jobId: string;
 }
 
-export interface DelegateSendOutcome {
+export interface UltraSendOutcome {
 	id: string;
 	/**
 	 * - `turn`: a new background turn was started (`jobId` set).
@@ -151,13 +155,13 @@ export interface DelegateSendOutcome {
 	jobId?: string;
 }
 
-export interface DelegateKillOutcome {
+export interface UltraKillOutcome {
 	id: string;
 	/** True when an in-flight turn job was cancelled along the way. */
 	cancelledTurn: boolean;
 }
 
-export interface DelegateWaitOutcome {
+export interface UltraWaitOutcome {
 	/** Watched sessions whose snapshotted turn settled during (or before) the wait.
 	 * May overlap `stillRunning` when a queued follow-up turn already started. */
 	settled: Array<{ id: string; jobId: string; status: "completed" | "failed" | "cancelled"; resultText: string }>;
@@ -172,7 +176,7 @@ function firstLine(text: string, max = 100): string {
 }
 
 /** Merge the monitor's rolling `recentTools` window (newest first) into the per-turn trace (oldest first). */
-function mergeTrace(turn: DelegateTurn, progress: AgentProgress): void {
+function mergeTrace(turn: UltraTurn, progress: AgentProgress): void {
 	turn.toolCount = progress.toolCount;
 	for (let i = progress.recentTools.length - 1; i >= 0; i--) {
 		const entry = progress.recentTools[i];
@@ -185,44 +189,44 @@ function mergeTrace(turn: DelegateTurn, progress: AgentProgress): void {
 }
 
 /** Thrown from a turn job body so the job manager marks the job failed while carrying the formatted result. */
-export class DelegateTurnError extends Error {}
+export class UltraTurnError extends Error {}
 
 /**
- * Process-global registry of delegate worker sessions, scoped per owner agent id
- * (same convention as AsyncJobManager owner filters). The interactive mode
- * kills an owner's sessions on delegate-mode exit via {@link killAll}.
+ * Process-global registry of ultra worker sessions, scoped per owner agent id
+ * (same convention as AsyncJobManager owner filters). The session policy
+ * kills an owner's sessions when Ultra thinking exits via {@link killAll}.
  */
-export class DelegateSessionRegistry {
-	static #global: DelegateSessionRegistry | undefined;
+export class UltraSessionRegistry {
+	static #global: UltraSessionRegistry | undefined;
 
-	static global(): DelegateSessionRegistry {
-		if (!DelegateSessionRegistry.#global) {
-			DelegateSessionRegistry.#global = new DelegateSessionRegistry();
+	static global(): UltraSessionRegistry {
+		if (!UltraSessionRegistry.#global) {
+			UltraSessionRegistry.#global = new UltraSessionRegistry();
 		}
-		return DelegateSessionRegistry.#global;
+		return UltraSessionRegistry.#global;
 	}
 
 	/** Reset the global registry. Test-only. */
 	static resetGlobalForTests(): void {
-		DelegateSessionRegistry.#global = undefined;
+		UltraSessionRegistry.#global = undefined;
 	}
 
-	readonly #records = new Map<string, DelegateRecord>();
+	readonly #records = new Map<string, UltraRecord>();
 
 	#manager(session: ToolSession): AsyncJobManager {
 		const manager = session.asyncJobManager;
 		if (!manager) {
-			throw new ToolError("Delegate sessions require async execution (no background job manager is available).");
+			throw new ToolError("Ultra sessions require async execution (no background job manager is available).");
 		}
 		return manager;
 	}
 
-	#record(owner: string, id: string): DelegateRecord {
+	#record(owner: string, id: string): UltraRecord {
 		const record = this.#records.get(id.trim());
 		if (!record || record.ownerId !== owner) {
 			const roster = this.listIds(owner);
 			throw new ToolError(
-				`Unknown delegate session "${id}".${roster.length > 0 ? ` Active sessions: ${roster.join(", ")}` : " No sessions — spawn one with delegate_spawn."}`,
+				`Unknown ultra session "${id}".${roster.length > 0 ? ` Active sessions: ${roster.join(", ")}` : " No sessions — spawn one with ultra_spawn."}`,
 			);
 		}
 		return record;
@@ -242,9 +246,9 @@ export class DelegateSessionRegistry {
 	 * tool, and streamed text tail. All strings are one-line sanitized here so
 	 * renderers can print them verbatim.
 	 */
-	screens(owner: string, ids?: string[]): DelegateScreenSnapshot[] {
+	screens(owner: string, ids?: string[]): UltraScreenSnapshot[] {
 		const wanted = ids?.length ? new Set(ids.map(id => id.trim())) : undefined;
-		const records: DelegateRecord[] = [];
+		const records: UltraRecord[] = [];
 		for (const record of this.#records.values()) {
 			if (record.ownerId !== owner) continue;
 			if (wanted && !wanted.has(record.id)) continue;
@@ -254,7 +258,6 @@ export class DelegateSessionRegistry {
 		records.sort((a, b) => a.createdAt - b.createdAt);
 		return records.map(record => ({
 			id: record.id,
-			cli: record.cli,
 			state: record.state,
 			model: record.resolvedModel,
 			turns: record.turnCount,
@@ -276,26 +279,13 @@ export class DelegateSessionRegistry {
 	}
 
 	/** Spawn a persistent worker session and start its first turn in the background. */
-	async spawn(
-		session: ToolSession,
-		args: { cli: DelegateCli; name?: string; prompt: string },
-	): Promise<DelegateSpawnOutcome> {
+	async spawn(session: ToolSession, args: { name?: string; prompt: string }): Promise<UltraSpawnOutcome> {
 		const owner = session.getAgentId?.() ?? MAIN_AGENT_ID;
 		const manager = this.#manager(session);
-		const agentName = DELEGATE_CLI_AGENT[args.cli];
-		const agent = getBundledAgent(agentName);
-		if (!agent) {
-			throw new ToolError(`Bundled agent "${agentName}" for delegate cli "${args.cli}" is unavailable.`);
-		}
-
-		const agentModelOverrides = session.settings.get("task.agentModelOverrides");
-		const modelOverride = resolveAgentModelPatterns({
-			settingsOverride: agentModelOverrides[agentName],
-			agentModel: agent.model,
-			settings: session.settings,
-			activeModelPattern: session.getActiveModelString?.(),
-			fallbackModelPattern: session.getModelString?.(),
-		});
+		const agent = createUltraWorkerAgent();
+		const activeModel = session.getActiveModel?.();
+		const modelOverride = activeModel ? formatModelStringWithRouting(activeModel) : session.getActiveModelString?.();
+		if (!modelOverride) throw new ToolError("Ultra workers require an active model.");
 
 		if (!session.agentOutputManager) {
 			session.agentOutputManager = new AgentOutputManager(session.getArtifactsDir ?? (() => null));
@@ -303,9 +293,8 @@ export class DelegateSessionRegistry {
 		const requestedName = args.name?.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 48);
 		const id = await session.agentOutputManager.allocate(requestedName || generateTaskName());
 
-		const record: DelegateRecord = {
+		const record: UltraRecord = {
 			id,
-			cli: args.cli,
 			ownerId: owner,
 			agent,
 			modelOverride,
@@ -332,11 +321,11 @@ export class DelegateSessionRegistry {
 	 * otherwise → queued for the next turn; idle/parked → starts a new
 	 * background turn immediately.
 	 */
-	async send(session: ToolSession, args: { session: string; message: string }): Promise<DelegateSendOutcome> {
+	async send(session: ToolSession, args: { session: string; message: string }): Promise<UltraSendOutcome> {
 		const owner = session.getAgentId?.() ?? MAIN_AGENT_ID;
 		const record = this.#record(owner, args.session);
 		if (record.state === "dead") {
-			throw new ToolError(`Delegate session "${record.id}" is dead. Spawn a new one with delegate_spawn.`);
+			throw new ToolError(`Ultra session "${record.id}" is dead. Spawn a new one with ultra_spawn.`);
 		}
 		const message = args.message.trim();
 		if (!message) throw new ToolError("Message must not be empty.");
@@ -367,7 +356,7 @@ export class DelegateSessionRegistry {
 	async wait(
 		session: ToolSession,
 		args: { sessions?: string[]; timeoutMs?: number; signal?: AbortSignal },
-	): Promise<DelegateWaitOutcome> {
+	): Promise<UltraWaitOutcome> {
 		const owner = session.getAgentId?.() ?? MAIN_AGENT_ID;
 		const manager = this.#manager(session);
 		// Named sessions are watched regardless of state (a just-settled turn is
@@ -382,14 +371,14 @@ export class DelegateSessionRegistry {
 		// job's promise resolves), so re-reading record.turn after the race
 		// would inspect the *next* running job and silently drop the settled
 		// result — whose async delivery watchJobs is suppressing on our behalf.
-		const snapshots: Array<{ record: DelegateRecord; jobId: string }> = [];
+		const snapshots: Array<{ record: UltraRecord; jobId: string }> = [];
 		for (const record of watched) {
 			const jobId = record.turn?.jobId ?? record.lastJobId;
 			if (jobId) snapshots.push({ record, jobId });
 		}
 
-		const collectSettled = (): DelegateWaitOutcome["settled"] => {
-			const settled: DelegateWaitOutcome["settled"] = [];
+		const collectSettled = (): UltraWaitOutcome["settled"] => {
+			const settled: UltraWaitOutcome["settled"] = [];
 			for (const { record, jobId } of snapshots) {
 				const job = manager.getJob(jobId);
 				if (!job || job.status === "running") continue;
@@ -444,13 +433,13 @@ export class DelegateSessionRegistry {
 	}
 
 	/** Terminate a worker: cancel its in-flight turn and dispose + unregister its session. */
-	async kill(session: ToolSession, id: string): Promise<DelegateKillOutcome> {
+	async kill(session: ToolSession, id: string): Promise<UltraKillOutcome> {
 		const owner = session.getAgentId?.() ?? MAIN_AGENT_ID;
 		const record = this.#record(owner, id);
 		return this.#killRecord(record, session.asyncJobManager);
 	}
 
-	/** Kill every session belonging to `owner` (delegate-mode exit / teardown). Returns the number killed. */
+	/** Kill every session belonging to `owner` (Ultra exit / teardown). Returns the number killed. */
 	async killAll(owner: string, manager?: AsyncJobManager): Promise<number> {
 		let killed = 0;
 		for (const record of this.#records.values()) {
@@ -461,7 +450,7 @@ export class DelegateSessionRegistry {
 		return killed;
 	}
 
-	async #killRecord(record: DelegateRecord, manager: AsyncJobManager | undefined): Promise<DelegateKillOutcome> {
+	async #killRecord(record: UltraRecord, manager: AsyncJobManager | undefined): Promise<UltraKillOutcome> {
 		record.killed = true;
 		record.queue.length = 0;
 		let cancelledTurn = false;
@@ -474,7 +463,7 @@ export class DelegateSessionRegistry {
 		try {
 			await AgentLifecycleManager.global().release(record.id);
 		} catch (error) {
-			logger.warn("delegate: failed to release worker session", {
+			logger.warn("ultra: failed to release worker session", {
 				id: record.id,
 				error: error instanceof Error ? error.message : String(error),
 			});
@@ -485,14 +474,14 @@ export class DelegateSessionRegistry {
 	/** Build the ExecutorOptions for a first spawn, mirroring the `task`/eval-bridge plumbing. */
 	async #buildSpawnOptions(
 		session: ToolSession,
-		record: DelegateRecord,
+		record: UltraRecord,
 		message: string,
 		signal: AbortSignal,
 		onProgress: (progress: AgentProgress) => void,
 	): Promise<ExecutorOptions> {
 		const sessionFile = session.getSessionFile();
 		const sessionArtifactsDir = sessionFile ? sessionFile.slice(0, -6) : null;
-		const artifactsDir = sessionArtifactsDir ?? path.join(os.tmpdir(), `pi-delegate-${Snowflake.next()}`);
+		const artifactsDir = sessionArtifactsDir ?? path.join(os.tmpdir(), `pi-ultra-${Snowflake.next()}`);
 		await fs.mkdir(artifactsDir, { recursive: true });
 		if (!sessionArtifactsDir) registerArtifactsDir(artifactsDir);
 		const localProtocolOptions: LocalProtocolOptions = session.localProtocolOptions ?? {
@@ -504,14 +493,15 @@ export class DelegateSessionRegistry {
 			agent: record.agent,
 			task: message,
 			assignment: message,
-			description: `delegate ${record.cli} session`,
+			description: "ultra worker session",
 			index: 0,
 			id: record.id,
 			taskDepth: session.taskDepth ?? 0,
 			detached: true,
 			modelOverride: record.modelOverride,
-			parentActiveModelPattern: session.getActiveModelString?.(),
+			parentActiveModelPattern: record.modelOverride,
 			thinkingLevel: record.agent.thinkingLevel,
+			ultraWorker: true,
 			sessionFile,
 			persistArtifacts: Boolean(sessionFile),
 			artifactsDir,
@@ -546,12 +536,12 @@ export class DelegateSessionRegistry {
 	#registerTurnJob(
 		session: ToolSession,
 		manager: AsyncJobManager,
-		record: DelegateRecord,
+		record: UltraRecord,
 		message: string,
 		options: { first: boolean },
 	): string {
 		const turnIndex = record.turnCount + 1;
-		const turn: DelegateTurn = {
+		const turn: UltraTurn = {
 			jobId: "",
 			message,
 			startedAt: Date.now(),
@@ -577,7 +567,7 @@ export class DelegateSessionRegistry {
 
 		const jobId = manager.register(
 			"task",
-			`delegate ${record.cli} ${record.id}: ${firstLine(message, 60)}`,
+			`ultra ${record.id}: ${firstLine(message, 60)}`,
 			async ({ jobId: ownJobId, signal }) => {
 				record.state = "running";
 				record.turnCount = turnIndex;
@@ -589,7 +579,7 @@ export class DelegateSessionRegistry {
 								id: record.id,
 								agent: record.agent,
 								message,
-								description: `delegate ${record.cli} session`,
+								description: "ultra worker session",
 								signal,
 								onProgress,
 								eventBus: session.eventBus,
@@ -597,13 +587,11 @@ export class DelegateSessionRegistry {
 							});
 					return this.#settleTurn(session, manager, record, turn, ownJobId, turnIndex, result);
 				} catch (error) {
-					if (error instanceof DelegateTurnError) throw error;
+					if (error instanceof UltraTurnError) throw error;
 					this.#finishTurn(session, manager, record, ownJobId);
 					const reason = error instanceof Error ? error.message : String(error);
 					record.lastActivity = firstLine(`turn failed: ${reason}`);
-					throw new DelegateTurnError(
-						`[delegate:${record.id} cli=${record.cli} turn=${turnIndex}] turn failed: ${reason}`,
-					);
+					throw new UltraTurnError(`[ultra:${record.id} turn=${turnIndex}] turn failed: ${reason}`);
 				}
 			},
 			{ id: `${record.id}-t${turnIndex}`, agentId: record.id, ownerId: record.ownerId },
@@ -614,7 +602,7 @@ export class DelegateSessionRegistry {
 	}
 
 	/** Post-turn bookkeeping shared by success and failure paths: clear the in-flight turn, flush the queue. */
-	#finishTurn(session: ToolSession, manager: AsyncJobManager, record: DelegateRecord, settledJobId: string): void {
+	#finishTurn(session: ToolSession, manager: AsyncJobManager, record: UltraRecord, settledJobId: string): void {
 		record.lastJobId = settledJobId;
 		record.turn = undefined;
 		record.live = undefined;
@@ -631,9 +619,9 @@ export class DelegateSessionRegistry {
 		try {
 			this.#registerTurnJob(session, manager, record, nextMessage, { first: false });
 		} catch (error) {
-			// Leave the messages recoverable: a later delegate_send flushes again.
+			// Leave the messages recoverable: a later ultra_send flushes again.
 			record.queue.unshift(nextMessage);
-			logger.warn("delegate: failed to start queued follow-up turn", {
+			logger.warn("ultra: failed to start queued follow-up turn", {
 				id: record.id,
 				error: error instanceof Error ? error.message : String(error),
 			});
@@ -644,8 +632,8 @@ export class DelegateSessionRegistry {
 	#settleTurn(
 		session: ToolSession,
 		manager: AsyncJobManager,
-		record: DelegateRecord,
-		turn: DelegateTurn,
+		record: UltraRecord,
+		turn: UltraTurn,
 		settledJobId: string,
 		turnIndex: number,
 		result: SingleResult,
@@ -674,9 +662,8 @@ export class DelegateSessionRegistry {
 		let text: string;
 		try {
 			text = prompt
-				.render(delegateTurnResultTemplate, {
+				.render(ultraTurnResultTemplate, {
 					id: record.id,
-					cli: record.cli,
 					turn: turnIndex,
 					status,
 					duration: formatDuration(result.durationMs),
@@ -694,12 +681,12 @@ export class DelegateSessionRegistry {
 		} catch (error) {
 			// A formatting bug must never turn a finished worker turn into a false
 			// failure — the work is done; degrade to a plain-text assembly.
-			logger.warn("delegate: turn-result template render failed; using plain fallback", {
+			logger.warn("ultra: turn-result template render failed; using plain fallback", {
 				id: record.id,
 				error: error instanceof Error ? error.message : String(error),
 			});
 			text = [
-				`[delegate:${record.id} cli=${record.cli} turn=${turnIndex} status=${status}]`,
+				`[ultra:${record.id} turn=${turnIndex} status=${status}]`,
 				`Activity (${turn.toolCount} tool calls, ${result.requests} requests):`,
 				...traceLines.map(line => `- ${line}`),
 				"",
@@ -707,7 +694,7 @@ export class DelegateSessionRegistry {
 				response,
 			].join("\n");
 		}
-		if (failed) throw new DelegateTurnError(text);
+		if (failed) throw new UltraTurnError(text);
 		return text;
 	}
 }

@@ -1094,12 +1094,13 @@ export function resolveModelRoleValue(
 	for (const effectivePattern of effectivePatterns) {
 		const resolved = matchPatternWithContext(effectivePattern, availableModels, preferenceContext);
 		if (resolved.model) {
+			const concreteLevel = concreteThinkingLevel(resolved.thinkingLevel);
 			return {
 				model: resolved.model,
 				thinkingLevel: resolved.explicitThinkingLevel
 					? resolved.thinkingLevel === AUTO_THINKING
 						? AUTO_THINKING
-						: (resolveThinkingLevelForModel(resolved.model, resolved.thinkingLevel) ?? resolved.thinkingLevel)
+						: (resolveThinkingLevelForModel(resolved.model, concreteLevel) ?? concreteLevel)
 					: resolved.thinkingLevel,
 				explicitThinkingLevel: resolved.explicitThinkingLevel,
 				warning: resolved.warning,
@@ -1389,7 +1390,11 @@ export async function resolveModelScope(
 			if (resolved.thinkingLevel === AUTO_THINKING) {
 				addScopedModel(resolved.model, undefined, false);
 			} else {
-				addScopedModel(resolved.model, resolved.thinkingLevel, resolved.explicitThinkingLevel);
+				addScopedModel(
+					resolved.model,
+					concreteThinkingLevel(resolved.thinkingLevel),
+					resolved.explicitThinkingLevel,
+				);
 			}
 			continue;
 		}
@@ -1414,7 +1419,7 @@ export async function resolveModelScope(
 		if (thinkingLevel === AUTO_THINKING) {
 			addScopedModel(model, undefined, false);
 		} else {
-			addScopedModel(model, thinkingLevel, explicitThinkingLevel);
+			addScopedModel(model, concreteThinkingLevel(thinkingLevel), explicitThinkingLevel);
 		}
 	}
 

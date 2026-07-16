@@ -11,11 +11,16 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import {
 	AUTO_THINKING,
 	clampAutoThinkingEffort,
+	concreteThinkingLevel,
+	getAvailableConfiguredThinkingLevels,
+	getConfiguredThinkingLevelMetadata,
 	parseCliThinkingLevel,
 	parseConfiguredThinkingLevel,
 	parseEffort,
 	parseThinkingLevel,
 	resolveProvisionalAutoLevel,
+	resolveThinkingLevelForModel,
+	ULTRA_THINKING,
 } from "@oh-my-pi/pi-coding-agent/thinking";
 import type { TinyMemoryLocalModelKey } from "@oh-my-pi/pi-coding-agent/tiny/models";
 import { tinyModelClient } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
@@ -59,18 +64,82 @@ describe("auto thinking classifier helpers", () => {
 
 	it("parses configured thinking without widening provider-facing thinking selectors", () => {
 		expect(parseConfiguredThinkingLevel(AUTO_THINKING)).toBe(AUTO_THINKING);
+		expect(parseConfiguredThinkingLevel(ULTRA_THINKING)).toBe(ULTRA_THINKING);
 		expect(parseConfiguredThinkingLevel(Effort.High)).toBe(Effort.High);
+		expect(parseConfiguredThinkingLevel(Effort.XHigh)).toBe(Effort.XHigh);
 		expect(parseConfiguredThinkingLevel("bogus")).toBeUndefined();
 		expect(parseThinkingLevel(AUTO_THINKING)).toBeUndefined();
+		expect(parseThinkingLevel(ULTRA_THINKING)).toBeUndefined();
+		expect(parseEffort(ULTRA_THINKING)).toBeUndefined();
 		expect(parseThinkingLevel(ThinkingLevel.Off)).toBe(ThinkingLevel.Off);
 	});
 
 	it("parses CLI --thinking selectors while rejecting inherit", () => {
 		expect(parseCliThinkingLevel(ThinkingLevel.Off)).toBe(ThinkingLevel.Off);
 		expect(parseCliThinkingLevel(AUTO_THINKING)).toBe(AUTO_THINKING);
+		expect(parseCliThinkingLevel(ULTRA_THINKING)).toBe(ULTRA_THINKING);
+		expect(parseCliThinkingLevel(Effort.XHigh)).toBe(Effort.XHigh);
 		expect(parseCliThinkingLevel("max")).toBe(ThinkingLevel.Max);
 		expect(parseCliThinkingLevel(ThinkingLevel.Inherit)).toBeUndefined();
 		expect(parseCliThinkingLevel("bogus")).toBeUndefined();
+	});
+
+	it("keeps Ultra metadata distinct while converting it to concrete xhigh", () => {
+		expect(concreteThinkingLevel(ULTRA_THINKING)).toBe(ThinkingLevel.XHigh);
+		expect(concreteThinkingLevel(AUTO_THINKING)).toBeUndefined();
+		expect(getConfiguredThinkingLevelMetadata(ULTRA_THINKING)).toEqual({
+			value: ULTRA_THINKING,
+			label: "ultra",
+			description: "Extra-high reasoning with proactive parallel workers",
+		});
+		expect(getConfiguredThinkingLevelMetadata(ThinkingLevel.XHigh)).toEqual({
+			value: ThinkingLevel.XHigh,
+			label: "xhigh",
+			description: "Extended reasoning (~32k tokens)",
+		});
+	});
+
+	it("advertises Ultra on controllable reasoning models and clamps its concrete effort", () => {
+		const xhighModel = buildModel({
+			id: "mock-ultra-xhigh",
+			name: "Mock Ultra XHigh",
+			api: "openai-completions",
+			provider: "mock",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			thinking: { mode: "effort", efforts: [Effort.Low, Effort.High, Effort.XHigh] },
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 4096,
+		});
+		const highCeilingModel = buildModel({
+			id: "mock-ultra-high",
+			name: "Mock Ultra High",
+			api: "openai-completions",
+			provider: "mock",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			thinking: { mode: "effort", efforts: [Effort.Low, Effort.Medium, Effort.High] },
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 4096,
+		});
+
+		expect(getAvailableConfiguredThinkingLevels(xhighModel)).toEqual([
+			Effort.Low,
+			Effort.High,
+			Effort.XHigh,
+			ULTRA_THINKING,
+		]);
+		expect(getAvailableConfiguredThinkingLevels(highCeilingModel)).toEqual([
+			Effort.Low,
+			Effort.Medium,
+			Effort.High,
+			ULTRA_THINKING,
+		]);
+		expect(resolveThinkingLevelForModel(highCeilingModel, concreteThinkingLevel(ULTRA_THINKING))).toBe(Effort.High);
 	});
 
 	it("maps online 4-way classifier labels to effort levels", () => {
@@ -245,6 +314,7 @@ describe("auto thinking classifier helpers", () => {
 		expect(clampAutoThinkingEffort(devinModel, Effort.XHigh)).toBeUndefined();
 		expect(clampAutoThinkingEffort(devinModel, Effort.Max)).toBeUndefined();
 		expect(resolveProvisionalAutoLevel(devinModel)).toBeUndefined();
+		expect(getAvailableConfiguredThinkingLevels(devinModel)).not.toContain(ULTRA_THINKING);
 	});
 
 	it("parses max as a real thinking level", () => {

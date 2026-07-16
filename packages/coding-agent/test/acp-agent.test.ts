@@ -25,6 +25,7 @@ import type { PlanModeState } from "@oh-my-pi/pi-coding-agent/plan-mode/state";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SILENT_ABORT_MARKER } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { ULTRA_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import {
 	DEFAULT_TTS_LOCAL_MODEL_KEY,
 	DEFAULT_TTS_VOICE,
@@ -804,6 +805,50 @@ describe("ACP agent", () => {
 		const updatesBeforeRedundant = harness.updates.length;
 		session.setThinkingLevel("high");
 		expect(harness.updates.length).toBe(updatesBeforeRedundant);
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("advertises and selects the Ultra thinking tier", async () => {
+		const harness = await createHarness();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const thinkingOption = created.configOptions?.find(option => option.id === "thinking") as
+			| {
+					currentValue?: string;
+					options?: Array<{ value: string; name: string; description?: string }>;
+			  }
+			| undefined;
+		const ultraOption = thinkingOption?.options?.find(option => option.value === ULTRA_THINKING);
+
+		expect(ultraOption).toEqual({
+			value: ULTRA_THINKING,
+			name: ULTRA_THINKING,
+			description: "Extra-high reasoning with proactive parallel workers",
+		});
+
+		const updatesBefore = harness.updates.length;
+		const response = await harness.agent.setSessionConfigOption({
+			sessionId: created.sessionId,
+			configId: "thinking",
+			value: ULTRA_THINKING,
+		});
+
+		expect(harness.findSession(created.sessionId)?.thinkingLevel).toBe(ULTRA_THINKING);
+		const selectedThinkingOption = response.configOptions.find(option => option.id === "thinking") as
+			| { currentValue?: string }
+			| undefined;
+		expect(selectedThinkingOption?.currentValue).toBe(ULTRA_THINKING);
+
+		const configUpdates = harness.updates
+			.slice(updatesBefore)
+			.filter(
+				notification =>
+					notification.sessionId === created.sessionId &&
+					notification.update.sessionUpdate === "config_option_update",
+			);
+		expect(configUpdates).toHaveLength(1);
+		expectAcpNotifications(configUpdates);
 
 		harness.abortController.abort();
 		await Bun.sleep(0);

@@ -1,13 +1,12 @@
 /**
- * Delegate mode tools — the director's entire non-read surface.
+ * Ultra orchestration tools.
  *
- * Five thin tools over {@link DelegateSessionRegistry}: spawn/send/wait/kill/list
- * persistent worker sessions ("fast"/"good" CLIs). Spawns and sends return
+ * Five thin tools over {@link UltraSessionRegistry}: spawn/send/wait/kill/list
+ * persistent, fully capable worker sessions. Spawns and sends return
  * immediately; turn results self-deliver through the async job manager.
  *
- * The TUI renderers lean into the "you are driving little CLIs" fiction:
- * spawn/send draw a mini composer (a message typed into a tiny Claude-Code-like
- * terminal), and wait/list draw the "TV wall" — one live screen per worker,
+ * The TUI renderers present spawn/send as a mini composer and wait/list as the
+ * "TV wall" — one live screen per worker,
  * stacked, each showing its tool calls and streamed text as it works.
  */
 import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
@@ -15,79 +14,68 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
-import {
-	type DelegateCli,
-	type DelegateKillOutcome,
-	type DelegateScreenSnapshot,
-	type DelegateSendOutcome,
-	DelegateSessionRegistry,
-	type DelegateSessionState,
-	type DelegateWaitOutcome,
-} from "../delegate/runtime";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../modes/theme/shimmer";
 import type { Theme } from "../modes/theme/theme";
-import delegateKillDescription from "../prompts/tools/delegate-kill.md" with { type: "text" };
-import delegateListDescription from "../prompts/tools/delegate-list.md" with { type: "text" };
-import delegateSendDescription from "../prompts/tools/delegate-send.md" with { type: "text" };
-import delegateSpawnDescription from "../prompts/tools/delegate-spawn.md" with { type: "text" };
-import delegateWaitDescription from "../prompts/tools/delegate-wait.md" with { type: "text" };
+import ultraKillDescription from "../prompts/tools/ultra-kill.md" with { type: "text" };
+import ultraListDescription from "../prompts/tools/ultra-list.md" with { type: "text" };
+import ultraSendDescription from "../prompts/tools/ultra-send.md" with { type: "text" };
+import ultraSpawnDescription from "../prompts/tools/ultra-spawn.md" with { type: "text" };
+import ultraWaitDescription from "../prompts/tools/ultra-wait.md" with { type: "text" };
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import { oneLineLabel } from "../task/types";
 import { renderStatusLine } from "../tui";
+import {
+	type UltraKillOutcome,
+	type UltraScreenSnapshot,
+	type UltraSendOutcome,
+	UltraSessionRegistry,
+	type UltraSessionState,
+	type UltraWaitOutcome,
+} from "../ultra/runtime";
 import type { Tool, ToolSession } from "./index";
 import {
 	Ellipsis,
-	formatBadge,
 	formatDuration,
 	formatStatusIcon,
 	replaceTabs,
-	type ToolUIColor,
 	type ToolUIStatus,
 	truncateToWidth,
 } from "./render-utils";
 
-export const DELEGATE_TOOL_NAMES = [
-	"delegate_spawn",
-	"delegate_send",
-	"delegate_wait",
-	"delegate_kill",
-	"delegate_list",
-] as const;
+export const ULTRA_TOOL_NAMES = ["ultra_spawn", "ultra_send", "ultra_wait", "ultra_kill", "ultra_list"] as const;
 
-const delegateSpawnSchema = type({
-	cli: type("'fast' | 'good'").describe(
-		"worker flavor: fast = low-latency model for mechanical work; good = strong model for hard work",
-	),
+const ultraSpawnSchema = type({
 	"name?": type("string <= 48").describe("optional session name; generated when omitted"),
 	prompt: type("string > 0").describe("first instruction; the worker starts with no other context"),
+	"+": "reject",
 });
 
-const delegateSendSchema = type({
-	session: type("string > 0").describe("session id from delegate_spawn / delegate_list"),
+const ultraSendSchema = type({
+	session: type("string > 0").describe("session id from ultra_spawn / ultra_list"),
 	message: type("string > 0").describe("message for the session; steers mid-turn, else runs as its next turn"),
 });
 
-const delegateWaitSchema = type({
+const ultraWaitSchema = type({
 	"sessions?": type("string[]").describe("session ids to watch; omit to watch every session with a turn in flight"),
 	"timeout?": type("number > 0").describe("max seconds to wait (default 30)"),
 });
 
-const delegateKillSchema = type({
+const ultraKillSchema = type({
 	session: type("string > 0").describe("session id to terminate"),
 });
 
-const delegateListSchema = type({});
+const ultraListSchema = type({});
 
-type DelegateOp = "spawn" | "send" | "wait" | "kill" | "list";
+type UltraOp = "spawn" | "send" | "wait" | "kill" | "list";
 
-/** Details payload shared by every delegate tool for TUI rendering. */
-export interface DelegateToolDetails {
-	op: DelegateOp;
+/** Details payload shared by every ultra tool for TUI rendering. */
+export interface UltraToolDetails {
+	op: UltraOp;
 	/** Live TV-wall snapshot of the owner's worker sessions at (or during) the call. */
-	screens: DelegateScreenSnapshot[];
-	spawned?: { id: string; cli: DelegateCli; jobId: string };
-	send?: DelegateSendOutcome;
+	screens: UltraScreenSnapshot[];
+	spawned?: { id: string; jobId: string };
+	send?: UltraSendOutcome;
 	wait?: {
 		settled: Array<{ id: string; jobId: string; status: "completed" | "failed" | "cancelled" }>;
 		stillRunning: string[];
@@ -95,58 +83,58 @@ export interface DelegateToolDetails {
 		/** True on interim progress emissions while the wait is still blocking. */
 		waiting?: boolean;
 	};
-	killed?: DelegateKillOutcome;
+	killed?: UltraKillOutcome;
 }
 
-function screensOf(session: ToolSession, ids?: string[]): DelegateScreenSnapshot[] {
-	return DelegateSessionRegistry.global().screens(session.getAgentId?.() ?? MAIN_AGENT_ID, ids);
+function screensOf(session: ToolSession, ids?: string[]): UltraScreenSnapshot[] {
+	return UltraSessionRegistry.global().screens(session.getAgentId?.() ?? MAIN_AGENT_ID, ids);
 }
 
-function textResult(text: string, details: DelegateToolDetails): AgentToolResult<DelegateToolDetails> {
+function textResult(text: string, details: UltraToolDetails): AgentToolResult<UltraToolDetails> {
 	return { content: [{ type: "text", text }], details };
 }
 
-export class DelegateSpawnTool implements AgentTool<typeof delegateSpawnSchema, DelegateToolDetails> {
-	readonly name = "delegate_spawn";
+export class UltraSpawnTool implements AgentTool<typeof ultraSpawnSchema, UltraToolDetails> {
+	readonly name = "ultra_spawn";
 	readonly approval = "exec" as const;
-	readonly label = "Delegate Spawn";
-	readonly summary = "Start a persistent fast/good worker session";
+	readonly label = "Ultra Spawn";
+	readonly summary = "Start a persistent fully capable worker session";
 	readonly description: string;
-	readonly parameters = delegateSpawnSchema;
+	readonly parameters = ultraSpawnSchema;
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(delegateSpawnDescription);
+		this.description = prompt.render(ultraSpawnDescription);
 	}
 
 	async execute(
 		_toolCallId: string,
-		params: typeof delegateSpawnSchema.infer,
-	): Promise<AgentToolResult<DelegateToolDetails>> {
-		const { id, jobId } = await DelegateSessionRegistry.global().spawn(this.session, params);
+		params: typeof ultraSpawnSchema.infer,
+	): Promise<AgentToolResult<UltraToolDetails>> {
+		const { id, jobId } = await UltraSessionRegistry.global().spawn(this.session, params);
 		return textResult(
-			`Spawned ${params.cli} session \`${id}\` (turn job \`${jobId}\`). The turn result will be delivered when it finishes — keep directing other sessions meanwhile. Continue this one with delegate_send \`${id}\`.`,
-			{ op: "spawn", screens: screensOf(this.session), spawned: { id, cli: params.cli, jobId } },
+			`Spawned session \`${id}\` (turn job \`${jobId}\`). The turn result will be delivered when it finishes — keep directing other sessions meanwhile. Continue this one with ultra_send \`${id}\`.`,
+			{ op: "spawn", screens: screensOf(this.session), spawned: { id, jobId } },
 		);
 	}
 }
 
-export class DelegateSendTool implements AgentTool<typeof delegateSendSchema, DelegateToolDetails> {
-	readonly name = "delegate_send";
+export class UltraSendTool implements AgentTool<typeof ultraSendSchema, UltraToolDetails> {
+	readonly name = "ultra_send";
 	readonly approval = "exec" as const;
-	readonly label = "Delegate Send";
+	readonly label = "Ultra Send";
 	readonly summary = "Message a worker session (steer or next turn)";
 	readonly description: string;
-	readonly parameters = delegateSendSchema;
+	readonly parameters = ultraSendSchema;
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(delegateSendDescription);
+		this.description = prompt.render(ultraSendDescription);
 	}
 
 	async execute(
 		_toolCallId: string,
-		params: typeof delegateSendSchema.infer,
-	): Promise<AgentToolResult<DelegateToolDetails>> {
-		const outcome = await DelegateSessionRegistry.global().send(this.session, params);
+		params: typeof ultraSendSchema.infer,
+	): Promise<AgentToolResult<UltraToolDetails>> {
+		const outcome = await UltraSessionRegistry.global().send(this.session, params);
 		const ack =
 			outcome.mode === "turn"
 				? `Started a new turn on \`${outcome.id}\` (job \`${outcome.jobId}\`). Its result will be delivered when the turn finishes.`
@@ -159,26 +147,26 @@ export class DelegateSendTool implements AgentTool<typeof delegateSendSchema, De
 
 const WAIT_PROGRESS_INTERVAL_MS = 500;
 
-export class DelegateWaitTool implements AgentTool<typeof delegateWaitSchema, DelegateToolDetails> {
-	readonly name = "delegate_wait";
+export class UltraWaitTool implements AgentTool<typeof ultraWaitSchema, UltraToolDetails> {
+	readonly name = "ultra_wait";
 	readonly approval = "read" as const;
-	readonly label = "Delegate Wait";
+	readonly label = "Ultra Wait";
 	readonly summary = "Block until a worker session finishes its turn";
 	readonly description: string;
-	readonly parameters = delegateWaitSchema;
+	readonly parameters = ultraWaitSchema;
 	readonly strict = true;
 	readonly interruptible = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(delegateWaitDescription);
+		this.description = prompt.render(ultraWaitDescription);
 	}
 
 	async execute(
 		_toolCallId: string,
-		params: typeof delegateWaitSchema.infer,
+		params: typeof ultraWaitSchema.infer,
 		signal?: AbortSignal,
-		onUpdate?: AgentToolUpdateCallback<DelegateToolDetails>,
-	): Promise<AgentToolResult<DelegateToolDetails>> {
-		const registry = DelegateSessionRegistry.global();
+		onUpdate?: AgentToolUpdateCallback<UltraToolDetails>,
+	): Promise<AgentToolResult<UltraToolDetails>> {
+		const registry = UltraSessionRegistry.global();
 		// Live TV-wall frames while the wait blocks: each tick re-snapshots the
 		// watched workers so their tool calls and streamed text play in place.
 		const emitProgress = (): void => {
@@ -193,7 +181,7 @@ export class DelegateWaitTool implements AgentTool<typeof delegateWaitSchema, De
 		};
 		const progressTimer = onUpdate ? setInterval(emitProgress, WAIT_PROGRESS_INTERVAL_MS) : undefined;
 		emitProgress();
-		let outcome: DelegateWaitOutcome;
+		let outcome: UltraWaitOutcome;
 		try {
 			outcome = await registry.wait(this.session, {
 				sessions: params.sessions,
@@ -203,7 +191,7 @@ export class DelegateWaitTool implements AgentTool<typeof delegateWaitSchema, De
 		} finally {
 			clearInterval(progressTimer);
 		}
-		const details: DelegateToolDetails = {
+		const details: UltraToolDetails = {
 			op: "wait",
 			screens: screensOf(this.session, params.sessions),
 			wait: {
@@ -223,7 +211,7 @@ export class DelegateWaitTool implements AgentTool<typeof delegateWaitSchema, De
 			lines.push(`Still running: ${outcome.stillRunning.map(id => `\`${id}\``).join(", ")}.`);
 		}
 		if (outcome.timedOut) {
-			lines.push("Wait window elapsed before any turn settled — re-issue delegate_wait to keep waiting.");
+			lines.push("Wait window elapsed before any turn settled — re-issue ultra_wait to keep waiting.");
 		}
 		const result = textResult(lines.join("\n").trimEnd(), details);
 		// A pure "still waiting" frame is noise once a newer wait exists.
@@ -231,23 +219,23 @@ export class DelegateWaitTool implements AgentTool<typeof delegateWaitSchema, De
 	}
 }
 
-export class DelegateKillTool implements AgentTool<typeof delegateKillSchema, DelegateToolDetails> {
-	readonly name = "delegate_kill";
+export class UltraKillTool implements AgentTool<typeof ultraKillSchema, UltraToolDetails> {
+	readonly name = "ultra_kill";
 	readonly approval = "read" as const;
-	readonly label = "Delegate Kill";
+	readonly label = "Ultra Kill";
 	readonly summary = "Terminate a worker session";
 	readonly description: string;
-	readonly parameters = delegateKillSchema;
+	readonly parameters = ultraKillSchema;
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(delegateKillDescription);
+		this.description = prompt.render(ultraKillDescription);
 	}
 
 	async execute(
 		_toolCallId: string,
-		params: typeof delegateKillSchema.infer,
-	): Promise<AgentToolResult<DelegateToolDetails>> {
-		const outcome = await DelegateSessionRegistry.global().kill(this.session, params.session);
+		params: typeof ultraKillSchema.infer,
+	): Promise<AgentToolResult<UltraToolDetails>> {
+		const outcome = await UltraSessionRegistry.global().kill(this.session, params.session);
 		const cancelNote = outcome.cancelledTurn ? " Its in-flight turn was cancelled." : "";
 		return textResult(
 			`Killed session \`${outcome.id}\`.${cancelNote} Transcript remains at history://${outcome.id}.`,
@@ -260,29 +248,26 @@ export class DelegateKillTool implements AgentTool<typeof delegateKillSchema, De
 	}
 }
 
-export class DelegateListTool implements AgentTool<typeof delegateListSchema, DelegateToolDetails> {
-	readonly name = "delegate_list";
+export class UltraListTool implements AgentTool<typeof ultraListSchema, UltraToolDetails> {
+	readonly name = "ultra_list";
 	readonly approval = "read" as const;
-	readonly label = "Delegate List";
+	readonly label = "Ultra List";
 	readonly summary = "List worker sessions and their states";
 	readonly description: string;
-	readonly parameters = delegateListSchema;
+	readonly parameters = ultraListSchema;
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(delegateListDescription);
+		this.description = prompt.render(ultraListDescription);
 	}
 
-	async execute(): Promise<AgentToolResult<DelegateToolDetails>> {
+	async execute(): Promise<AgentToolResult<UltraToolDetails>> {
 		const screens = screensOf(this.session);
-		const details: DelegateToolDetails = { op: "list", screens };
+		const details: UltraToolDetails = { op: "list", screens };
 		if (screens.length === 0) {
-			return textResult("No delegate sessions. Spawn one with delegate_spawn.", details);
+			return textResult("No ultra sessions. Spawn one with ultra_spawn.", details);
 		}
 		const lines = screens.map(screen => {
-			const parts = [
-				`- \`${screen.id}\` [${screen.cli}] ${screen.state}`,
-				`${screen.turns} turn${screen.turns === 1 ? "" : "s"}`,
-			];
+			const parts = [`- \`${screen.id}\` ${screen.state}`, `${screen.turns} turn${screen.turns === 1 ? "" : "s"}`];
 			if (screen.queued > 0) parts.push(`${screen.queued} queued`);
 			if (screen.model) parts.push(screen.model);
 			if (screen.lastActivity) parts.push(`last: ${screen.lastActivity}`);
@@ -292,14 +277,14 @@ export class DelegateListTool implements AgentTool<typeof delegateListSchema, De
 	}
 }
 
-/** Creates the ephemeral tools installed while `/delegate` mode is active. */
-export function createDelegateTools(session: ToolSession): Tool[] {
+/** Creates the orchestration tools installed while Ultra thinking is active. */
+export function createUltraTools(session: ToolSession): Tool[] {
 	return [
-		new DelegateSpawnTool(session),
-		new DelegateSendTool(session),
-		new DelegateWaitTool(session),
-		new DelegateKillTool(session),
-		new DelegateListTool(session),
+		new UltraSpawnTool(session),
+		new UltraSendTool(session),
+		new UltraWaitTool(session),
+		new UltraKillTool(session),
+		new UltraListTool(session),
 	];
 }
 
@@ -315,7 +300,7 @@ const TV_OUTPUT_COLLAPSED = 1;
 const TV_OUTPUT_EXPANDED = 3;
 const CURSOR_GLYPH = "▌";
 
-function stateToIcon(state: DelegateSessionState): ToolUIStatus {
+function stateToIcon(state: UltraSessionState): ToolUIStatus {
 	switch (state) {
 		case "running":
 			return "running";
@@ -328,21 +313,7 @@ function stateToIcon(state: DelegateSessionState): ToolUIStatus {
 	}
 }
 
-function stateToColor(state: DelegateSessionState): ToolUIColor {
-	switch (state) {
-		case "running":
-			return "accent";
-		case "starting":
-			return "accent";
-		case "idle":
-			return "success";
-		case "dead":
-			return "muted";
-	}
-}
-
-interface DelegateRenderArgs {
-	cli?: DelegateCli;
+interface UltraRenderArgs {
 	prompt?: string;
 	name?: string;
 	session?: string;
@@ -396,7 +367,7 @@ function composerRows(uiTheme: Theme, message: string, options: { cursor: boolea
 /** Render one worker "TV": header + live tool calls + streamed text tail. */
 function tvScreen(
 	uiTheme: Theme,
-	screen: DelegateScreenSnapshot,
+	screen: UltraScreenSnapshot,
 	options: RenderResultOptions,
 	settledStatus?: "completed" | "failed" | "cancelled",
 ): string[] {
@@ -407,12 +378,11 @@ function tvScreen(
 		uiTheme,
 		spinnerFrame,
 	);
-	const badge = formatBadge(screen.cli, stateToColor(screen.state), uiTheme);
 	const idText =
 		live && options.spinnerFrame !== undefined && shimmerEnabled()
 			? shimmerText(screen.id, uiTheme)
 			: uiTheme.fg(live ? "accent" : "toolOutput", screen.id);
-	const headParts = [icon, badge, idText, uiTheme.fg("dim", settledStatus ?? screen.state)];
+	const headParts = [icon, idText, uiTheme.fg("dim", settledStatus ?? screen.state)];
 	const turnsLabel = `${screen.turns}t${screen.queued > 0 ? `+${screen.queued}q` : ""}`;
 	headParts.push(uiTheme.fg("muted", turnsLabel));
 	if (screen.turnStartedAt !== undefined) {
@@ -476,10 +446,10 @@ function linesComponent(lines: string[] | (() => string[])): Component {
 	};
 }
 
-function describeCall(op: DelegateOp, args: DelegateRenderArgs | undefined): string {
+function describeCall(op: UltraOp, args: UltraRenderArgs | undefined): string {
 	switch (op) {
 		case "spawn":
-			return `spawn ${args?.cli ?? "?"}${args?.name ? ` · ${frameText(args.name, 40)}` : ""}`;
+			return `spawn${args?.name ? ` · ${frameText(args.name, 40)}` : ""}`;
 		case "send":
 			return `send → ${args?.session ? frameText(args.session, 40) : "?"}`;
 		case "wait":
@@ -493,8 +463,8 @@ function describeCall(op: DelegateOp, args: DelegateRenderArgs | undefined): str
 	}
 }
 
-/** Build the shared delegate renderer for one tool name. */
-export function createDelegateToolRenderer(op: DelegateOp) {
+/** Build the shared ultra renderer for one tool name. */
+export function createUltraToolRenderer(op: UltraOp) {
 	const composerOp = op === "spawn" || op === "send";
 	return {
 		inline: true,
@@ -502,8 +472,8 @@ export function createDelegateToolRenderer(op: DelegateOp) {
 		animatedPendingPreview: composerOp,
 		animatedPartialResult: op === "wait",
 
-		renderCall(args: DelegateRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
-			const title = uiTheme.fg("muted", `delegate ${describeCall(op, args)}`);
+		renderCall(args: UltraRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
+			const title = uiTheme.fg("muted", `ultra ${describeCall(op, args)}`);
 			if (composerOp) {
 				const message = op === "spawn" ? (args?.prompt ?? "") : (args?.message ?? "");
 				return linesComponent(() => {
@@ -517,23 +487,23 @@ export function createDelegateToolRenderer(op: DelegateOp) {
 				});
 			}
 			return new Text(
-				renderStatusLine({ icon: "pending", title: `delegate ${describeCall(op, args)}` }, uiTheme),
+				renderStatusLine({ icon: "pending", title: `ultra ${describeCall(op, args)}` }, uiTheme),
 				0,
 				0,
 			);
 		},
 
 		renderResult(
-			result: { content: Array<{ type: string; text?: string }>; details?: DelegateToolDetails; isError?: boolean },
+			result: { content: Array<{ type: string; text?: string }>; details?: UltraToolDetails; isError?: boolean },
 			options: RenderResultOptions,
 			uiTheme: Theme,
-			args?: DelegateRenderArgs,
+			args?: UltraRenderArgs,
 		): Component {
 			const details = result.details;
 			if (!details || result.isError) {
 				const fallback = result.content.find(part => part.type === "text")?.text ?? "";
 				const header = renderStatusLine(
-					{ icon: result.isError ? "error" : "done", title: `delegate ${describeCall(op, args)}` },
+					{ icon: result.isError ? "error" : "done", title: `ultra ${describeCall(op, args)}` },
 					uiTheme,
 				);
 				const body = fallback
@@ -546,8 +516,8 @@ export function createDelegateToolRenderer(op: DelegateOp) {
 				const message = op === "spawn" ? (args?.prompt ?? "") : (args?.message ?? "");
 				const target =
 					op === "spawn"
-						? `${uiTheme.fg("muted", "delegate spawn")} ${formatBadge(details.spawned?.cli ?? args?.cli ?? "?", "accent", uiTheme)} ${uiTheme.fg("accent", frameText(details.spawned?.id ?? args?.name ?? "", 40))}`
-						: `${uiTheme.fg("muted", "delegate send →")} ${uiTheme.fg("accent", frameText(args?.session ?? "?", 40))}`;
+						? `${uiTheme.fg("muted", "ultra spawn")} ${uiTheme.fg("accent", frameText(details.spawned?.id ?? args?.name ?? "", 40))}`
+						: `${uiTheme.fg("muted", "ultra send →")} ${uiTheme.fg("accent", frameText(args?.session ?? "?", 40))}`;
 				const ack =
 					op === "spawn"
 						? uiTheme.fg("success", `turn started${details.spawned ? ` (job ${details.spawned.jobId})` : ""}`)
@@ -573,7 +543,7 @@ export function createDelegateToolRenderer(op: DelegateOp) {
 				const header = renderStatusLine(
 					{
 						icon: "done",
-						title: `delegate kill ${frameText(details.killed?.id ?? args?.session ?? "?", 40)}${killedNote}`,
+						title: `ultra kill ${frameText(details.killed?.id ?? args?.session ?? "?", 40)}${killedNote}`,
 					},
 					uiTheme,
 				);
@@ -586,7 +556,7 @@ export function createDelegateToolRenderer(op: DelegateOp) {
 				const fallback = result.content.find(part => part.type === "text")?.text ?? "no sessions";
 				return new Text(
 					renderStatusLine(
-						{ icon: "warning", title: `delegate ${op}`, meta: [uiTheme.fg("dim", frameText(fallback, 60))] },
+						{ icon: "warning", title: `ultra ${op}`, meta: [uiTheme.fg("dim", frameText(fallback, 60))] },
 						uiTheme,
 					),
 					0,
@@ -604,9 +574,9 @@ export function createDelegateToolRenderer(op: DelegateOp) {
 				const title =
 					op === "wait"
 						? waiting
-							? "delegate wait — watching the wall"
-							: "delegate wait"
-						: `delegate sessions (${screens.length})`;
+							? "ultra wait — watching the wall"
+							: "ultra wait"
+						: `ultra sessions (${screens.length})`;
 				const header = renderStatusLine(
 					{
 						icon: details.wait?.timedOut ? "warning" : running > 0 ? "info" : "done",

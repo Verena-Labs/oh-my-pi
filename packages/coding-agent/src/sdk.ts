@@ -16,6 +16,7 @@ import {
 	prewarmOpenAICodexResponses,
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { FALLBACK_DIALECT, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
+import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import type { Component } from "@oh-my-pi/pi-tui";
 import {
 	$env,
@@ -159,6 +160,7 @@ import {
 	resolveThinkingLevelForModel,
 	shouldDisableReasoning,
 	toReasoningEffort,
+	ULTRA_THINKING,
 } from "./thinking";
 import { countToolsForAutoDiscovery, resolveEffectiveToolDiscoveryMode } from "./tool-discovery/mode";
 import {
@@ -174,8 +176,8 @@ import {
 	BashTool,
 	BUILTIN_TOOLS,
 	computeEssentialBuiltinNames,
-	createDelegateTools,
 	createTools,
+	createUltraTools,
 	type DeferredDiagnosticsEntry,
 	discoverStartupLspServers,
 	EditTool,
@@ -535,6 +537,8 @@ export interface CreateAgentSessionOptions {
 	requireYieldTool?: boolean;
 	/** Task recursion depth (for subagent sessions). Default: 0 */
 	taskDepth?: number;
+	/** Marks a recursively orchestrating Ultra worker session. */
+	ultraWorker?: boolean;
 	/** Parent Hindsight state to alias for subagent memory tools. */
 	parentHindsightSessionState?: HindsightSessionState;
 	/** Parent Mnemopi state to alias for subagent memory tools. */
@@ -1402,6 +1406,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	}
 
 	const taskDepth = options.taskDepth ?? 0;
+	const maxRecursionDepth = settings.get("task.maxRecursionDepth") ?? 2;
+	const ultraToolDepthEligible =
+		(taskDepth === 0 && !options.parentTaskPrefix) ||
+		(options.ultraWorker === true && (maxRecursionDepth < 0 || taskDepth < maxRecursionDepth));
 
 	// Resolves the session/agent thinking level using the same precedence we
 	// apply at startup: explicit option → persisted session entry → restored
@@ -1560,6 +1568,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			: undefined;
 
 	const scopedAsyncJobManager = asyncJobManager ?? (options.parentTaskPrefix ? AsyncJobManager.instance() : undefined);
+	const canCreateUltraTools = ultraToolDepthEligible && scopedAsyncJobManager !== undefined;
 
 	const agentRegistry = options.agentRegistry ?? AgentRegistry.global();
 	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
@@ -1617,6 +1626,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			outputSchema: options.outputSchema,
 			requireYieldTool: options.requireYieldTool,
 			taskDepth: options.taskDepth ?? 0,
+			ultraWorker: options.ultraWorker,
 			getSessionFile: () => sessionManager.getSessionFile() ?? null,
 			getEvalKernelOwnerId: () => evalKernelOwnerId,
 			getEvalSessionId: () =>
@@ -2758,6 +2768,27 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					settings.get("tier.google"),
 				);
 
+		if (thinkingLevel === ULTRA_THINKING && (!model?.reasoning || getSupportedEfforts(model).length === 0)) {
+			const reason = "Ultra requires a model with controllable reasoning effort.";
+			if (options.thinkingLevel === ULTRA_THINKING) throw new Error(reason);
+			logger.warn(`${reason} Using the selected model's ordinary default thinking level.`, {
+				model: model ? `${model.provider}/${model.id}` : undefined,
+			});
+			modelFallbackMessage = modelFallbackMessage ? `${modelFallbackMessage}. ${reason}` : reason;
+			thinkingLevel = model?.thinking?.defaultLevel;
+			autoThinking = false;
+			effectiveThinkingLevel = resolveThinkingLevelForModel(model, thinkingLevel);
+		}
+		if (thinkingLevel === ULTRA_THINKING && !canCreateUltraTools) {
+			const reason = "Ultra requires a session with background worker execution.";
+			if (options.thinkingLevel === ULTRA_THINKING) throw new Error(reason);
+			logger.warn(`${reason} Using the selected model's ordinary default thinking level.`);
+			modelFallbackMessage = modelFallbackMessage ? `${modelFallbackMessage}. ${reason}` : reason;
+			thinkingLevel = model?.thinking?.defaultLevel;
+			autoThinking = false;
+			effectiveThinkingLevel = resolveThinkingLevelForModel(model, thinkingLevel);
+		}
+
 		// One-shot launch-latency marker: fired the first time the loop dispatches
 		// a chat request to the provider transport. See onFirstChatDispatch.
 		let notifyFirstChatDispatch = options.onFirstChatDispatch;
@@ -2861,7 +2892,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (!autoThinking) {
 				// Do not write the `auto` selector before the first turn resolves; auto
 				// classification persists its concrete effort once a real user turn runs.
-				sessionManager.appendThinkingLevelChange(effectiveThinkingLevel);
+				sessionManager.appendThinkingLevelChange(
+					effectiveThinkingLevel,
+					thinkingLevel === ULTRA_THINKING ? ULTRA_THINKING : undefined,
+				);
 			}
 			if (Object.keys(initialServiceTierByFamily).length > 0) {
 				sessionManager.appendServiceTierChange(initialServiceTierByFamily);
@@ -3152,7 +3186,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			advisorConfigs: discoveredAdvisors.advisors,
 			agent,
 			pruneToolDescriptions: inlineToolDescriptors,
-			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
+			thinkingLevel:
+				thinkingLevel === ULTRA_THINKING ? ULTRA_THINKING : autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
+			ultraWorker: options.ultraWorker,
 			prewalk: options.prewalk,
 			planYolo: options.planYolo,
 			serviceTierByFamily: initialServiceTierByFamily,
@@ -3180,10 +3216,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			skillsSettings: settings.getGroup("skills"),
 			modelRegistry,
 			toolRegistry,
-			createDelegateTools:
-				(options.taskDepth ?? 0) === 0 && !options.parentTaskPrefix
-					? () => createDelegateTools(toolSession)
-					: undefined,
+			createUltraTools: canCreateUltraTools ? () => createUltraTools(toolSession) : undefined,
 			builtInToolNames: builtInRegistryToolNames,
 			transformContext,
 			transformProviderContext,
@@ -3418,6 +3451,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			explicitlyRequestedMCPToolNames,
 			activateAllMCPTools: !mcpDiscoveryEnabled,
 		});
+
+		// A configured Ultra session must expose its orchestration contract before
+		// callers receive it; later selector changes use the same prompt-time barrier.
+		await session.syncUltraPolicy();
 
 		return {
 			session,

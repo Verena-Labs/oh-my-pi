@@ -45,7 +45,13 @@ import {
 	type ResetUsageAccount,
 	toResetUsageAccounts,
 } from "../../slash-commands/helpers/reset-usage";
-import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
+import {
+	AUTO_THINKING,
+	type ConfiguredThinkingLevel,
+	concreteThinkingLevel,
+	getAvailableConfiguredThinkingLevels,
+	ULTRA_THINKING,
+} from "../../thinking";
 import {
 	isImageProviderPreference,
 	isSearchProviderId,
@@ -151,8 +157,8 @@ export class SelectorController {
 			};
 			const selector = new SettingsSelectorComponent(
 				{
-					availableThinkingLevels: [...this.ctx.session.getAvailableThinkingLevels()],
-					thinkingLevel: this.ctx.session.thinkingLevel,
+					availableThinkingLevels: getAvailableConfiguredThinkingLevels(this.ctx.session.model),
+					thinkingLevel: this.ctx.session.configuredThinkingLevel(),
 					availableThemes,
 					providers: [...new Set(this.ctx.session.getAvailableModels().map(model => model.provider))].sort(
 						(a, b) => a.localeCompare(b),
@@ -716,11 +722,12 @@ export class SelectorController {
 			this.ctx.session.scopedModels,
 			{
 				onAssign: async (model, role, thinkingLevel, selector) => {
-					// `auto` is session-global: never baked into a per-role model value
-					// (it can't round-trip through `model:<level>`). Apply it to the session
-					// separately and persist via `defaultThinkingLevel`.
+					// Policy selectors are session-global: never bake them into a per-role
+					// model value. Apply them to the live session separately.
 					const isAuto = thinkingLevel === AUTO_THINKING;
-					const concreteThinking = isAuto || thinkingLevel === undefined ? undefined : thinkingLevel;
+					const isUltra = thinkingLevel === ULTRA_THINKING;
+					const policyThinking = isAuto ? AUTO_THINKING : isUltra ? ULTRA_THINKING : undefined;
+					const concreteThinking = policyThinking ? undefined : concreteThinkingLevel(thinkingLevel);
 					const selectorValue = selector ?? `${model.provider}/${model.id}`;
 					try {
 						if (role === "default") {
@@ -730,11 +737,11 @@ export class SelectorController {
 								persist: true,
 								currentContextTokens,
 							});
-							if (isAuto) {
+							if (policyThinking) {
 								if (switched) {
-									this.ctx.session.setThinkingLevel(AUTO_THINKING, true);
+									this.ctx.session.setThinkingLevel(policyThinking, true);
 								} else {
-									this.ctx.settings.set("defaultThinkingLevel", AUTO_THINKING);
+									this.ctx.settings.set("defaultThinkingLevel", policyThinking);
 								}
 							} else if (switched && concreteThinking && concreteThinking !== ThinkingLevel.Inherit) {
 								this.ctx.session.setThinkingLevel(concreteThinking);
@@ -747,8 +754,8 @@ export class SelectorController {
 						} else {
 							// Other roles (smol, slow, custom): update settings, not the current model.
 							this.ctx.settings.setModelRole(role, formatModelSelectorValue(selectorValue, concreteThinking));
-							if (isAuto) {
-								this.ctx.session.setThinkingLevel(AUTO_THINKING, true);
+							if (policyThinking) {
+								this.ctx.session.setThinkingLevel(policyThinking, true);
 							}
 							const roleInfo = getRoleInfo(role, settings);
 							this.ctx.showStatus(`${roleInfo?.name ?? role} model: ${selector ?? model.id}`);

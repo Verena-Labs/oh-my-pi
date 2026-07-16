@@ -11,7 +11,7 @@ import {
 } from "@oh-my-pi/pi-ai/utils/schema";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createTools, HIDDEN_TOOLS, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { createDelegateTools } from "@oh-my-pi/pi-coding-agent/tools/delegate";
+import { createUltraTools } from "@oh-my-pi/pi-coding-agent/tools/ultra";
 
 interface ToolSchemaEntry {
 	name: string;
@@ -59,7 +59,7 @@ async function collectToolSchemas(): Promise<ToolSchemaEntry[]> {
 		byToolName.set(name, schema);
 	}
 
-	for (const tool of createDelegateTools(session)) {
+	for (const tool of createUltraTools(session)) {
 		const schema = toolWireSchema(tool);
 		if (!asSchemaObject(schema)) {
 			continue;
