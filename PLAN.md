@@ -2,7 +2,7 @@
 
 ## Mode
 
-Source implementation complete; protected delivery pending
+Source implementation complete; protected delivery in progress
 
 ## Goal
 
@@ -263,11 +263,12 @@ main model.
    source and built-binary CLI smoke, and legacy-surface searches. The broad
    coding-agent suite still contains unrelated Pi-disabled, environment, and
    existing baseline failures; no Ultra-focused assertion failed.
-10. **Pending separate delivery authorization** — Protected pull request,
-    immutable `pi-v16.5.0-r<n>` publication, and the isolated `pi-dotfiles`
-    importer remain outside this source-implementation step.
-11. **Pending future group** — Science terminology/release pinning remains
-    separate. Do not vendor the engine or begin Group 1 here.
+10. **Delivery authorized and in progress** — Carry the completed source through
+    the protected pull request, immutable `pi-v16.5.0-r2` publication, and the
+    isolated `pi-dotfiles` importer and consumer acceptance gates.
+11. **Authorized plan-only handoff** — After the immutable release and consumer
+    mirror exist, update Science terminology and release pinning with their exact
+    SHAs. Do not vendor the engine or begin Group 1 here.
 
 ## Validation evidence
 
@@ -307,7 +308,7 @@ main model.
 
 ## Delivery boundary
 
-The authorized Group 0 source work ends with this fork implementation and its
-verification. A protected PR may carry these changes for review, but immutable
-release publication, the `pi-dotfiles` importer, Science release pinning, engine
-vendoring, and Group 1 work require their own delivery step.
+The authorized delivery step carries this verified fork implementation through
+its protected PR, immutable source release, `pi-dotfiles` importer and consumer
+acceptance, and a plan-only Science terminology/pin handoff. Science engine
+vendoring and all Group 1 implementation remain outside this delivery step.
