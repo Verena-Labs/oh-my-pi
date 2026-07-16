@@ -60,6 +60,9 @@ export function createPersistedSubagentReviverFactory(
 			return undefined;
 		}
 		const init = peek.init;
+		if (init.workerKind) {
+			registry.setWorkerIdentity(ref.id, init.workerKind, init.agentName ?? ref.displayName);
+		}
 		// taskDepth drives real capability gating (task-spawn allowance, memory
 		// startup, …); derive it from the persisted parent chain rather than
 		// assuming a fixed level.
@@ -93,9 +96,10 @@ export function createPersistedSubagentReviverFactory(
 				),
 				sessionManager: reopened,
 				agentId: ref.id,
-				agentDisplayName: ref.displayName,
+				agentDisplayName: init.agentName ?? ref.displayName,
 				parentTaskPrefix: ref.id,
 				parentAgentId: ref.parentId,
+				ultraWorker: init.workerKind === "ultra",
 				taskDepth,
 				toolNames: init.tools,
 				outputSchema: init.outputSchema,

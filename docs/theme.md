@@ -95,6 +95,22 @@ Runtime precedence:
 
 Invalid override keys are ignored and logged (`logger.debug`).
 
+Thinking-tier symbols use the `thinking.*` keys. Ultra has its own public
+`thinking.ultra` symbol rather than borrowing `thinking.xhigh`; its built-in
+values are `∞ ultra` for Unicode, the Nerd Font users glyph plus `ult`, and
+`[ult]` for ASCII. A theme can replace the whole display value through
+`symbols.overrides`, for example:
+
+```json
+{
+  "symbols": {
+    "overrides": {
+      "thinking.ultra": "∞"
+    }
+  }
+}
+```
+
 #### Box-drawing borders
 
 All outlined chrome — tool-result frames, overlays, code fences, the editor, the welcome banner — draws with the `boxRound.*` tokens: rounded corners (`╭╮╰╯`) plus tee/cross junctions (`├┤┬┴┼`, which have no rounded Unicode form, so they are sourced from the `boxSharp.*` tokens). Markdown tables are the sole exception and keep the fully sharp `boxSharp.*` set (`┌┐└┘`).

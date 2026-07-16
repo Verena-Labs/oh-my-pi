@@ -347,7 +347,7 @@ thinkingBudgets:
 
 | Key | Type | Default | Values |
 |---|---|---|---|
-| `defaultThinkingLevel` | enum | `high` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `auto`, `ultra`. Override per run with `--thinking`. `ultra` is a coding-agent composite selector for models with controllable reasoning effort: it keeps the active model, requests `xhigh` clamped to the model's highest supported effort, preserves the main toolset, and activates same-model worker orchestration. It is distinct from ordinary reasoning-only `xhigh` and from the `slow` model role. |
+| `defaultThinkingLevel` | enum | `high` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `auto`, `ultra`. Override per run with `--thinking`. `ultra` is a coding-agent composite selector for models with controllable reasoning effort: it keeps the active model, requests `xhigh` clamped to the model's highest supported effort, preserves normal implementation tools, suspends ordinary named-agent spawning, and activates same-model worker orchestration. Max-capable selectors order `xhigh`, `max`, `ultra`. Ultra is distinct from reasoning-only `xhigh` and the `slow` model role. |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output. `--hide-thinking` sets it for the run (display only). |
 | `thinkingBudgets.minimal` | number | `1024` | Token budget for the `minimal` level. |
 | `thinkingBudgets.low` | number | `2048` | Token budget for `low`. |
@@ -358,11 +358,16 @@ thinkingBudgets:
 
 Ultra uses the existing thinking selector and cycle; it has no slash command.
 While selected, the five `ultra_*` tools drive persistent sessions through one
-generic full-capability worker definition. Worker model/tier selection is not
-configurable: each direct Ultra worker snapshots the main agent's current model
-and resolved Ultra effort when spawned, and every descendant inherits that root
-snapshot. Existing worker trees remain pinned to their spawn-time model and
-effort, while later direct spawns use the main agent's newly selected model.
+generic full-capability worker definition and are the only agent-spawn surface;
+the ordinary `task` tool and Eval `agent()` helper are restored on exit. Worker
+model/tier selection is not configurable: each direct Ultra worker snapshots
+the main agent's current model and resolved Ultra effort when spawned, and every
+descendant inherits that root snapshot. A spawn can inherit none, the latest N
+user-led turns, or all effective post-compaction parent-chat context. Existing
+worker trees remain pinned to their spawn-time model and effort, while later
+direct spawns use the main agent's newly selected model. Addressable rosters
+survive parking and resuming the same owning conversation; explicit kill,
+leaving Ultra, and transcript changes prevent resurrection.
 Ultra is unavailable when the model does not expose a controllable
 reasoning-effort ladder. `ultra` is not a provider effort, model-role value, or
 model selector suffix; ordinary `xhigh` remains separately selectable without

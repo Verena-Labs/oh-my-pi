@@ -47,7 +47,10 @@ export const ULTRA_TOOL_NAMES = ["ultra_spawn", "ultra_send", "ultra_wait", "ult
 
 const ultraSpawnSchema = type({
 	"name?": type("string <= 48").describe("optional session name; generated when omitted"),
-	prompt: type("string > 0").describe("first instruction; the worker starts with no other context"),
+	prompt: type("string > 0").describe("first instruction and authoritative worker assignment"),
+	"fork_turns?": type('"none" | "all"')
+		.or(/^[1-9][0-9]*$/)
+		.describe('parent-chat inheritance: "none", "all" (default), or a positive recent-turn count'),
 	"+": "reject",
 });
 
@@ -264,7 +267,10 @@ export class UltraListTool implements AgentTool<typeof ultraListSchema, UltraToo
 		const screens = screensOf(this.session);
 		const details: UltraToolDetails = { op: "list", screens };
 		if (screens.length === 0) {
-			return textResult("No ultra sessions. Spawn one with ultra_spawn.", details);
+			return textResult(
+				"No Ultra sessions. Spawn one with ultra_spawn. Ordinary Task workers are separate and remain visible in Agent Hub.",
+				details,
+			);
 		}
 		const lines = screens.map(screen => {
 			const parts = [`- \`${screen.id}\` ${screen.state}`, `${screen.turns} turn${screen.turns === 1 ? "" : "s"}`];
@@ -308,6 +314,8 @@ function stateToIcon(state: UltraSessionState): ToolUIStatus {
 			return "pending";
 		case "idle":
 			return "done";
+		case "parked":
+			return "pending";
 		case "dead":
 			return "aborted";
 	}
@@ -316,6 +324,7 @@ function stateToIcon(state: UltraSessionState): ToolUIStatus {
 interface UltraRenderArgs {
 	prompt?: string;
 	name?: string;
+	fork_turns?: string;
 	session?: string;
 	message?: string;
 	sessions?: string[];

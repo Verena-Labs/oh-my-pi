@@ -34,7 +34,7 @@ import type { MnemopiSessionState } from "../mnemopi/state";
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
-import { AgentRegistry } from "../registry/agent-registry";
+import { AgentRegistry, type WorkerKind } from "../registry/agent-registry";
 import { type CreateAgentSessionOptions, createAgentSession, discoverAuthStorage } from "../sdk";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import type { ArtifactManager } from "../session/artifacts";
@@ -1780,6 +1780,7 @@ interface FinalizeRunArgs {
 	index: number;
 	id: string;
 	agent: AgentDefinition;
+	workerKind?: WorkerKind;
 	task: string;
 	assignment?: string;
 	modelOverride?: string | string[];
@@ -1895,6 +1896,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		args.eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
 			id,
 			agent: agent.name,
+			workerKind: args.workerKind,
 			parentToolCallId: args.parentToolCallId,
 			detached: args.detached,
 			agentSource: agent.source,
@@ -2039,6 +2041,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 	const startTime = Date.now();
 	const session = await AgentLifecycleManager.global().ensureLive(id);
 	const ref = AgentRegistry.global().get(id);
+	const workerKind = ref?.workerKind;
 	const sessionFile = ref?.sessionFile ?? undefined;
 
 	const monitor = createSubagentRunMonitor({
@@ -2062,6 +2065,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		options.eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
 			id,
 			agent: agent.name,
+			workerKind,
 			parentToolCallId: options.parentToolCallId,
 			detached: true,
 			agentSource: agent.source,
@@ -2095,6 +2099,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		index,
 		id,
 		agent,
+		workerKind,
 		task: message,
 		signal,
 		artifactsDir: options.artifactsDir,
@@ -2126,6 +2131,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		onProgress,
 	} = options;
 	const startTime = Date.now();
+	const workerKind: WorkerKind = options.ultraWorker === true ? "ultra" : "task";
 	// Set by the session's onFirstChatDispatch hook the first time the agent
 	// loop dispatches a chat request to the provider — the launch-complete boundary.
 	let firstChatDispatchAt: number | undefined;
@@ -2519,6 +2525,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			sessionCreatedAt = performance.now();
 
 			monitor.setActiveSession(session);
+			AgentRegistry.global().setWorkerIdentity(id, workerKind, agent.name);
 			installRegistryStatusSync(session);
 			if (sessionFile !== null && worktree === undefined) {
 				// Lifecycle reviver: park closed the JSONL writer, so reopening takes
@@ -2543,6 +2550,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				options.eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
 					id,
 					agent: agent.name,
+					workerKind,
 					parentToolCallId: options.parentToolCallId,
 					detached: options.detached,
 					agentSource: agent.source,
@@ -2555,6 +2563,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 			const subagentToolNames = session.getActiveToolNames();
 			const parentOwnedToolNames = new Set(["todo"]);
+			if (options.ultraWorker === true) {
+				parentOwnedToolNames.add("task");
+			}
 			const filteredSubagentTools = subagentToolNames.filter(name => !parentOwnedToolNames.has(name));
 			if (filteredSubagentTools.length !== subagentToolNames.length) {
 				await awaitAbortable(session.setActiveToolsByName(filteredSubagentTools));
@@ -2566,6 +2577,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				tools: session.getActiveToolNames(),
 				spawns: spawnsEnv,
 				readSummarize: agent.readSummarize,
+				workerKind,
+				agentName: agent.name,
+				agentId: id,
 				outputSchema,
 			});
 
@@ -2759,6 +2773,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		index,
 		id,
 		agent,
+		workerKind,
 		task,
 		assignment,
 		modelOverride,

@@ -25,8 +25,10 @@ import { IrcBus } from "../../irc/bus";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, type AgentStatus, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
+import { SessionManager } from "../../session/session-manager";
 import { parseThinkingLevel } from "../../thinking";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
+import { UltraSessionRegistry } from "../../ultra/runtime";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
@@ -68,6 +70,17 @@ function statusGlyph(status: AgentStatus): string {
 		case "aborted":
 			return theme.fg("error", theme.status.aborted);
 	}
+}
+
+/** Explicit public orchestration identity; structural kind remains `sub`. */
+function workerKindBadge(ref: AgentRef): string | undefined {
+	if (ref.kind !== "sub") return undefined;
+	if (ref.workerKind === "ultra") return theme.fg("accent", "ULTRA");
+	if (ref.workerKind === "task") {
+		const definition = replaceTabs(ref.displayName || "task");
+		return theme.fg("warning", `TASK${theme.sep.dot}${definition}`);
+	}
+	return theme.fg("dim", "SUB");
 }
 
 /** Model id + thinking level (`sonnet-4-6 ◒ high`), level colored per theme. */
@@ -155,14 +168,19 @@ async function registerPersistedSubagentsFromDir(
 		}
 		const id = entry.name.slice(0, -6);
 		if (!registry.get(id)) {
+			const persisted = await SessionManager.peekSessionInit(sessionFile);
 			registry.register({
 				id,
-				displayName: id,
+				displayName: persisted?.init?.agentName ?? id,
 				kind: "sub",
+				workerKind: persisted?.init?.workerKind,
 				parentId: parentId ?? MAIN_AGENT_ID,
 				session: null,
 				sessionFile,
-				status: "parked",
+				// Ultra JSONLs are addressable only when the owning session's explicit
+				// lifecycle journal reclaims them. A disk scan alone is historical
+				// evidence, never authorization to revive an explicitly killed worker.
+				status: persisted?.init?.workerKind === "ultra" ? "aborted" : "parked",
 			});
 		}
 		await registerPersistedSubagentsFromDir(registry, path.join(dir, id), id);
@@ -454,7 +472,7 @@ export class AgentHubOverlayComponent extends Container {
 		lines.push(...new DynamicBorder().render(width));
 
 		if (this.#rows.length === 0) {
-			lines.push(` ${theme.fg("dim", "no subagents yet — task spawns appear here")}`);
+			lines.push(` ${theme.fg("dim", "no agents yet — Ultra workers and Task agents appear here")}`);
 		} else {
 			const termHeight = process.stdout.rows || 40;
 			// Chrome: 2 borders + title + notice? + blank + hints + border
@@ -521,7 +539,11 @@ export class AgentHubOverlayComponent extends Container {
 		const max = Math.max(1, width - 2);
 		const cursor = selected ? theme.fg("accent", theme.nav.cursor) : " ";
 		const fields: string[] = [`${cursor} ${statusGlyph(ref.status)} ${theme.bold(replaceTabs(ref.id))}`];
-		if (ref.displayName && ref.displayName !== ref.id) {
+		const workerBadge = workerKindBadge(ref);
+		if (workerBadge) {
+			fields.push(workerBadge);
+		}
+		if (!ref.workerKind && ref.displayName && ref.displayName !== ref.id) {
 			fields.push(theme.fg("dim", replaceTabs(ref.displayName)));
 		}
 		if (ref.parentId && ref.parentId !== MAIN_AGENT_ID) {
@@ -674,10 +696,14 @@ export class AgentHubOverlayComponent extends Container {
 		}
 		void (async () => {
 			try {
-				if (ref.status === "running" && ref.session) {
-					await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
+				if (ref.workerKind === "ultra") {
+					await UltraSessionRegistry.global().killRegistered(ref.id);
+				} else {
+					if (ref.status === "running" && ref.session) {
+						await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
+					}
+					await this.#lifecycle().release(ref.id);
 				}
-				await this.#lifecycle().release(ref.id);
 			} catch (error) {
 				logger.warn("Agent hub: kill failed", { id: ref.id, error: String(error) });
 				this.#notice = error instanceof Error ? error.message : String(error);

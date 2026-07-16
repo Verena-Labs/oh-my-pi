@@ -11,6 +11,7 @@
  * collisions across repeated or nested task invocations.
  */
 import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { ADVISOR_TRANSCRIPT_STEM } from "../advisor/transcript-recorder";
 
 /**
@@ -21,7 +22,7 @@ import { ADVISOR_TRANSCRIPT_STEM } from "../advisor/transcript-recorder";
  * existing output files so previously written outputs are never overwritten.
  */
 export class AgentOutputManager {
-	#initialized = false;
+	#initialization: Promise<void> | undefined;
 	/** Final ids already handed out, relative to this manager's scope. */
 	readonly #taken = new Set<string>();
 	readonly #getArtifactsDir: () => string | null;
@@ -41,23 +42,32 @@ export class AgentOutputManager {
 	 * session never reuses a name that would clobber a prior subagent's output.
 	 */
 	async #ensureInitialized(): Promise<void> {
-		if (this.#initialized) return;
-		this.#initialized = true;
+		this.#initialization ??= this.#scanExisting();
+		await this.#initialization;
+	}
 
+	async #scanExisting(): Promise<void> {
 		const dir = this.#getArtifactsDir();
 		if (!dir) return;
 
 		let files: string[];
 		try {
-			files = await fs.readdir(dir);
+			// Nested Ultra workers persist beneath their owner's transcript artifact
+			// directory while all generations share this session-scoped allocator.
+			files = await fs.readdir(dir, { recursive: true });
 		} catch {
 			return; // Directory doesn't exist yet
 		}
 
 		const prefix = this.#parentPrefix ? `${this.#parentPrefix}.` : "";
-		for (const file of files) {
-			if (!file.endsWith(".md")) continue;
-			let rest = file.slice(0, -3); // drop ".md"
+		for (const relativeFile of files) {
+			const file = path.basename(relativeFile);
+			// A worker can persist its JSONL before its first turn produces the
+			// companion markdown output. Reserve either artifact so a restart cannot
+			// reuse the id and accidentally reopen or overwrite the old transcript.
+			const extensionLength = file.endsWith(".jsonl") ? 6 : file.endsWith(".md") ? 3 : 0;
+			if (extensionLength === 0) continue;
+			let rest = file.slice(0, -extensionLength);
 			if (prefix) {
 				if (!rest.startsWith(prefix)) continue;
 				rest = rest.slice(prefix.length);

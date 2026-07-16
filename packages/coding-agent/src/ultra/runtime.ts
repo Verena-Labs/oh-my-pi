@@ -18,7 +18,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
-import type { AsyncJob, AsyncJobManager } from "../async/job-manager";
+import { type AsyncJob, AsyncJobManager } from "../async/job-manager";
 import { formatModelStringWithRouting } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
@@ -27,6 +27,8 @@ import ultraWorkerPrompt from "../prompts/agents/ultra-worker.md" with { type: "
 import ultraTurnResultTemplate from "../prompts/tools/ultra-turn-result.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import type { UltraWorkerLifecycleEntry } from "../session/session-entries";
+import { SessionManager } from "../session/session-manager";
 import { getBundledAgent } from "../task/agents";
 import { type ExecutorOptions, runSubagentFollowUpTurn, runSubprocess } from "../task/executor";
 import { generateTaskName } from "../task/name-generator";
@@ -35,6 +37,7 @@ import { type AgentDefinition, type AgentProgress, oneLineLabel, type SingleResu
 import type { ToolSession } from "../tools";
 import { formatDuration } from "../tools/render-utils";
 import { ToolError } from "../tools/tool-errors";
+import { buildUltraForkContext, parseUltraForkTurns } from "./context";
 
 /**
  * Build the private Ultra worker definition from the general task prompt.
@@ -56,7 +59,7 @@ function createUltraWorkerAgent(): AgentDefinition {
 }
 
 /** Worker session lifecycle as shown to the director. */
-export type UltraSessionState = "starting" | "running" | "idle" | "dead";
+export type UltraSessionState = "starting" | "running" | "idle" | "parked" | "dead";
 
 /** One completed tool call in the per-turn activity trace. */
 interface UltraTraceEntry {
@@ -87,8 +90,15 @@ interface UltraTurn {
 interface UltraRecord {
 	id: string;
 	ownerId: string;
+	parentId: string;
 	agent: AgentDefinition;
 	modelOverride: string;
+	/** Exact child JSONL contract when the owning conversation is persisted. */
+	sessionFile?: string;
+	/** Writes lifecycle state into the owning session, retained for nested cascades. */
+	recordLifecycle?: UltraLifecycleRecorder;
+	/** Parent conversation snapshot rendered once into the worker's system context. */
+	inheritedContext?: string;
 	state: UltraSessionState;
 	createdAt: number;
 	lastActivityAt: number;
@@ -111,7 +121,22 @@ interface UltraRecord {
 	queue: string[];
 	turnCount: number;
 	killed: boolean;
+	/** Prevent duplicate terminal lifecycle markers across failure/kill races. */
+	lifecycleClosed?: boolean;
 }
+
+export interface UltraRosterRestoreIssue {
+	workerId: string;
+	reason: string;
+}
+
+export interface UltraRosterRestoreOutcome {
+	restored: string[];
+	skipped: UltraRosterRestoreIssue[];
+}
+
+type UltraLifecycleEvent = Parameters<NonNullable<ToolSession["recordUltraWorkerLifecycle"]>>[0];
+type UltraLifecycleRecorder = (event: UltraLifecycleEvent) => void;
 
 /**
  * Live per-session "screen" for rich rendering: what the worker is doing right
@@ -226,16 +251,210 @@ export class UltraSessionRegistry {
 		if (!record || record.ownerId !== owner) {
 			const roster = this.listIds(owner);
 			throw new ToolError(
-				`Unknown ultra session "${id}".${roster.length > 0 ? ` Active sessions: ${roster.join(", ")}` : " No sessions — spawn one with ultra_spawn."}`,
+				`Unknown ultra session "${id}".${roster.length > 0 ? ` Active sessions: ${roster.join(", ")}` : " No Ultra sessions — spawn one with ultra_spawn. Ordinary Task workers are separate and remain visible in Agent Hub."}`,
 			);
 		}
 		return record;
 	}
 
+	#visibleState(record: UltraRecord): UltraSessionState {
+		if (record.killed || record.state === "dead") return "dead";
+		if (record.turn) return "running";
+		const status = AgentRegistry.global().get(record.id)?.status;
+		if (status === "running") return "running";
+		if (status === "idle") return "idle";
+		if (status === "parked") return "parked";
+		if (status === "aborted") return "dead";
+		return record.state;
+	}
+
+	/**
+	 * Rebuild an explicitly journaled owner roster after process restart. Only
+	 * r3 lifecycle entries whose child session contract says `workerKind=ultra`
+	 * are eligible; leftover r2 JSONL files are never guessed into the roster.
+	 */
+	async restorePersistedRoster(
+		owner: string,
+		cwd: string,
+		entries: readonly UltraWorkerLifecycleEntry[],
+		recordLifecycle?: UltraLifecycleRecorder,
+		ownerSessionFile?: string | null,
+	): Promise<UltraRosterRestoreOutcome> {
+		const restored: string[] = [];
+		const skipped: UltraRosterRestoreIssue[] = [];
+		const registry = AgentRegistry.global();
+		// JSONL loading is deliberately tolerant of custom/forward entries, so do
+		// not trust the compile-time lifecycle shape at this restart boundary.
+		// Normalize every path-sensitive field before it reaches String/path APIs.
+		const candidates = entries.map(rawEntry => {
+			const entry = rawEntry as Partial<UltraWorkerLifecycleEntry> | null | undefined;
+			const workerId = typeof entry?.workerId === "string" ? entry.workerId.trim() : "";
+			const sessionFile =
+				typeof entry?.sessionFile === "string" && entry.sessionFile.trim().length > 0
+					? entry.sessionFile.trim()
+					: undefined;
+			const modelOverride =
+				typeof entry?.modelOverride === "string" && entry.modelOverride.trim().length > 0
+					? entry.modelOverride.trim()
+					: undefined;
+			const valid =
+				entry?.type === "ultra_worker_lifecycle" &&
+				entry.action === "spawn" &&
+				entry.ownerId === owner &&
+				workerId.length > 0 &&
+				sessionFile !== undefined &&
+				modelOverride !== undefined;
+			return { entry, workerId, sessionFile, modelOverride, valid };
+		});
+		const activeIds = new Set(candidates.filter(candidate => candidate.valid).map(candidate => candidate.workerId));
+		const staleRecords = [...this.#records.values()].filter(
+			record => record.ownerId === owner && !activeIds.has(record.id) && this.#visibleState(record) !== "dead",
+		);
+		for (const record of staleRecords) await this.#killRecord(record, undefined, false);
+		for (const { entry, workerId, sessionFile, modelOverride, valid } of candidates) {
+			const fail = (reason: string): void => {
+				skipped.push({ workerId: workerId || "<invalid>", reason });
+			};
+			if (!entry || !valid || !sessionFile || !modelOverride) {
+				fail("persisted roster metadata is incomplete");
+				continue;
+			}
+			if (ownerSessionFile) {
+				const ownerArtifactsDir = ownerSessionFile.slice(0, -6);
+				try {
+					const stat = await fs.lstat(sessionFile);
+					const [realSessionFile, realOwnerArtifactsDir] = await Promise.all([
+						fs.realpath(sessionFile),
+						fs.realpath(ownerArtifactsDir),
+					]);
+					if (stat.isSymbolicLink() || path.dirname(realSessionFile) !== realOwnerArtifactsDir) {
+						fail("worker session is outside the owning transcript artifact directory");
+						continue;
+					}
+				} catch (error) {
+					fail(`worker session is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+					continue;
+				}
+			}
+			const current = this.#records.get(workerId);
+			if (current && current.ownerId === owner && this.#visibleState(current) !== "dead") {
+				continue;
+			}
+
+			let persisted: Awaited<ReturnType<typeof SessionManager.peekSessionInit>>;
+			try {
+				await fs.stat(sessionFile);
+				persisted = await SessionManager.peekSessionInit(sessionFile);
+			} catch (error) {
+				fail(`worker session is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+				continue;
+			}
+			if (persisted?.init?.workerKind !== "ultra") {
+				fail("worker session lacks a compatible Ultra session-init contract");
+				continue;
+			}
+			if (persisted.init.agentId !== workerId) {
+				fail("worker session belongs to a different worker id");
+				continue;
+			}
+			if (path.resolve(persisted.cwd) !== path.resolve(cwd)) {
+				fail(`worker belongs to a different workspace (${persisted.cwd})`);
+				continue;
+			}
+
+			const parentId =
+				typeof entry.workerParentId === "string" && entry.workerParentId.trim().length > 0
+					? entry.workerParentId.trim()
+					: owner;
+			const existing = registry.get(workerId);
+			if (
+				existing &&
+				(existing.kind !== "sub" ||
+					existing.workerKind === "task" ||
+					(existing.parentId !== undefined && existing.parentId !== parentId) ||
+					(existing.sessionFile !== null &&
+						existing.sessionFile !== undefined &&
+						path.resolve(existing.sessionFile) !== path.resolve(sessionFile)))
+			) {
+				fail("worker id conflicts with an existing agent registration");
+				continue;
+			}
+			if (!existing?.session) {
+				registry.register({
+					id: workerId,
+					displayName: persisted.init.agentName ?? "ultra",
+					kind: "sub",
+					workerKind: "ultra",
+					parentId,
+					session: null,
+					sessionFile,
+					status: "parked",
+				});
+			} else {
+				registry.setWorkerIdentity(workerId, "ultra", persisted.init.agentName ?? "ultra");
+			}
+
+			this.#records.set(workerId, {
+				id: workerId,
+				ownerId: owner,
+				parentId,
+				agent: createUltraWorkerAgent(),
+				modelOverride,
+				sessionFile,
+				recordLifecycle,
+				state: registry.get(workerId)?.status === "idle" ? "idle" : "parked",
+				createdAt:
+					typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
+				lastActivityAt: Date.now(),
+				lastActivity: "restored from owning session",
+				resolvedModel: modelOverride,
+				queue: [],
+				turnCount:
+					typeof entry.turns === "number" && Number.isInteger(entry.turns) && entry.turns >= 0 ? entry.turns : 0,
+				killed: false,
+			});
+			restored.push(workerId);
+		}
+		return { restored, skipped };
+	}
+
+	#sessionFileFor(session: ToolSession, workerId: string): string | undefined {
+		const ownerSessionFile = session.getSessionFile();
+		return ownerSessionFile ? path.join(ownerSessionFile.slice(0, -6), `${workerId}.jsonl`) : undefined;
+	}
+
+	#activeLifecycleEvent(record: UltraRecord, reason?: string): UltraLifecycleEvent {
+		return {
+			workerId: record.id,
+			action: "spawn",
+			workerParentId: record.parentId,
+			sessionFile: record.sessionFile,
+			modelOverride: record.modelOverride,
+			createdAt: record.createdAt,
+			turns: record.turnCount,
+			reason,
+		};
+	}
+
+	#recordTerminalLifecycle(record: UltraRecord, reason: string): void {
+		if (record.lifecycleClosed) return;
+		record.recordLifecycle?.({
+			workerId: record.id,
+			action: "kill",
+			workerParentId: record.parentId,
+			sessionFile: record.sessionFile,
+			modelOverride: record.modelOverride,
+			createdAt: record.createdAt,
+			turns: record.turnCount,
+			reason,
+		});
+		record.lifecycleClosed = true;
+	}
+
 	listIds(owner: string): string[] {
 		const ids: string[] = [];
 		for (const record of this.#records.values()) {
-			if (record.ownerId === owner && record.state !== "dead") ids.push(record.id);
+			if (record.ownerId === owner && this.#visibleState(record) !== "dead") ids.push(record.id);
 		}
 		return ids;
 	}
@@ -258,7 +477,7 @@ export class UltraSessionRegistry {
 		records.sort((a, b) => a.createdAt - b.createdAt);
 		return records.map(record => ({
 			id: record.id,
-			state: record.state,
+			state: this.#visibleState(record),
 			model: record.resolvedModel,
 			turns: record.turnCount,
 			queued: record.queue.length,
@@ -279,25 +498,46 @@ export class UltraSessionRegistry {
 	}
 
 	/** Spawn a persistent worker session and start its first turn in the background. */
-	async spawn(session: ToolSession, args: { name?: string; prompt: string }): Promise<UltraSpawnOutcome> {
+	async spawn(
+		session: ToolSession,
+		args: { name?: string; prompt: string; fork_turns?: string },
+	): Promise<UltraSpawnOutcome> {
 		const owner = session.getAgentId?.() ?? MAIN_AGENT_ID;
 		const manager = this.#manager(session);
 		const agent = createUltraWorkerAgent();
 		const activeModel = session.getActiveModel?.();
 		const modelOverride = activeModel ? formatModelStringWithRouting(activeModel) : session.getActiveModelString?.();
 		if (!modelOverride) throw new ToolError("Ultra workers require an active model.");
+		let inheritedContext: string | undefined;
+		try {
+			const forkTurns = parseUltraForkTurns(args.fork_turns);
+			if (forkTurns !== "none") {
+				const snapshot = session.getForkableConversationSnapshot?.();
+				if (!snapshot) {
+					throw new Error('This host cannot snapshot the parent conversation. Retry with fork_turns "none".');
+				}
+				inheritedContext = buildUltraForkContext(snapshot, forkTurns, args.prompt)?.text;
+			}
+		} catch (error) {
+			throw new ToolError(error instanceof Error ? error.message : String(error));
+		}
 
 		if (!session.agentOutputManager) {
 			session.agentOutputManager = new AgentOutputManager(session.getArtifactsDir ?? (() => null));
 		}
 		const requestedName = args.name?.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 48);
 		const id = await session.agentOutputManager.allocate(requestedName || generateTaskName());
+		const sessionFile = this.#sessionFileFor(session, id);
 
 		const record: UltraRecord = {
 			id,
 			ownerId: owner,
+			parentId: owner,
 			agent,
 			modelOverride,
+			sessionFile,
+			recordLifecycle: session.recordUltraWorkerLifecycle,
+			inheritedContext,
 			state: "starting",
 			createdAt: Date.now(),
 			lastActivityAt: Date.now(),
@@ -307,10 +547,17 @@ export class UltraSessionRegistry {
 		};
 		this.#records.set(id, record);
 
+		let jobId: string | undefined;
 		try {
-			const jobId = this.#registerTurnJob(session, manager, record, args.prompt, { first: true });
+			record.recordLifecycle?.(this.#activeLifecycleEvent(record));
+			jobId = this.#registerTurnJob(session, manager, record, args.prompt, { first: true });
 			return { id, jobId };
 		} catch (error) {
+			if (jobId) manager.cancel(jobId, { ownerId: owner });
+			this.#recordTerminalLifecycle(record, "spawn failed before launch completed");
+			await AgentLifecycleManager.global()
+				.release(id)
+				.catch(() => undefined);
 			this.#records.delete(id);
 			throw error;
 		}
@@ -324,7 +571,7 @@ export class UltraSessionRegistry {
 	async send(session: ToolSession, args: { session: string; message: string }): Promise<UltraSendOutcome> {
 		const owner = session.getAgentId?.() ?? MAIN_AGENT_ID;
 		const record = this.#record(owner, args.session);
-		if (record.state === "dead") {
+		if (this.#visibleState(record) === "dead") {
 			throw new ToolError(`Ultra session "${record.id}" is dead. Spawn a new one with ultra_spawn.`);
 		}
 		const message = args.message.trim();
@@ -436,22 +683,88 @@ export class UltraSessionRegistry {
 	async kill(session: ToolSession, id: string): Promise<UltraKillOutcome> {
 		const owner = session.getAgentId?.() ?? MAIN_AGENT_ID;
 		const record = this.#record(owner, id);
-		return this.#killRecord(record, session.asyncJobManager);
+		this.#recordTerminalLifecycle(record, "explicit ultra_kill");
+		return this.#killRecord(record, session.asyncJobManager, false);
 	}
 
-	/** Kill every session belonging to `owner` (Ultra exit / teardown). Returns the number killed. */
-	async killAll(owner: string, manager?: AsyncJobManager): Promise<number> {
+	/** Durable kill path for Agent Hub/collab controls that only carry a worker id. */
+	async killRegistered(id: string): Promise<UltraKillOutcome> {
+		const record = this.#records.get(id.trim());
+		if (!record || this.#visibleState(record) === "dead") {
+			throw new Error(`Ultra worker "${id}" is not addressable in its owning roster.`);
+		}
+		this.#recordTerminalLifecycle(record, "explicit Agent Hub kill");
+		return this.#killRecord(record, AsyncJobManager.instance(), false);
+	}
+
+	/** Kill every session belonging to `owner`. AgentSession normally journals one clear marker first. */
+	async killAll(
+		owner: string,
+		manager?: AsyncJobManager,
+		options: { journal?: boolean; reason?: string } = {},
+	): Promise<number> {
+		const records = [...this.#records.values()].filter(
+			record => record.ownerId === owner && this.#visibleState(record) !== "dead",
+		);
+		if (options.journal !== false && records.length > 0) {
+			records[0]?.recordLifecycle?.({
+				workerId: "*",
+				action: "clear",
+				reason: options.reason ?? "owner roster terminated",
+			});
+		}
 		let killed = 0;
-		for (const record of this.#records.values()) {
-			if (record.ownerId !== owner || record.state === "dead") continue;
-			await this.#killRecord(record, manager);
+		for (const record of records) {
+			await this.#killRecord(record, manager, false);
 			killed++;
 		}
 		return killed;
 	}
 
-	async #killRecord(record: UltraRecord, manager: AsyncJobManager | undefined): Promise<UltraKillOutcome> {
+	/**
+	 * Forget live runtime state while leaving the owner's spawn journal active.
+	 * The next process/session restore reconstructs these workers as parked and
+	 * never replays the interrupted in-flight turn or in-memory queue.
+	 */
+	async preserveAll(
+		owner: string,
+		manager: AsyncJobManager | undefined,
+		disposition: "park" | "shutdown",
+	): Promise<number> {
+		const records = [...this.#records.values()].filter(
+			record => record.ownerId === owner && this.#visibleState(record) !== "dead",
+		);
+		for (const record of records) {
+			record.lifecycleClosed = true;
+			record.killed = true;
+			record.queue.length = 0;
+			if (record.turn && manager) manager.cancel(record.turn.jobId, { ownerId: record.ownerId });
+			record.state = "parked";
+			try {
+				await AgentLifecycleManager.global().release(record.id, { ultraWorkers: disposition });
+			} catch (error) {
+				logger.warn("ultra: failed to preserve worker session", {
+					id: record.id,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+			this.#records.delete(record.id);
+		}
+		return records.length;
+	}
+
+	async #killRecord(
+		record: UltraRecord,
+		manager: AsyncJobManager | undefined,
+		journal: boolean,
+	): Promise<UltraKillOutcome> {
+		if (journal) this.#recordTerminalLifecycle(record, "worker terminated");
+		// Fence the parent before awaiting descendant teardown. A cancelled turn can
+		// still unwind through #finishTurn while a child release is pending; without
+		// this terminal state, that late completion would append a new spawn marker
+		// after the kill/clear marker and resurrect the worker on restart.
 		record.killed = true;
+		record.lifecycleClosed = true;
 		record.queue.length = 0;
 		let cancelledTurn = false;
 		if (record.turn && manager) {
@@ -460,8 +773,20 @@ export class UltraSessionRegistry {
 		record.state = "dead";
 		record.lastActivityAt = Date.now();
 		record.lastActivity = "killed";
+
+		const descendants = [...this.#records.values()].filter(
+			child => child.ownerId === record.id && this.#visibleState(child) !== "dead",
+		);
+		if (descendants.length > 0) {
+			descendants[0]?.recordLifecycle?.({
+				workerId: "*",
+				action: "clear",
+				reason: `parent ${record.id} terminated`,
+			});
+			for (const child of descendants) await this.#killRecord(child, manager, false);
+		}
 		try {
-			await AgentLifecycleManager.global().release(record.id);
+			await AgentLifecycleManager.global().release(record.id, { ultraWorkers: "terminal" });
 		} catch (error) {
 			logger.warn("ultra: failed to release worker session", {
 				id: record.id,
@@ -528,6 +853,7 @@ export class UltraSessionRegistry {
 			parentEvalSessionId: session.getEvalSessionId?.() ?? undefined,
 			parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
 			parentServiceTier: session.getServiceTierByFamily ? (session.getServiceTierByFamily() ?? null) : undefined,
+			context: record.inheritedContext,
 			keepAlive: true,
 		};
 	}
@@ -612,9 +938,17 @@ export class UltraSessionRegistry {
 			return;
 		}
 		// A spawn that failed before its session ever registered leaves nothing
-		// to continue — mark the record dead so sends fail with clear guidance.
-		record.state = AgentRegistry.global().get(record.id) ? "idle" : "dead";
-		if (record.state === "dead" || record.queue.length === 0) return;
+		// to continue. Persist that terminal state so a crash/restart cannot turn
+		// the optimistic spawn marker into a phantom parked worker.
+		const ref = AgentRegistry.global().get(record.id);
+		if (!ref || ref.status === "aborted") {
+			record.state = "dead";
+			this.#recordTerminalLifecycle(record, "worker turn ended without a resumable session");
+			return;
+		}
+		record.state = ref.status === "parked" ? "parked" : ref.status === "running" ? "running" : "idle";
+		record.recordLifecycle?.(this.#activeLifecycleEvent(record, "turn settled"));
+		if (record.queue.length === 0) return;
 		const nextMessage = record.queue.splice(0, record.queue.length).join("\n\n");
 		try {
 			this.#registerTurnJob(session, manager, record, nextMessage, { first: false });

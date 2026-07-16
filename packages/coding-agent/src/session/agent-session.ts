@@ -332,6 +332,7 @@ import { buildResolveReminderMessage, type ResolveToolDetails, runResolveInvocat
 import { getLatestTodoPhasesFromEntries, type TodoItem, type TodoPhase } from "../tools/todo";
 import { ToolAbortError, ToolError } from "../tools/tool-errors";
 import { clampTimeout } from "../tools/tool-timeouts";
+import type { UltraForkableConversationSnapshot } from "../ultra/context";
 import { UltraSessionRegistry } from "../ultra/runtime";
 import { parseCommandArgs } from "../utils/command-args";
 import { type EditMode, resolveEditMode } from "../utils/edit-mode";
@@ -590,6 +591,8 @@ export const SHUTDOWN_CONSOLIDATE_BUDGET_MS = 1_500;
 
 export interface AgentSessionDisposeOptions {
 	mnemopiConsolidateTimeoutMs?: number;
+	/** How this owner session treats still-addressable Ultra descendants. */
+	ultraWorkers?: "terminal" | "park" | "shutdown";
 }
 
 type CompactionCheckResult = Readonly<{
@@ -956,6 +959,15 @@ interface UltraThinkingRollbackSnapshot {
 	autoResolvedLevel: Effort | undefined;
 	restorePersistedDefault: boolean;
 	persistedDefaultThinkingLevel: Effort | typeof AUTO_THINKING | typeof ULTRA_THINKING;
+}
+
+/** Exact pre-Ultra state for the ordinary Task surface. */
+interface UltraSuppressedTaskState {
+	tool: AgentTool | undefined;
+	wasBuiltIn: boolean;
+	wasActive: boolean;
+	activeIndex: number;
+	wasSelectedDiscovered: boolean;
 }
 
 /** Options for AgentSession.prompt() */
@@ -1911,6 +1923,7 @@ export class AgentSession {
 	#createUltraTools: (() => AgentTool[]) | undefined;
 	#installedUltraToolNames = new Set<string>();
 	#ultraPolicyActive = false;
+	#ultraSuppressedTask: UltraSuppressedTaskState | undefined;
 	#ultraPolicyTransition: Promise<void> = Promise.resolve();
 	#ultraPolicyError: Error | undefined;
 	#ultraActivationRollback: UltraThinkingRollbackSnapshot | undefined;
@@ -6174,9 +6187,13 @@ export class AgentSession {
 		this.agent.abort();
 		await postPromptDrain;
 		try {
-			await this.#killUltraWorkers();
+			if (options.ultraWorkers === "park" || options.ultraWorkers === "shutdown") {
+				await this.#preserveUltraWorkers(options.ultraWorkers);
+			} else {
+				await this.#clearUltraWorkers("owner session disposed");
+			}
 		} catch (error) {
-			logger.warn("Failed to terminate Ultra workers during session disposal", { error: String(error) });
+			logger.warn("Failed to reconcile Ultra workers during session disposal", { error: String(error) });
 		}
 		// Cancel jobs this agent registered so a subagent's teardown doesn't
 		// leak its background bash/task work into the parent's manager. Only
@@ -6284,9 +6301,65 @@ export class AgentSession {
 		this.#eventListeners = [];
 	}
 
-	/** Terminate every Ultra worker owned by the current transcript before its session id changes. */
-	async #killUltraWorkers(): Promise<number> {
-		return UltraSessionRegistry.global().killAll(this.#agentId ?? MAIN_AGENT_ID, this.#asyncJobManager);
+	#ultraOwnerId(): string {
+		return this.#agentId ?? MAIN_AGENT_ID;
+	}
+
+	#recordUltraWorkerLifecycle(
+		event: Omit<Parameters<SessionManager["appendUltraWorkerLifecycle"]>[0], "ownerId">,
+	): void {
+		this.sessionManager.appendUltraWorkerLifecycle({ ...event, ownerId: this.#ultraOwnerId() });
+	}
+
+	/** Persist terminal intent before cancellation so a late turn cannot resurrect the roster. */
+	async #clearUltraWorkers(reason: string): Promise<number> {
+		const owner = this.#ultraOwnerId();
+		const registry = UltraSessionRegistry.global();
+		const hasAddressableRoster =
+			this.sessionManager.getActiveUltraWorkerRoster(owner).length > 0 || registry.listIds(owner).length > 0;
+		if (hasAddressableRoster) this.#recordUltraWorkerLifecycle({ workerId: "*", action: "clear", reason });
+		return registry.killAll(owner, this.#asyncJobManager, {
+			journal: false,
+			reason,
+		});
+	}
+
+	/** Close live worker state without changing the active roster journal. */
+	async #preserveUltraWorkers(disposition: "park" | "shutdown"): Promise<number> {
+		return UltraSessionRegistry.global().preserveAll(this.#ultraOwnerId(), this.#asyncJobManager, disposition);
+	}
+
+	/** Reconcile this branch's explicit active roster into parked runtime refs. */
+	async #restoreUltraWorkers(): Promise<void> {
+		const owner = this.#ultraOwnerId();
+		const outcome = await UltraSessionRegistry.global().restorePersistedRoster(
+			owner,
+			this.sessionManager.getCwd(),
+			this.sessionManager.getActiveUltraWorkerRoster(owner),
+			event => this.#recordUltraWorkerLifecycle(event),
+			this.sessionManager.getSessionFile(),
+		);
+		if (outcome.skipped.length === 0) return;
+		for (const issue of outcome.skipped) {
+			this.#recordUltraWorkerLifecycle({
+				workerId: issue.workerId,
+				action: "kill",
+				reason: `restore skipped: ${issue.reason}`,
+			});
+			logger.warn("Skipped incompatible persisted Ultra worker", {
+				owner,
+				workerId: issue.workerId,
+				reason: issue.reason,
+			});
+		}
+		this.#pendingNextTurnMessages.push({
+			role: "custom",
+			customType: "ultra-roster-warning",
+			content: `Warning: ${outcome.skipped.length} persisted Ultra worker${outcome.skipped.length === 1 ? " was" : "s were"} skipped during resume: ${outcome.skipped.map(issue => `${issue.workerId}: ${issue.reason}`).join("; ")}`,
+			display: true,
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
 	}
 
 	#closeAllProviderSessions(reason: string): void {
@@ -6556,10 +6629,73 @@ export class AgentSession {
 	}
 
 	#ultraPolicyMatches(desired: boolean): boolean {
-		if (!desired) return !this.#ultraPolicyActive && this.#installedUltraToolNames.size === 0;
-		if (!this.#ultraPolicyActive || this.#installedUltraToolNames.size === 0) return false;
+		if (!desired) {
+			return (
+				!this.#ultraPolicyActive &&
+				this.#installedUltraToolNames.size === 0 &&
+				this.#ultraSuppressedTask === undefined
+			);
+		}
+		if (
+			!this.#ultraPolicyActive ||
+			this.#installedUltraToolNames.size === 0 ||
+			this.#ultraSuppressedTask === undefined ||
+			this.#toolRegistry.has("task")
+		) {
+			return false;
+		}
 		const activeNames = new Set(this.getActiveToolNames());
-		return [...this.#installedUltraToolNames].every(name => activeNames.has(name));
+		return !activeNames.has("task") && [...this.#installedUltraToolNames].every(name => activeNames.has(name));
+	}
+
+	#suppressTaskForUltra(activeNames = this.getActiveToolNames()): UltraSuppressedTaskState {
+		const liveTool = this.#toolRegistry.get("task");
+		let state = this.#ultraSuppressedTask;
+		if (!state) {
+			state = {
+				tool: liveTool,
+				wasBuiltIn: this.#builtInToolNames.has("task"),
+				wasActive: activeNames.includes("task"),
+				activeIndex: activeNames.indexOf("task"),
+				wasSelectedDiscovered: this.#selectedDiscoveredToolNames.has("task"),
+			};
+			this.#ultraSuppressedTask = state;
+		} else if (liveTool) {
+			// A hot reload may replace the hidden implementation. Keep the original
+			// activation/ordering facts, but restore the newest registry entry later.
+			state.tool = liveTool;
+			state.wasBuiltIn = this.#builtInToolNames.has("task");
+		}
+		this.#toolRegistry.delete("task");
+		this.#builtInToolNames.delete("task");
+		this.#selectedDiscoveredToolNames.delete("task");
+		this.#invalidateDiscoveryCaches();
+		return state;
+	}
+
+	#restoreSuppressedTaskRegistry(): void {
+		const state = this.#ultraSuppressedTask;
+		if (!state) return;
+		if (state.tool) this.#toolRegistry.set("task", state.tool);
+		else this.#toolRegistry.delete("task");
+		if (state.wasBuiltIn && state.tool) this.#builtInToolNames.add("task");
+		else this.#builtInToolNames.delete("task");
+		this.#invalidateDiscoveryCaches();
+	}
+
+	#restoreSuppressedTaskSelection(): void {
+		const state = this.#ultraSuppressedTask;
+		if (state?.wasSelectedDiscovered && state.tool) this.#selectedDiscoveredToolNames.add("task");
+		else this.#selectedDiscoveredToolNames.delete("task");
+	}
+
+	#insertRestoredTask(activeNames: string[]): string[] {
+		const state = this.#ultraSuppressedTask;
+		if (!state?.wasActive || !state.tool || activeNames.includes("task")) return activeNames;
+		const next = [...activeNames];
+		const index = Math.max(0, Math.min(state.activeIndex, next.length));
+		next.splice(index, 0, "task");
+		return next;
 	}
 
 	#createUltraPolicyTools(): AgentTool[] {
@@ -6577,6 +6713,7 @@ export class AgentSession {
 
 	async #activateUltraPolicy(): Promise<void> {
 		if (this.#ultraPolicyActive) {
+			this.#suppressTaskForUltra();
 			const missingRegistryNames = [...this.#installedUltraToolNames].filter(name => !this.#toolRegistry.has(name));
 			if (missingRegistryNames.length > 0) {
 				const recreatedByName = new Map(this.#createUltraPolicyTools().map(tool => [tool.name, tool] as const));
@@ -6588,8 +6725,14 @@ export class AgentSession {
 				}
 			}
 			await this.#applyActiveToolsByName([
-				...new Set([...this.getActiveToolNames(), ...this.#installedUltraToolNames]),
+				...new Set([
+					...this.getActiveToolNames().filter(name => name !== "task"),
+					...this.#installedUltraToolNames,
+				]),
 			]);
+			await this.#restoreUltraWorkers().catch(error => {
+				logger.warn("Failed to restore persisted Ultra roster", { error: String(error) });
+			});
 			return;
 		}
 		if (!this.#supportsUltraThinking()) {
@@ -6603,13 +6746,16 @@ export class AgentSession {
 		}
 
 		const previousActiveNames = this.getActiveToolNames();
+		this.#suppressTaskForUltra(previousActiveNames);
 		try {
 			for (const tool of tools) {
 				this.#toolRegistry.set(tool.name, this.#wrapRuntimeTool(tool));
 				this.#builtInToolNames.add(tool.name);
 				this.#installedUltraToolNames.add(tool.name);
 			}
-			await this.#applyActiveToolsByName([...new Set([...previousActiveNames, ...names])]);
+			await this.#applyActiveToolsByName([
+				...new Set([...previousActiveNames.filter(name => name !== "task"), ...names]),
+			]);
 			this.#ultraPolicyActive = true;
 			this.#ultraActivationRollback = undefined;
 		} catch (error) {
@@ -6619,34 +6765,61 @@ export class AgentSession {
 				this.#selectedDiscoveredToolNames.delete(name);
 			}
 			this.#installedUltraToolNames.clear();
+			this.#restoreSuppressedTaskRegistry();
 			await this.#applyActiveToolsByName(previousActiveNames).catch(rollbackError => {
 				logger.warn("Failed to restore tools after Ultra activation error", { error: String(rollbackError) });
 			});
+			this.#restoreSuppressedTaskSelection();
+			this.#ultraSuppressedTask = undefined;
 			throw error;
 		}
+		await this.#restoreUltraWorkers().catch(error => {
+			logger.warn("Failed to restore persisted Ultra roster", { error: String(error) });
+		});
 	}
 
 	async #deactivateUltraPolicy(): Promise<void> {
 		if (!this.#ultraPolicyActive && this.#installedUltraToolNames.size === 0) return;
-		const owner = this.#agentId ?? MAIN_AGENT_ID;
-		await UltraSessionRegistry.global().killAll(owner, this.#asyncJobManager);
 		const previousActiveNames = this.getActiveToolNames();
-		const nextActiveNames = previousActiveNames.filter(name => !this.#installedUltraToolNames.has(name));
-		try {
-			await this.#applyActiveToolsByName(nextActiveNames);
-		} catch (error) {
-			await this.#applyActiveToolsByName(previousActiveNames).catch(rollbackError => {
-				logger.warn("Failed to restore tools after Ultra deactivation error", { error: String(rollbackError) });
-			});
-			throw error;
-		}
+		const installedTools = new Map(
+			[...this.#installedUltraToolNames]
+				.map(name => [name, this.#toolRegistry.get(name)] as const)
+				.filter((entry): entry is readonly [string, AgentTool] => entry[1] !== undefined),
+		);
+		const installedBuiltIns = new Set(
+			[...this.#installedUltraToolNames].filter(name => this.#builtInToolNames.has(name)),
+		);
+		const installedSelections = new Set(
+			[...this.#installedUltraToolNames].filter(name => this.#selectedDiscoveredToolNames.has(name)),
+		);
 		for (const name of this.#installedUltraToolNames) {
 			this.#toolRegistry.delete(name);
 			this.#builtInToolNames.delete(name);
 			this.#selectedDiscoveredToolNames.delete(name);
 		}
+		this.#restoreSuppressedTaskRegistry();
+		const nextActiveNames = this.#insertRestoredTask(
+			previousActiveNames.filter(name => !this.#installedUltraToolNames.has(name) && name !== "task"),
+		);
+		try {
+			await this.#applyActiveToolsByName(nextActiveNames);
+		} catch (error) {
+			this.#suppressTaskForUltra();
+			for (const [name, tool] of installedTools) this.#toolRegistry.set(name, tool);
+			for (const name of installedBuiltIns) this.#builtInToolNames.add(name);
+			for (const name of installedSelections) this.#selectedDiscoveredToolNames.add(name);
+			await this.#applyActiveToolsByName(previousActiveNames).catch(rollbackError => {
+				logger.warn("Failed to restore tools after Ultra deactivation error", { error: String(rollbackError) });
+			});
+			throw error;
+		}
+		await this.#clearUltraWorkers("Ultra thinking exited").catch(error => {
+			logger.warn("Failed to terminate Ultra roster after policy exit", { error: String(error) });
+		});
+		this.#restoreSuppressedTaskSelection();
 		this.#installedUltraToolNames.clear();
 		this.#ultraPolicyActive = false;
+		this.#ultraSuppressedTask = undefined;
 		this.#ultraDeactivationRollback = undefined;
 	}
 
@@ -7146,6 +7319,12 @@ export class AgentSession {
 		const previousActiveToolNames = this.getActiveToolNames();
 		const nextToolRegistry = new Map(this.#toolRegistry);
 		const nextBuiltInToolNames = new Set(this.#builtInToolNames);
+		if (this.#ultraPolicyActive && this.#ultraSuppressedTask) {
+			const suppressed = this.#ultraSuppressedTask;
+			if (suppressed.tool) nextToolRegistry.set("task", suppressed.tool);
+			if (suppressed.wasBuiltIn && suppressed.tool) nextBuiltInToolNames.add("task");
+			else nextBuiltInToolNames.delete("task");
+		}
 		for (const name of previousPluginToolNames) {
 			nextToolRegistry.delete(name);
 			const fallback = this.#pluginToolFallbacks.get(name);
@@ -7163,6 +7342,12 @@ export class AgentSession {
 			}
 			nextToolRegistry.set(name, tool);
 			nextBuiltInToolNames.delete(name);
+		}
+		if (this.#ultraPolicyActive && this.#ultraSuppressedTask) {
+			this.#ultraSuppressedTask.tool = nextToolRegistry.get("task");
+			this.#ultraSuppressedTask.wasBuiltIn = nextBuiltInToolNames.has("task");
+			nextToolRegistry.delete("task");
+			nextBuiltInToolNames.delete("task");
 		}
 
 		let prepared = false;
@@ -7577,6 +7762,24 @@ export class AgentSession {
 	/** All messages including custom types like BashExecutionMessage */
 	get messages(): AgentMessage[] {
 		return this.agent.state.messages;
+	}
+
+	/**
+	 * Immutable view used by `ultra_spawn`. The live message array is already the
+	 * resolved post-compaction context; the Ultra formatter selects only through
+	 * the current user-led turn and never mutates these message objects.
+	 */
+	getForkableConversationSnapshot(): UltraForkableConversationSnapshot {
+		const contextWindow = this.model?.contextWindow ?? 0;
+		const reserve =
+			contextWindow > 0 ? resolveBudgetReserveTokens(contextWindow, this.settings.getGroup("compaction")) : 0;
+		const maxContextTokens =
+			contextWindow > 0 ? Math.max(0, contextWindow - reserve - computeNonMessageTokens(this)) : 0;
+		return {
+			messages: Object.freeze([...this.agent.state.messages]),
+			maxContextTokens,
+			contextWindow,
+		};
 	}
 
 	/** Latest image attachments addressable by tools as `Image #N` or `attachment://N`. */
@@ -9595,7 +9798,7 @@ export class AgentSession {
 
 		this.#disconnectFromAgent();
 		await this.abort();
-		await this.#killUltraWorkers();
+		await this.#clearUltraWorkers("new transcript");
 		this.#cancelOwnAsyncJobs();
 		this.#closeAllProviderSessions("new session");
 		this.agent.reset();
@@ -9694,6 +9897,10 @@ export class AgentSession {
 			}
 		}
 
+		// Clear before copying so neither the old transcript nor its fork carries
+		// an addressable roster into two divergent owners.
+		await this.#clearUltraWorkers("session fork");
+
 		// Flush current session to ensure all entries are written
 		await this.sessionManager.flush();
 
@@ -9702,8 +9909,6 @@ export class AgentSession {
 		if (!forkResult) {
 			return false;
 		}
-		await this.#killUltraWorkers();
-
 		// Copy artifacts directory if it exists
 		const oldArtifactDir = forkResult.oldSessionFile.slice(0, -6);
 		const newArtifactDir = forkResult.newSessionFile.slice(0, -6);
@@ -11140,7 +11345,7 @@ export class AgentSession {
 				}
 			}
 			await this.sessionManager.flush();
-			await this.#killUltraWorkers();
+			await this.#clearUltraWorkers("session handoff");
 			this.#cancelOwnAsyncJobs();
 			await this.sessionManager.newSession(previousSessionFile ? { parentSession: previousSessionFile } : undefined);
 
@@ -15919,7 +16124,14 @@ export class AgentSession {
 
 		this.#disconnectFromAgent();
 		await this.abort({ goalReason: "internal" });
-		await this.#killUltraWorkers();
+		const previousUltraRoster = switchingToDifferentSession
+			? this.sessionManager.getActiveUltraWorkerRoster(this.#ultraOwnerId())
+			: [];
+		if (switchingToDifferentSession) {
+			await this.#clearUltraWorkers("switched transcripts");
+		} else {
+			await this.#preserveUltraWorkers("park");
+		}
 
 		// Flush pending writes before switching so restore snapshots reflect committed state.
 		await this.sessionManager.flush();
@@ -16109,6 +16321,20 @@ export class AgentSession {
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
+			if (switchingToDifferentSession) {
+				for (const entry of previousUltraRoster) {
+					this.#recordUltraWorkerLifecycle({
+						workerId: entry.workerId,
+						action: "spawn",
+						workerParentId: entry.workerParentId,
+						sessionFile: entry.sessionFile,
+						modelOverride: entry.modelOverride,
+						createdAt: entry.createdAt,
+						turns: entry.turns,
+						reason: "restored after failed transcript switch",
+					});
+				}
+			}
 			this.#freshProviderSessionId = previousFreshProviderSessionId;
 			this.#syncAgentSessionId(previousSessionState.sessionId);
 			this.#rekeyHindsightMemoryForCurrentSessionId();
@@ -16212,7 +16438,7 @@ export class AgentSession {
 
 		// Flush pending writes before branching
 		await this.sessionManager.flush();
-		await this.#killUltraWorkers();
+		await this.#clearUltraWorkers("session branch");
 		this.#cancelOwnAsyncJobs();
 
 		if (!selectedEntry.parentId) {
@@ -16220,6 +16446,7 @@ export class AgentSession {
 		} else {
 			this.sessionManager.createBranchedSession(selectedEntry.parentId);
 		}
+		this.#recordUltraWorkerLifecycle({ workerId: "*", action: "clear", reason: "session branch" });
 		this.#rehydrateCheckpointRewindState();
 		this.#syncTodoPhasesFromBranch();
 		this.#freshProviderSessionId = undefined;
@@ -16305,10 +16532,11 @@ export class AgentSession {
 			this.agent.replaceQueues([], []);
 		}
 		await this.sessionManager.flush();
-		await this.#killUltraWorkers();
+		await this.#clearUltraWorkers("btw branch");
 		this.#cancelOwnAsyncJobs();
 
 		this.sessionManager.createBranchedSession(leafId);
+		this.#recordUltraWorkerLifecycle({ workerId: "*", action: "clear", reason: "btw branch" });
 
 		this.#rehydrateCheckpointRewindState();
 		this.sessionManager.appendMessage({

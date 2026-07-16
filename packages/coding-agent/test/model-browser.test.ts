@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -6,8 +7,10 @@ import {
 	buildBrowserItems,
 	ModelBrowser,
 	sortModelItems,
+	thinkingLevelGlyph,
 } from "@oh-my-pi/pi-coding-agent/modes/components/model-browser";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { ULTRA_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 
 function makeModel(provider: string, id: string): Model {
 	return buildModel({
@@ -61,6 +64,15 @@ describe("ModelBrowser search ranking", () => {
 		browser.setQuery("gpt-5.5");
 
 		expect(browser.getSelected()?.selector).toBe("zenmux/gpt-5.5");
+	});
+});
+
+describe("ModelBrowser thinking glyphs", () => {
+	test("renders Ultra with its dedicated glyph instead of xhigh", async () => {
+		await initTheme(false);
+
+		expect(thinkingLevelGlyph(ULTRA_THINKING)).toBe(theme.thinking.ultra.split(" ")[0]);
+		expect(thinkingLevelGlyph(ULTRA_THINKING)).not.toBe(thinkingLevelGlyph(ThinkingLevel.XHigh));
 	});
 });
 

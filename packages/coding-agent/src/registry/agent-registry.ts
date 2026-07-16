@@ -30,10 +30,20 @@ export type AgentStatus = "running" | "idle" | "parked" | "aborted";
  */
 export type AgentKind = "main" | "sub" | "advisor";
 
+/**
+ * Public orchestration provenance for a subagent. This deliberately remains
+ * separate from {@link AgentKind}: Ultra and Task workers are both structural
+ * `sub` agents and therefore continue to share routing, transcripts, parking,
+ * and lifecycle machinery.
+ */
+export type WorkerKind = "task" | "ultra";
+
 export interface AgentRef {
 	id: string;
 	displayName: string;
 	kind: AgentKind;
+	/** How this structural subagent was spawned. Absent for legacy/unknown refs. */
+	workerKind?: WorkerKind;
 	parentId?: string;
 	status: AgentStatus;
 	/** Null exactly when parked/aborted. */
@@ -47,6 +57,7 @@ export interface AgentRef {
 
 export type RegistryEvent =
 	| { type: "registered"; ref: AgentRef }
+	| { type: "metadata_changed"; ref: AgentRef }
 	| { type: "status_changed"; ref: AgentRef }
 	| { type: "removed"; ref: AgentRef };
 
@@ -56,6 +67,7 @@ export interface RegisterInput {
 	id: string;
 	displayName: string;
 	kind: AgentKind;
+	workerKind?: WorkerKind;
 	parentId?: string;
 	session: AgentSession | null;
 	sessionFile?: string | null;
@@ -86,6 +98,7 @@ export class AgentRegistry {
 			id: input.id,
 			displayName: input.displayName,
 			kind: input.kind,
+			workerKind: input.workerKind,
 			parentId: input.parentId,
 			status: input.status ?? "running",
 			session: input.session,
@@ -96,6 +109,21 @@ export class AgentRegistry {
 		this.#refs.set(ref.id, ref);
 		this.#emit({ type: "registered", ref });
 		return ref;
+	}
+
+	/**
+	 * Attach orchestration provenance after session construction. The SDK
+	 * registers subagents before building their prompt, while the executor owns
+	 * the Task-vs-Ultra distinction; this small metadata update joins those two
+	 * stages without changing structural {@link AgentKind}.
+	 */
+	setWorkerIdentity(id: string, workerKind: WorkerKind, displayName?: string): void {
+		const ref = this.#refs.get(id);
+		if (ref?.kind !== "sub") return;
+		ref.workerKind = workerKind;
+		if (displayName) ref.displayName = displayName;
+		ref.lastActivity = Date.now();
+		this.#emit({ type: "metadata_changed", ref });
 	}
 
 	setStatus(id: string, status: AgentStatus): void {

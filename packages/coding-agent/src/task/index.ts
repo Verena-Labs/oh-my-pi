@@ -30,6 +30,7 @@ import taskSummaryTemplate from "../prompts/tools/task-summary.md" with { type: 
 import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/irc";
 import { formatBytes, formatDuration } from "../tools/render-utils";
+import { ToolError } from "../tools/tool-errors";
 import { resolveSpawnPolicy } from "./spawn-policy";
 import {
 	type AgentDefinition,
@@ -616,6 +617,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
 	): Promise<AgentToolResult<TaskToolDetails>> {
+		if (this.session.isUltraOrchestrationActive?.()) {
+			throw new ToolError(
+				"task is unavailable while Ultra is active. Use ultra_spawn for fully capable Ultra workers.",
+			);
+		}
 		const params = repairTaskParams(rawParams as TaskParams);
 		// Schema defaults fill `agent` for model calls, but internal callers
 		// and stale transcripts can bypass arktype. `spawnParamsFor` resolves each

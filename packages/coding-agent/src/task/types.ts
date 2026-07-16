@@ -1,6 +1,7 @@
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 import { type BaseType, type } from "arktype";
+import type { WorkerKind } from "../registry/agent-registry";
 import type { AgentSessionEvent } from "../session/agent-session";
 import type { NamedAgentThinkingLevel } from "../thinking";
 import type { NestedRepoPatch } from "./worktree";
@@ -60,6 +61,8 @@ export interface SubagentLifecyclePayload {
 	id: string;
 	agent: string;
 	agentSource: AgentSource;
+	/** Public orchestration provenance. Absent on legacy/external lifecycle producers. */
+	workerKind?: WorkerKind;
 	description?: string;
 	status: "started" | "completed" | "failed" | "aborted";
 	sessionFile?: string;

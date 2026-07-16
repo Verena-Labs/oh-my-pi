@@ -108,11 +108,39 @@ describe("sealToFit", () => {
 });
 
 describe("buildShareSnapshot", () => {
+	test("omits restart-only Ultra child paths even when secret redaction is disabled", () => {
+		const sessionFile = "/Users/alice/private/project/session/Worker.jsonl";
+		const entries: SessionEntry[] = [
+			{
+				type: "ultra_worker_lifecycle",
+				id: "u1",
+				parentId: null,
+				timestamp: "2026-07-16T00:00:00.000Z",
+				workerId: "Worker",
+				action: "spawn",
+				ownerId: "Main",
+				sessionFile,
+				modelOverride: "provider/model",
+				reason: `worker session is unavailable at ${sessionFile}`,
+			},
+		];
+		const sm = {
+			getHeader: () => sessionData([], "u1").header,
+			getBranch: () => entries,
+			getLeafId: () => "u1",
+		} as unknown as SessionManager;
+
+		const snapshot = buildShareSnapshot(sm, {});
+		expect(JSON.stringify(snapshot)).not.toContain(sessionFile);
+		expect(snapshot.entries[0]).toMatchObject({ type: "ultra_worker_lifecycle", workerId: "Worker" });
+		expect(JSON.stringify(entries)).toContain(sessionFile);
+	});
+
 	test("redacts secrets through the obfuscator and leaves the original untouched", () => {
 		const entries = [messageEntry("e1", null, "the token is hunter2-XYZZY, keep safe")];
 		const sm = {
 			getHeader: () => sessionData([], "x").header,
-			getEntries: () => entries,
+			getBranch: () => entries,
 			getLeafId: () => "e1",
 		} as unknown as SessionManager;
 		const obfuscator = new SecretObfuscator([{ type: "plain", content: "hunter2-XYZZY" }]);
@@ -155,7 +183,7 @@ describe("buildShareSnapshot", () => {
 		const header = { type: "session", version: 3, id: "t", timestamp: ts, cwd: `/home/${secret}/proj` };
 		const sm = {
 			getHeader: () => header,
-			getEntries: () => entries,
+			getBranch: () => entries,
 			getLeafId: () => "e1",
 		} as unknown as SessionManager;
 		const obfuscator = new SecretObfuscator([{ type: "plain", content: secret }]);
@@ -234,7 +262,7 @@ describe("buildShareSnapshot", () => {
 		];
 		const sm = {
 			getHeader: () => sessionData([], "x").header,
-			getEntries: () => entries,
+			getBranch: () => entries,
 			getLeafId: () => "b1",
 		} as unknown as SessionManager;
 		const obfuscator = new SecretObfuscator([{ type: "plain", content: secret }]);
@@ -265,7 +293,7 @@ describe("shareSession", () => {
 		const entries = [messageEntry("e1", null, "share me"), messageEntry("e2", "e1", "second")];
 		const sm = {
 			getHeader: () => sessionData([], "x").header,
-			getEntries: () => entries,
+			getBranch: () => entries,
 			getLeafId: () => "e2",
 		} as unknown as SessionManager;
 

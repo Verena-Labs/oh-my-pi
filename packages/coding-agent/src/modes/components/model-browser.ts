@@ -240,7 +240,7 @@ export function thinkingLevelGlyph(level: ConfiguredThinkingLevel): string {
 		case AUTO_THINKING:
 			return glyphOf(theme.thinking.autoPending);
 		case ULTRA_THINKING:
-			return glyphOf(theme.thinking.xhigh);
+			return glyphOf(theme.thinking.ultra);
 		case ThinkingLevel.Off:
 			return theme.status.disabled;
 		case ThinkingLevel.Minimal:

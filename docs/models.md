@@ -423,10 +423,12 @@ So a model can exist in registry but not be selectable until auth is available.
 
 The coding-agent `ultra` composite selector is intentionally not a model suffix.
 It preserves the active model, requests `xhigh` clamped to that model's highest
-supported effort, and activates same-model Ultra workers. It is offered only for
-models with controllable reasoning effort. Ordinary `xhigh` remains a distinct
-selectable tier that changes only provider reasoning, and the independently
-configured `slow` role may select a different model.
+supported effort, suspends ordinary named-agent spawning, and activates
+same-model Ultra workers. It is offered only for models with controllable
+reasoning effort. On max-capable models the selector order ends with `xhigh`,
+`max`, `ultra`; Ultra has its own display symbol. Ordinary `xhigh` remains a
+distinct selectable tier that changes only provider reasoning, and the
+independently configured `slow` role may select a different model.
 
 `--provider` is legacy; `--model` is preferred.
 
@@ -461,6 +463,8 @@ snapshots the main session's current model and clamped Ultra effort when spawned
 through a separate generic worker definition; every descendant inherits that
 root snapshot. Existing worker trees remain pinned to their spawn-time model and
 effort, while later direct spawns use the main session's newly selected model.
+An Ultra spawn may receive none, the latest N user-led turns, or all effective
+post-compaction parent-chat context without becoming a named task-agent role.
 
 Role aliases like `@smol` expand through `settings.modelRoles`; `*` selects `@default`. Quote `@` aliases in YAML values (`fable: "@slow"`). Each role value can also append a thinking selector such as `:minimal`, `:low`, `:medium`, or `:high`.
 

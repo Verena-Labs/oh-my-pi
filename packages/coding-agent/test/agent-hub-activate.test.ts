@@ -12,6 +12,7 @@ import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/
 import { SessionObserverRegistry } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -112,6 +113,99 @@ describe("Agent hub Enter activation", () => {
 		expect(rendered).toContain("Worker");
 		expect(rendered).toContain("parked");
 		expect(agents.get("Worker")?.sessionFile).toBe(workerSessionFile);
+		hub.dispose();
+	});
+
+	it("labels live Ultra workers, named Task agents, and legacy subagents distinctly", () => {
+		const agents = new AgentRegistry();
+		const session = { subscribe: () => () => {} } as unknown as AgentSession;
+		agents.register({
+			id: "RuntimeReview",
+			displayName: "ultra",
+			kind: "sub",
+			workerKind: "ultra",
+			parentId: "Main",
+			session,
+		});
+		agents.register({
+			id: "FastCheck",
+			displayName: "sonic",
+			kind: "sub",
+			workerKind: "task",
+			parentId: "Main",
+			session,
+		});
+		agents.register({ id: "Historical", displayName: "legacy", kind: "sub", parentId: "Main", session });
+		const hub = new AgentHubOverlayComponent({
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			focusAgent: async () => {},
+		});
+
+		const rendered = Bun.stripANSI(hub.render(160).join("\n"));
+		expect(rendered).toContain("ULTRA");
+		expect(rendered).toContain("TASK · sonic");
+		expect(rendered).toContain("SUB");
+		hub.dispose();
+	});
+
+	it("keeps an unclaimed persisted Ultra JSONL historical and non-revivable", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-hub-ultra-persisted-");
+		const sessionFile = path.join(tempDir.path(), "main.jsonl");
+		const workerSessionFile = path.join(tempDir.path(), "main", "RuntimeCompatReview.jsonl");
+		const timestamp = new Date().toISOString();
+		await Bun.write(sessionFile, "");
+		await Bun.write(
+			workerSessionFile,
+			`${[
+				{ type: "session", version: 3, id: "worker-session", timestamp, cwd: tempDir.path() },
+				{
+					type: "session_init",
+					id: "worker-init",
+					parentId: null,
+					timestamp,
+					systemPrompt: "Ultra worker",
+					task: "Review runtime compatibility",
+					tools: ["read", "yield"],
+					workerKind: "ultra",
+					agentName: "ultra",
+				},
+			]
+				.map(entry => JSON.stringify(entry))
+				.join("\n")}\n`,
+		);
+		const agents = new AgentRegistry();
+		const hub = new AgentHubOverlayComponent({
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			focusAgent: async () => {},
+			sessionFile,
+		});
+		await hub.persistedSubagentsReady;
+
+		const ref = agents.get("RuntimeCompatReview");
+		expect(ref?.workerKind).toBe("ultra");
+		expect(ref?.displayName).toBe("ultra");
+		expect(ref?.status).toBe("aborted");
+		expect(Bun.stripANSI(hub.render(160).join("\n"))).toContain("ULTRA");
+
+		const lifecycle = new AgentLifecycleManager(agents);
+		let factoryCalls = 0;
+		lifecycle.setPersistedSubagentReviverFactory(async () => {
+			factoryCalls++;
+			return async () => ({}) as AgentSession;
+		}, 0);
+		await expect(lifecycle.ensureLive("RuntimeCompatReview")).rejects.toThrow(/aborted.*cannot be revived/);
+		expect(factoryCalls).toBe(0);
+		await lifecycle.dispose();
 		hub.dispose();
 	});
 

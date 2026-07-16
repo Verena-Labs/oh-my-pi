@@ -177,6 +177,36 @@ export interface SessionInitEntry extends SessionEntryBase {
 	spawns?: string;
 	/** The agent's `readSummarize` setting (`false` = read summarization disabled); absent uses the session default. */
 	readSummarize?: boolean;
+	/** Public orchestration provenance. Absent on legacy/unknown subagent files. */
+	workerKind?: "task" | "ultra";
+	/** Named Task definition (`task`, `sonic`, …) or the private Ultra worker name. */
+	agentName?: string;
+	/** Stable registry/output id that owns this persisted worker transcript. */
+	agentId?: string;
+}
+
+/** Append-only owner-session journal used to reconstruct persistent Ultra rosters. */
+export interface UltraWorkerLifecycleEntry extends SessionEntryBase {
+	type: "ultra_worker_lifecycle";
+	workerId: string;
+	action: "spawn" | "kill" | "clear";
+	ownerId: string;
+	/** Parent worker in the Ultra tree (distinct from the journal entry's parentId). */
+	workerParentId?: string;
+	sessionFile?: string;
+	modelOverride?: string;
+	/** Original worker creation epoch, retained across lifecycle updates when known. */
+	createdAt?: number;
+	/** Number of completed worker turns at the time of this marker. */
+	turns?: number;
+	/** Human-readable terminal/cleanup provenance. */
+	reason?: string;
+}
+
+declare module "@oh-my-pi/pi-agent-core/compaction/entries" {
+	interface CustomCompactionSessionEntries {
+		ultraWorkerLifecycle: UltraWorkerLifecycleEntry;
+	}
 }
 
 /** Mode change entry - tracks agent mode transitions (e.g. plan mode). */
@@ -225,6 +255,7 @@ export type SessionEntry =
 	| TtsrInjectionEntry
 	| MCPToolSelectionEntry
 	| SessionInitEntry
+	| UltraWorkerLifecycleEntry
 	| ModeChangeEntry;
 
 /** Raw logical file entry after loaders strip any fixed-width title slot. */

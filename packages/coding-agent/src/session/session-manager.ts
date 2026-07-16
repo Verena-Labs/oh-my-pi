@@ -55,6 +55,7 @@ import {
 	TITLE_CHANGE_ENTRY_TYPE,
 	type TitleChangeEntry,
 	type TtsrInjectionEntry,
+	type UltraWorkerLifecycleEntry,
 	type UsageStatistics,
 } from "./session-entries";
 import { findMostRecentSession, listAllSessions, listSessions, type SessionInfo } from "./session-listing";
@@ -1524,10 +1525,76 @@ export class SessionManager {
 		outputSchema?: unknown;
 		spawns?: string;
 		readSummarize?: boolean;
+		workerKind?: "task" | "ultra";
+		agentName?: string;
+		agentId?: string;
 	}): string {
 		const entry: SessionInitEntry = { type: "session_init", ...this.#freshEntryFields(), ...init };
 		this.#recordEntry(entry);
 		return entry.id;
+	}
+
+	/**
+	 * Persist one Ultra roster mutation in the owning session. `clear` is
+	 * owner-scoped and ignores `workerId` during reconstruction; callers should
+	 * conventionally pass `"*"` for readability.
+	 */
+	appendUltraWorkerLifecycle(event: {
+		workerId: string;
+		action: "spawn" | "kill" | "clear";
+		ownerId: string;
+		workerParentId?: string;
+		sessionFile?: string;
+		modelOverride?: string;
+		createdAt?: number;
+		turns?: number;
+		reason?: string;
+	}): string {
+		// Ultra workers may be spawned before the owning session has produced its
+		// first assistant message. The normal lazy-session gate would otherwise
+		// leave this roster mutation memory-only, making the worker unreachable
+		// after a process restart. A lifecycle journal is durable owner state, so
+		// materialize the session as soon as its first marker is appended.
+		this.#forceFileCreation = true;
+		const entry: UltraWorkerLifecycleEntry = {
+			type: "ultra_worker_lifecycle",
+			...this.#freshEntryFields(),
+			...event,
+		};
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+
+	/**
+	 * Reconstruct the active owner-scoped Ultra roster from the current branch.
+	 * Spawn replaces prior metadata for an id, kill removes one id, and clear
+	 * terminates the complete roster. Historical branches never leak workers
+	 * into the resumed branch.
+	 */
+	getActiveUltraWorkerRoster(ownerId: string): UltraWorkerLifecycleEntry[] {
+		const active = new Map<string, UltraWorkerLifecycleEntry>();
+		for (const entry of this.getBranch()) {
+			if (
+				entry.type !== "ultra_worker_lifecycle" ||
+				typeof entry.ownerId !== "string" ||
+				entry.ownerId !== ownerId
+			) {
+				continue;
+			}
+			if (entry.action === "clear") {
+				active.clear();
+				continue;
+			}
+
+			// Session JSONL is intentionally forward-tolerant. Treat malformed ids
+			// and future lifecycle actions as inert metadata rather than accidentally
+			// promoting them to active workers (the previous fallback meant spawn).
+			const workerId = typeof entry.workerId === "string" ? entry.workerId.trim() : "";
+			if (!workerId) continue;
+			if (entry.action === "kill") active.delete(workerId);
+			else if (entry.action === "spawn") active.set(workerId, entry);
+		}
+		return [...active.values()];
 	}
 
 	appendCompaction<T = unknown>(
@@ -1946,6 +2013,30 @@ export class SessionManager {
 		manager.#entries = history;
 		manager.#index.rebuild(history);
 		manager.sanitizeLoadedOpenAIResponsesReplayMetadata();
+
+		// A fork inherits conversation history, not the source process's live
+		// Ultra workers. Keep the copied lifecycle journal intact for auditability,
+		// then close every owner roster that is active at the copied leaf. Filtering
+		// markers out would break parent chains and can expose an older spawn.
+		const inheritedOwners = new Set<string>();
+		for (const entry of manager.getBranch()) {
+			if (
+				entry.type === "ultra_worker_lifecycle" &&
+				typeof entry.ownerId === "string" &&
+				entry.ownerId.trim().length > 0
+			) {
+				inheritedOwners.add(entry.ownerId);
+			}
+		}
+		for (const ownerId of inheritedOwners) {
+			if (manager.getActiveUltraWorkerRoster(ownerId).length === 0) continue;
+			manager.appendUltraWorkerLifecycle({
+				workerId: "*",
+				action: "clear",
+				ownerId,
+				reason: "forked session starts with a neutral Ultra roster",
+			});
+		}
 		manager.#forceFileCreation = true;
 		await manager.#rewriteAtomically();
 		return manager;
@@ -2003,6 +2094,9 @@ export class SessionManager {
 			outputSchema?: unknown;
 			spawns?: string;
 			readSummarize?: boolean;
+			workerKind?: "task" | "ultra";
+			agentName?: string;
+			agentId?: string;
 		} | null;
 	} | null> {
 		let loaded: FileEntry[];
@@ -2021,6 +2115,9 @@ export class SessionManager {
 			outputSchema?: unknown;
 			spawns?: string;
 			readSummarize?: boolean;
+			workerKind?: "task" | "ultra";
+			agentName?: string;
+			agentId?: string;
 		} | null = null;
 		for (let index = loaded.length - 1; index >= 0; index--) {
 			const entry = loaded[index];
@@ -2032,6 +2129,9 @@ export class SessionManager {
 					outputSchema: entry.outputSchema,
 					readSummarize: entry.readSummarize,
 					spawns: entry.spawns,
+					workerKind: entry.workerKind,
+					agentName: entry.agentName,
+					agentId: entry.agentId,
 				};
 				break;
 			}

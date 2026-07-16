@@ -52,14 +52,27 @@ describe("AgentLifecycleManager", () => {
 		AgentRegistry.resetGlobalForTests();
 	});
 
-	function registerIdleSub(id: string, session: AgentSession | null, sessionFile: string | null = `/tmp/${id}.jsonl`) {
-		return registry.register({ id, displayName: "task", kind: "sub", session, sessionFile, status: "idle" });
+	function registerIdleSub(
+		id: string,
+		session: AgentSession | null,
+		sessionFile: string | null = `/tmp/${id}.jsonl`,
+		workerKind?: "task" | "ultra",
+	) {
+		return registry.register({
+			id,
+			displayName: workerKind === "ultra" ? "ultra" : "task",
+			kind: "sub",
+			workerKind,
+			session,
+			sessionFile,
+			status: "idle",
+		});
 	}
 
 	it("adopt arms the TTL: an idle agent is parked — session disposed, ref + sessionFile retained", async () => {
 		vi.useFakeTimers();
 		const stub = makeSessionStub();
-		registerIdleSub("1-Sub", stub.session, "/tmp/1-Sub.jsonl");
+		registerIdleSub("1-Sub", stub.session, "/tmp/1-Sub.jsonl", "ultra");
 		lifecycle.adopt("1-Sub", { idleTtlMs: TTL });
 
 		vi.advanceTimersByTime(TTL);
@@ -70,7 +83,63 @@ describe("AgentLifecycleManager", () => {
 		expect(ref?.status).toBe("parked");
 		expect(ref?.session).toBeNull();
 		expect(ref?.sessionFile).toBe("/tmp/1-Sub.jsonl");
+		expect(ref?.workerKind).toBe("ultra");
 		expect(lifecycle.has("1-Sub")).toBe(true);
+	});
+
+	it("parks an Ultra owner with the preserve disposition", async () => {
+		const disposeOptions: Array<{ ultraWorkers?: "terminal" | "park" | "shutdown" }> = [];
+		const session = {
+			dispose: async (options: { ultraWorkers?: "terminal" | "park" | "shutdown" } = {}) => {
+				disposeOptions.push(options);
+			},
+		} as unknown as AgentSession;
+		registerIdleSub("UltraOwner", session, "/tmp/UltraOwner.jsonl", "ultra");
+		lifecycle.adopt("UltraOwner", { idleTtlMs: 0 });
+
+		await lifecycle.park("UltraOwner");
+
+		expect(disposeOptions).toEqual([{ ultraWorkers: "park" }]);
+		expect(registry.get("UltraOwner")?.status).toBe("parked");
+	});
+
+	it("defers an owner's TTL park while a transitive descendant is running", async () => {
+		vi.useFakeTimers();
+		const owner = makeSessionStub();
+		registerIdleSub("Owner", owner.session, "/tmp/Owner.jsonl", "ultra");
+		registry.register({
+			id: "Child",
+			displayName: "ultra",
+			kind: "sub",
+			workerKind: "ultra",
+			parentId: "Owner",
+			session: null,
+			status: "idle",
+		});
+		registry.register({
+			id: "Grandchild",
+			displayName: "ultra",
+			kind: "sub",
+			workerKind: "ultra",
+			parentId: "Child",
+			session: null,
+			status: "running",
+		});
+		lifecycle.adopt("Owner", { idleTtlMs: TTL });
+
+		vi.advanceTimersByTime(TTL);
+		await flushAsync();
+
+		expect(owner.disposeCalls()).toBe(0);
+		expect(registry.get("Owner")?.status).toBe("idle");
+		expect(registry.get("Owner")?.session).toBe(owner.session);
+
+		registry.setStatus("Grandchild", "idle");
+		vi.advanceTimersByTime(TTL);
+		await flushAsync();
+
+		expect(owner.disposeCalls()).toBe(1);
+		expect(registry.get("Owner")?.status).toBe("parked");
 	});
 
 	it("running disarms the timer; returning to idle re-arms a fresh TTL", async () => {
@@ -114,6 +183,23 @@ describe("AgentLifecycleManager", () => {
 		expect(ref?.sessionFile).toBe("/tmp/3-Sub.jsonl");
 	});
 
+	it("preserves worker identity metadata across park and live revival", async () => {
+		const initial = makeSessionStub();
+		const revived = makeSessionStub();
+		registerIdleSub("UltraWorker", initial.session, "/tmp/UltraWorker.jsonl", "ultra");
+		lifecycle.adopt("UltraWorker", { idleTtlMs: 0, revive: async () => revived.session });
+
+		await lifecycle.park("UltraWorker");
+		expect(registry.get("UltraWorker")?.status).toBe("parked");
+		expect(registry.get("UltraWorker")?.workerKind).toBe("ultra");
+		expect(registry.get("UltraWorker")?.displayName).toBe("ultra");
+
+		await lifecycle.ensureLive("UltraWorker");
+		expect(registry.get("UltraWorker")?.status).toBe("idle");
+		expect(registry.get("UltraWorker")?.workerKind).toBe("ultra");
+		expect(registry.get("UltraWorker")?.displayName).toBe("ultra");
+	});
+
 	it("concurrent ensureLive calls during a slow revive coalesce into one reviver run", async () => {
 		const gate = deferred();
 		const revived = makeSessionStub();
@@ -143,6 +229,43 @@ describe("AgentLifecycleManager", () => {
 		expect(reviverRuns).toBe(1);
 		expect(a).toBe(revived.session);
 		expect(b).toBe(revived.session);
+	});
+
+	it("release fences an in-flight revival and disposes the late session before rejecting every waiter", async () => {
+		const gate = deferred();
+		const revived = makeSessionStub();
+		let reviverRuns = 0;
+		registry.register({
+			id: "ReleasedDuringRevive",
+			displayName: "ultra",
+			kind: "sub",
+			workerKind: "ultra",
+			session: null,
+			sessionFile: "/tmp/ReleasedDuringRevive.jsonl",
+			status: "parked",
+		});
+		lifecycle.adopt("ReleasedDuringRevive", {
+			idleTtlMs: 0,
+			revive: async () => {
+				reviverRuns++;
+				await gate.promise;
+				return revived.session;
+			},
+		});
+
+		const first = lifecycle.ensureLive("ReleasedDuringRevive");
+		const second = lifecycle.ensureLive("ReleasedDuringRevive");
+		const released = lifecycle.release("ReleasedDuringRevive");
+		expect(registry.get("ReleasedDuringRevive")).toBeUndefined();
+
+		gate.resolve();
+		await released;
+		await expect(first).rejects.toThrow(/released while being revived/u);
+		await expect(second).rejects.toThrow(/released while being revived/u);
+
+		expect(reviverRuns).toBe(1);
+		expect(revived.disposeCalls()).toBe(1);
+		expect(registry.get("ReleasedDuringRevive")).toBeUndefined();
 	});
 
 	it("ensureLive on an unknown id throws and points at history://", async () => {

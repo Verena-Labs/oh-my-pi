@@ -180,11 +180,16 @@ export interface SessionData {
 	subSessions?: Record<string, SubSession>;
 }
 
+/** Keep restart-only local paths out of portable HTML/share snapshots. */
+function exportSafeEntry(entry: SessionEntry): SessionEntry {
+	return entry.type === "ultra_worker_lifecycle" ? { ...entry, sessionFile: undefined, reason: undefined } : entry;
+}
+
 /** Snapshot the session (plus optional agent state) into the JSON shape the viewer renders. */
 export function buildSessionData(sm: SessionManager, state?: AgentState): SessionData {
 	return {
 		header: sm.getHeader(),
-		entries: sm.getBranch(),
+		entries: sm.getBranch().map(exportSafeEntry),
 		leafId: sm.getLeafId(),
 		systemPrompt: state?.systemPrompt.join("\n\n"),
 		tools: state?.tools?.map(t => ({ name: t.name, description: t.description })),
@@ -230,7 +235,7 @@ async function collectSubSessionsFromDir(
 		// Empty/corrupt files (no valid session header) load as [] — skip silently.
 		if (fileEntries.length > 0) {
 			const header = (fileEntries.find(e => e.type === "session") as SessionHeader | undefined) ?? null;
-			const entries = fileEntries.filter((e): e is SessionEntry => e.type !== "session");
+			const entries = fileEntries.filter((e): e is SessionEntry => e.type !== "session").map(exportSafeEntry);
 			out[key] = {
 				agentId,
 				parent: parentKey,

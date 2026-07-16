@@ -28,6 +28,7 @@ import type { AgentSessionEvent } from "../session/agent-session";
 import { stripImagesFromMessage, USER_INTERRUPT_LABEL } from "../session/messages";
 import type { SessionEntry as StoredSessionEntry } from "../session/session-entries";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBAGENT_PROGRESS_CHANNEL } from "../task/types";
+import { UltraSessionRegistry } from "../ultra/runtime";
 import { generateRoomKey, generateWriteToken, importRoomKey } from "./crypto";
 import { collabDisplayName } from "./display-name";
 import {
@@ -99,6 +100,39 @@ function isWireAgentEvent(event: AgentSessionEvent): event is AgentSessionEvent 
 function isWireSessionEntry(entry: StoredSessionEntry): entry is StoredSessionEntry & WireSessionEntry {
 	return entry.type in WIRE_SESSION_ENTRY_TYPES;
 }
+
+/**
+ * Projects the host's richer session journal onto the public collab transcript.
+ * Private metadata entries are intentionally omitted, but their children must
+ * be reparented to the nearest replicated ancestor or the guest's active branch
+ * would begin after the hidden row and lose the earlier transcript.
+ *
+ * @internal Exported for the focused replication contract.
+ */
+export class CollabSessionEntryProjector {
+	#nearestWireAncestor = new Map<string, string | null>();
+
+	reset(entries: readonly StoredSessionEntry[]): (StoredSessionEntry & WireSessionEntry)[] {
+		this.#nearestWireAncestor.clear();
+		const projected: (StoredSessionEntry & WireSessionEntry)[] = [];
+		for (const entry of entries) {
+			const wire = this.append(entry);
+			if (wire) projected.push(wire);
+		}
+		return projected;
+	}
+
+	append(entry: StoredSessionEntry): (StoredSessionEntry & WireSessionEntry) | undefined {
+		const parentId = entry.parentId === null ? null : (this.#nearestWireAncestor.get(entry.parentId) ?? null);
+		if (!isWireSessionEntry(entry)) {
+			this.#nearestWireAncestor.set(entry.id, parentId);
+			return undefined;
+		}
+
+		this.#nearestWireAncestor.set(entry.id, entry.id);
+		return parentId === entry.parentId ? entry : { ...entry, parentId };
+	}
+}
 const CONNECT_TIMEOUT_MS = 15_000;
 /** Max bytes served per fetch-transcript reply (guest re-requests from `newSize`). */
 export const TRANSCRIPT_READ_CAP = 4 * 1024 * 1024;
@@ -137,6 +171,7 @@ export class CollabHost {
 	#agentsDebounce: Timer | null = null;
 	#busUnsubscribers: (() => void)[] = [];
 	#registryUnsubscribe?: () => void;
+	#entryProjector = new CollabSessionEntryProjector();
 	#stopped = false;
 
 	constructor(ctx: InteractiveModeContext) {
@@ -278,7 +313,8 @@ export class CollabHost {
 		}
 		this.#registryUnsubscribe = AgentRegistry.global().onChange(() => this.#scheduleAgentsBroadcast());
 		this.#ctx.sessionManager.onEntryAppended = entry => {
-			if (isWireSessionEntry(entry)) this.#broadcast({ t: "entry", entry: shrinkForReplication(entry) });
+			const wireEntry = this.#entryProjector.append(entry);
+			if (wireEntry) this.#broadcast({ t: "entry", entry: shrinkForReplication(wireEntry) });
 			// Model/thinking/title changes land as entries while idle; refresh
 			// guest state promptly (debounce + JSON diff dedupe).
 			this.#scheduleStateBroadcast();
@@ -391,7 +427,7 @@ export class CollabHost {
 			}
 			logger.info("collab welcome exceeded size threshold; stripped images", { stripped });
 		}
-		const entries = snapshot.entries.filter(isWireSessionEntry);
+		const entries = this.#entryProjector.reset(snapshot.entries);
 		const socket = this.#socket;
 		if (!socket) return;
 		socket.send(
@@ -614,6 +650,10 @@ export class CollabHost {
 			case "kill": {
 				const kill = async () => {
 					const ref = AgentRegistry.global().get(agentId);
+					if (ref?.workerKind === "ultra") {
+						await UltraSessionRegistry.global().killRegistered(agentId);
+						return;
+					}
 					if (ref && ref.status === "running" && ref.session) {
 						await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
 					}

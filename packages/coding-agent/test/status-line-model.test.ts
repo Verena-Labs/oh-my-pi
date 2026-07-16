@@ -108,26 +108,26 @@ describe("status line model segment compact thinking level", () => {
 	});
 
 	it("shows Ultra as the configured thinking tier instead of its xhigh provider effort", () => {
-		const xhighDisplay = theme.thinking.xhigh;
-		const space = xhighDisplay.indexOf(" ");
-		const glyph = space === -1 ? xhighDisplay : xhighDisplay.slice(0, space);
 		const modelPrefix = theme.icon.model ? `${theme.icon.model} ` : "";
 		const rendered = renderSegment("model", createThinkingContext(false, ULTRA_THINKING));
 
-		expect(Bun.stripANSI(rendered.content)).toBe(`${modelPrefix}Test Model${theme.sep.dot}${glyph} ultra`);
+		expect(Bun.stripANSI(rendered.content)).toBe(`${modelPrefix}Test Model${theme.sep.dot}${theme.thinking.ultra}`);
 		expect(Bun.stripANSI(rendered.content)).not.toContain("xhigh");
 	});
 
-	it("keeps Ultra visibly distinct from xhigh when compact thinking is enabled", () => {
+	it("compacts Ultra to its dedicated glyph and keeps it distinct from xhigh", () => {
+		const ultraDisplay = theme.thinking.ultra;
+		const ultraSpace = ultraDisplay.indexOf(" ");
+		const ultraGlyph = ultraSpace === -1 ? ultraDisplay : ultraDisplay.slice(0, ultraSpace);
 		const xhighDisplay = theme.thinking.xhigh;
-		const space = xhighDisplay.indexOf(" ");
-		const glyph = space === -1 ? xhighDisplay : xhighDisplay.slice(0, space);
-		const modelPrefix = theme.icon.model ? `${theme.icon.model} ` : "";
+		const xhighSpace = xhighDisplay.indexOf(" ");
+		const xhighGlyph = xhighSpace === -1 ? xhighDisplay : xhighDisplay.slice(0, xhighSpace);
 		const ultra = renderSegment("model", createThinkingContext(true, ULTRA_THINKING));
 		const xhigh = renderSegment("model", createThinkingContext(true, ThinkingLevel.XHigh));
 
-		expect(Bun.stripANSI(ultra.content)).toBe(`${modelPrefix}Test Model${theme.sep.dot}${glyph} ultra`);
-		expect(Bun.stripANSI(xhigh.content)).toBe(`${glyph} Test Model`);
+		expect(Bun.stripANSI(ultra.content)).toBe(`${ultraGlyph} Test Model`);
+		expect(Bun.stripANSI(xhigh.content)).toBe(`${xhighGlyph} Test Model`);
+		expect(ultraGlyph).not.toBe(xhighGlyph);
 		expect(Bun.stripANSI(ultra.content)).not.toBe(Bun.stripANSI(xhigh.content));
 	});
 });

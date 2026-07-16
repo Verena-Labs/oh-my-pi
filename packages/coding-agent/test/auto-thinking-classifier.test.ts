@@ -126,6 +126,19 @@ describe("auto thinking classifier helpers", () => {
 			contextWindow: 128_000,
 			maxTokens: 4096,
 		});
+		const maxCapableModel = buildModel({
+			id: "mock-ultra-max",
+			name: "Mock Ultra Max",
+			api: "openai-completions",
+			provider: "mock",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			thinking: { mode: "effort", efforts: [Effort.High, Effort.XHigh, Effort.Max] },
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 4096,
+		});
 
 		expect(getAvailableConfiguredThinkingLevels(xhighModel)).toEqual([
 			Effort.Low,
@@ -137,6 +150,12 @@ describe("auto thinking classifier helpers", () => {
 			Effort.Low,
 			Effort.Medium,
 			Effort.High,
+			ULTRA_THINKING,
+		]);
+		expect(getAvailableConfiguredThinkingLevels(maxCapableModel)).toEqual([
+			Effort.High,
+			Effort.XHigh,
+			Effort.Max,
 			ULTRA_THINKING,
 		]);
 		expect(resolveThinkingLevelForModel(highCeilingModel, concreteThinkingLevel(ULTRA_THINKING))).toBe(Effort.High);

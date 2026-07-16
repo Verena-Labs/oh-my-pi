@@ -369,14 +369,15 @@ describe("ModelHub", () => {
 			expect(call?.[3]).toBe("openai/gpt-5.5");
 
 			// The thinking strip follows immediately, scoped to the model's
-			// real ladder: gpt-5.5 tops out at xhigh — no invented max tier.
+			// concrete ladder: gpt-5.5 tops out at xhigh — no invented max tier.
 			const thinking = footerLine(hub.render(220));
 			expect(thinking).toContain("inherit");
 			expect(thinking).toContain("xhigh");
+			expect(thinking).toContain("ultra");
 			expect(thinking).not.toContain("max");
 		});
 
-		test("renders max as a real final tier on max-capable models (gpt-5.6)", () => {
+		test("renders max before Ultra on max-capable models (gpt-5.6)", () => {
 			const model = getBundledModel("openai", "gpt-5.6");
 			if (!model) throw new Error("Expected bundled model openai/gpt-5.6");
 			const { hub } = createHub({ models: [model], scoped: true });
@@ -387,6 +388,9 @@ describe("ModelHub", () => {
 			const thinking = footerLine(hub.render(220));
 			expect(thinking).toContain("xhigh");
 			expect(thinking).toContain("max");
+			expect(thinking).toContain("ultra");
+			expect(thinking.indexOf("xhigh")).toBeLessThan(thinking.indexOf("max"));
+			expect(thinking.indexOf("max")).toBeLessThan(thinking.indexOf("ultra"));
 		});
 
 		test("Enter on a chip already holding this model unassigns it", () => {

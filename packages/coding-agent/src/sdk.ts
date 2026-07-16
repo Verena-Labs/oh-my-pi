@@ -1605,6 +1605,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				activeToolNames.add(name);
 			}
 		};
+		const isUltraOrchestrationActive = (): boolean =>
+			options.ultraWorker === true ||
+			session?.isUltraThinking === true ||
+			(!session && thinkingLevel === ULTRA_THINKING);
 		const toolSession: ToolSession = {
 			get cwd() {
 				return sessionManager.getCwd();
@@ -1627,6 +1631,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			requireYieldTool: options.requireYieldTool,
 			taskDepth: options.taskDepth ?? 0,
 			ultraWorker: options.ultraWorker,
+			isUltraOrchestrationActive,
+			getForkableConversationSnapshot: () =>
+				session?.getForkableConversationSnapshot() ?? {
+					messages: [],
+					maxContextTokens: 0,
+					contextWindow: agent?.state.model?.contextWindow ?? model?.contextWindow ?? 0,
+				},
+			recordUltraWorkerLifecycle: event =>
+				sessionManager.appendUltraWorkerLifecycle({
+					...event,
+					ownerId: resolvedAgentId,
+				}),
 			getSessionFile: () => sessionManager.getSessionFile() ?? null,
 			getEvalKernelOwnerId: () => evalKernelOwnerId,
 			getEvalSessionId: () =>
@@ -1640,7 +1656,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getAgentId: () => resolvedAgentId,
 			getToolByName: name => session?.getToolByName(name),
 			agentRegistry,
-			getSessionSpawns: () => options.spawns ?? "*",
+			getSessionSpawns: () => (isUltraOrchestrationActive() ? "" : (options.spawns ?? "*")),
 			getModelString: () => (hasExplicitModel && model ? formatModelString(model) : undefined),
 			getActiveModelString,
 			getActiveModel: () => agent?.state.model ?? model,
@@ -2653,6 +2669,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			id: resolvedAgentId,
 			displayName: resolvedAgentDisplayName,
 			kind: agentKind,
+			// The executor already knows this provenance before AgentSession exists.
+			// Publish it with the pre-registration so Hub/collab kills that race
+			// startup route through UltraSessionRegistry instead of Task lifecycle.
+			workerKind: options.ultraWorker === true ? "ultra" : undefined,
 			parentId: options.parentAgentId,
 			session: null,
 			sessionFile: sessionManager.getSessionFile() ?? null,
@@ -3281,7 +3301,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		agentRegistry.attachSession(resolvedAgentId, session, sessionManager.getSessionFile() ?? null);
 		{
 			const originalDispose = session.dispose.bind(session);
-			session.dispose = async () => {
+			session.dispose = async options => {
 				try {
 					// Reject new session work (eval starts) the moment disposal
 					// begins — the lifecycle await below opens an async gap before
@@ -3292,9 +3312,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						// adopted subagent sessions, revivers. Tear it down while shared
 						// resources (kernels, MCP, LSP) are still live. Subagent disposal
 						// must NOT touch the global lifecycle.
-						await AgentLifecycleManager.global().dispose();
+						await AgentLifecycleManager.global().dispose({ ultraWorkers: "shutdown" });
 					}
-					await originalDispose();
+					await originalDispose({
+						...options,
+						ultraWorkers: options?.ultraWorkers ?? (agentKind === "main" ? "shutdown" : "terminal"),
+					});
 				} finally {
 					unregisterUnlessParked();
 					unsubscribeCredentialDisabled?.();

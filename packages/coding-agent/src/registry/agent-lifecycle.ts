@@ -38,6 +38,11 @@ interface AdoptedAgent {
 	timer?: NodeJS.Timeout;
 }
 
+interface RevivalAttempt {
+	fence: { released: boolean };
+	promise: Promise<AgentSession>;
+}
+
 export class AgentLifecycleManager {
 	static #global: AgentLifecycleManager | undefined;
 
@@ -58,6 +63,7 @@ export class AgentLifecycleManager {
 				clearTimeout(adopted.timer);
 			}
 			current.#adopted.clear();
+			for (const attempt of current.#revivals.values()) attempt.fence.released = true;
 			current.#revivals.clear();
 			current.#parking.clear();
 			current.#persistedReviverFactory = undefined;
@@ -70,7 +76,7 @@ export class AgentLifecycleManager {
 	/** Ids whose session is being disposed by {@link park} right now. */
 	readonly #parking = new Set<string>();
 	/** In-flight revives, so concurrent {@link ensureLive} calls coalesce. */
-	readonly #revivals = new Map<string, Promise<AgentSession>>();
+	readonly #revivals = new Map<string, RevivalAttempt>();
 	#unsubscribe: (() => void) | undefined;
 	#persistedReviverFactory: PersistedSubagentReviverFactory | undefined;
 	/** TTL applied when a cold-revived ref is adopted on demand. */
@@ -128,6 +134,10 @@ export class AgentLifecycleManager {
 		if (!adopted) return;
 		const ref = this.#registry.get(id);
 		if (!ref?.session) return;
+		if (this.#hasRunningDescendant(id)) {
+			this.#armTimer(id, adopted);
+			return;
+		}
 		if (adopted.timer) {
 			clearTimeout(adopted.timer);
 			adopted.timer = undefined;
@@ -135,7 +145,7 @@ export class AgentLifecycleManager {
 		this.#parking.add(id);
 		try {
 			try {
-				await ref.session.dispose();
+				await ref.session.dispose({ ultraWorkers: "park" });
 			} catch (error) {
 				logger.warn("AgentLifecycleManager.park: session dispose failed", { id, error: String(error) });
 			}
@@ -160,13 +170,15 @@ export class AgentLifecycleManager {
 		}
 		if (ref.session) return ref.session;
 		const inflight = this.#revivals.get(id);
-		if (inflight) return inflight;
-		const revival = this.#resolveAndRevive(id, ref);
-		this.#revivals.set(id, revival);
+		if (inflight) return inflight.promise;
+		const fence = { released: false };
+		const revival = this.#resolveAndRevive(id, ref, fence);
+		const attempt: RevivalAttempt = { fence, promise: revival };
+		this.#revivals.set(id, attempt);
 		try {
 			return await revival;
 		} finally {
-			this.#revivals.delete(id);
+			if (this.#revivals.get(id) === attempt) this.#revivals.delete(id);
 		}
 	}
 
@@ -177,12 +189,13 @@ export class AgentLifecycleManager {
 	 * adopt it so the agent rejoins the normal idle↔parked lifecycle. Throws
 	 * when the agent is not revivable or no reviver can be produced.
 	 */
-	async #resolveAndRevive(id: string, ref: AgentRef): Promise<AgentSession> {
+	async #resolveAndRevive(id: string, ref: AgentRef, fence: { released: boolean }): Promise<AgentSession> {
 		let revive = this.#adopted.get(id)?.revive;
 		let coldAdopted = false;
 		if (!revive && ref.status === "parked" && ref.sessionFile && this.#persistedReviverFactory) {
 			revive = await this.#persistedReviverFactory(ref);
 			if (revive) {
+				if (fence.released) throw new Error(`Agent "${id}" was released while being revived.`);
 				this.#adopted.set(id, { idleTtlMs: this.#persistedReviveTtlMs, revive });
 				coldAdopted = true;
 			}
@@ -193,7 +206,7 @@ export class AgentLifecycleManager {
 			);
 		}
 		try {
-			return await this.#revive(id, revive, ref.sessionFile);
+			return await this.#revive(id, revive, ref.sessionFile, fence);
 		} catch (error) {
 			// A failed cold revive (stale ctx, missing cwd, bad MCP) must not leave a
 			// poisoned reviver stuck in #adopted — drop it so a later ensureLive
@@ -204,34 +217,60 @@ export class AgentLifecycleManager {
 	}
 
 	/** Hard removal: dispose if live, unregister from registry, drop timers. */
-	async release(id: string): Promise<void> {
+	async release(id: string, options: { ultraWorkers?: "terminal" | "park" | "shutdown" } = {}): Promise<void> {
+		const revival = this.#revivals.get(id);
+		if (revival) revival.fence.released = true;
 		const adopted = this.#adopted.get(id);
 		clearTimeout(adopted?.timer);
 		this.#adopted.delete(id);
 		const ref = this.#registry.get(id);
 		if (ref?.session) {
 			try {
-				await ref.session.dispose();
+				await ref.session.dispose({ ultraWorkers: options.ultraWorkers ?? "terminal" });
 			} catch (error) {
 				logger.warn("AgentLifecycleManager.release: session dispose failed", { id, error: String(error) });
 			}
 		}
 		this.#registry.unregister(id);
+		if (revival) {
+			try {
+				await revival.promise;
+			} catch {
+				// Expected when this release fenced the in-flight revival.
+			}
+		}
 	}
 
 	/** Teardown everything (process exit / main session dispose). */
-	async dispose(): Promise<void> {
+	async dispose(options: { ultraWorkers?: "terminal" | "shutdown" } = {}): Promise<void> {
 		this.#unsubscribe?.();
 		this.#unsubscribe = undefined;
-		const ids = [...this.#adopted.keys()];
-		await Promise.all(ids.map(id => this.release(id)));
+		const ids = [...new Set([...this.#adopted.keys(), ...this.#revivals.keys()])];
+		await Promise.all(ids.map(id => this.release(id, { ultraWorkers: options.ultraWorkers ?? "shutdown" })));
 		this.#revivals.clear();
 		this.#parking.clear();
 		this.#persistedReviverFactory = undefined;
 	}
 
-	async #revive(id: string, revive: AgentReviver, sessionFile: string | null): Promise<AgentSession> {
+	async #revive(
+		id: string,
+		revive: AgentReviver,
+		sessionFile: string | null,
+		fence: { released: boolean },
+	): Promise<AgentSession> {
 		const session = await revive();
+		if (fence.released) {
+			try {
+				await session.dispose({ ultraWorkers: "terminal" });
+			} catch (error) {
+				logger.warn("AgentLifecycleManager: failed to dispose a revival completed after release", {
+					id,
+					error: String(error),
+				});
+			}
+			this.#registry.unregister(id);
+			throw new Error(`Agent "${id}" was released while being revived.`);
+		}
 		this.#registry.attachSession(id, session, sessionFile);
 		// Emits status_changed → "idle", which re-arms the TTL timer below.
 		this.#registry.setStatus(id, "idle");
@@ -247,6 +286,20 @@ export class AgentLifecycleManager {
 		}, adopted.idleTtlMs);
 		timer.unref?.();
 		adopted.timer = timer;
+	}
+
+	#hasRunningDescendant(id: string): boolean {
+		for (const ref of this.#registry.list()) {
+			if (ref.status !== "running") continue;
+			let parentId = ref.parentId;
+			const seen = new Set<string>();
+			while (parentId && !seen.has(parentId)) {
+				if (parentId === id) return true;
+				seen.add(parentId);
+				parentId = this.#registry.get(parentId)?.parentId;
+			}
+		}
+		return false;
 	}
 
 	#onRegistryEvent(event: RegistryEvent): void {

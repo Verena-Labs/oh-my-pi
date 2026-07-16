@@ -11,6 +11,8 @@ import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-regis
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolPathWithSource } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -20,8 +22,12 @@ import { ULTRA_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import type { Rule } from "../../src/capability/rule";
 
-function createMockSession(onPrompt: (params: { emit: (event: AgentSessionEvent) => void }) => void): AgentSession {
+function createMockSession(
+	onPrompt: (params: { emit: (event: AgentSessionEvent) => void }) => void,
+	activeToolNames: string[] = ["read", "yield"],
+): AgentSession {
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
+	let currentToolNames = [...activeToolNames];
 	const emit = (event: AgentSessionEvent) => {
 		for (const listener of listeners) listener(event);
 	};
@@ -31,8 +37,10 @@ function createMockSession(onPrompt: (params: { emit: (event: AgentSessionEvent)
 		model: undefined,
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {} },
-		getActiveToolNames: () => ["read", "yield"],
-		setActiveToolsByName: async (_toolNames: string[]) => {},
+		getActiveToolNames: () => [...currentToolNames],
+		setActiveToolsByName: async (toolNames: string[]) => {
+			currentToolNames = [...toolNames];
+		},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.push(listener);
 			return () => {
@@ -51,7 +59,7 @@ function createMockSession(onPrompt: (params: { emit: (event: AgentSessionEvent)
 	return session as unknown as AgentSession;
 }
 
-function yieldEmittingSession(): AgentSession {
+function yieldEmittingSession(activeToolNames?: string[]): AgentSession {
 	return createMockSession(({ emit }) => {
 		emit({
 			type: "tool_execution_end",
@@ -63,7 +71,7 @@ function yieldEmittingSession(): AgentSession {
 			},
 			isError: false,
 		});
-	});
+	}, activeToolNames);
 }
 
 function createSessionResult(session: AgentSession): CreateAgentSessionResult {
@@ -108,6 +116,8 @@ function createModelRegistry(model: Model): ModelRegistry {
 describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+		AgentLifecycleManager.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
 	});
 
 	it("forwards rules, preloadedExtensionPaths, and preloadedCustomToolPaths to createAgentSession", async () => {
@@ -218,7 +228,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 	it("preserves Ultra orchestration below the recursion limit", async () => {
 		const settings = Settings.isolated();
 		settings.set("task.maxRecursionDepth", 2);
-		const session = yieldEmittingSession();
+		const session = yieldEmittingSession(["read", "task", "yield"]);
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
 
 		const result = await runSubprocess({
@@ -234,12 +244,13 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(forwarded?.taskDepth).toBe(1);
 		expect(forwarded?.ultraWorker).toBe(true);
 		expect(forwarded?.thinkingLevel).toBe(ULTRA_THINKING);
+		expect(session.getActiveToolNames()).toEqual(["read", "yield"]);
 	});
 
 	it("uses concrete xhigh for an Ultra worker at the recursion limit", async () => {
 		const settings = Settings.isolated();
 		settings.set("task.maxRecursionDepth", 1);
-		const session = yieldEmittingSession();
+		const session = yieldEmittingSession(["read", "task", "yield"]);
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
 
 		const result = await runSubprocess({
@@ -255,5 +266,47 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(forwarded?.taskDepth).toBe(1);
 		expect(forwarded?.ultraWorker).toBe(true);
 		expect(forwarded?.thinkingLevel).toBe(ThinkingLevel.XHigh);
+		expect(session.getActiveToolNames()).toEqual(["read", "yield"]);
+	});
+
+	it("keeps ordinary Task available to non-Ultra workers", async () => {
+		const session = yieldEmittingSession(["read", "task", "todo", "yield"]);
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "ordinary-task-worker",
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(session.getActiveToolNames()).toEqual(["read", "task", "yield"]);
+	});
+
+	it("records Ultra identity on the live ref and persisted session_init contract", async () => {
+		const session = yieldEmittingSession();
+		const appendSessionInit = vi.fn();
+		(session.sessionManager as unknown as { appendSessionInit: typeof appendSessionInit }).appendSessionInit =
+			appendSessionInit;
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		AgentRegistry.global().register({
+			id: "ultra-identity-worker",
+			displayName: "sub",
+			kind: "sub",
+			session,
+			status: "running",
+		});
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "ultra-identity-worker",
+			ultraWorker: true,
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(AgentRegistry.global().get("ultra-identity-worker")?.workerKind).toBe("ultra");
+		expect(AgentRegistry.global().get("ultra-identity-worker")?.displayName).toBe("task");
+		expect(appendSessionInit).toHaveBeenCalledWith(
+			expect.objectContaining({ workerKind: "ultra", agentName: "task", agentId: "ultra-identity-worker" }),
+		);
 	});
 });
