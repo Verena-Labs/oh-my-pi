@@ -14,8 +14,8 @@
 		"history": "merge-commit"
 	},
 	"release": {
-		"tag": "pi-v16.5.0-r2",
-		"revision": 2,
+		"tag": "pi-v16.5.0-r4",
+		"revision": 4,
 		"tagPattern": "pi-v<upstream>-r<revision>",
 		"sourceOnly": true,
 		"mutable": false,

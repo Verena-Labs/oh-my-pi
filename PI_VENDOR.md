@@ -7,7 +7,7 @@ This file is generated from `automation/upstream-sync.json` by `scripts/upstream
 - Current upstream repository: `can1357/oh-my-pi`
 - Current upstream release: `v16.5.0`
 - Exact upstream commit: `3047c27c332c5629c8e063283d349384c10c9a56`
-- Current downstream source tag: `pi-v16.5.0-r2`
+- Current downstream source tag: `pi-v16.5.0-r4`
 - Publication boundary: immutable source tag only; no packages or binary artifacts
 
 ## Initial baseline evidence

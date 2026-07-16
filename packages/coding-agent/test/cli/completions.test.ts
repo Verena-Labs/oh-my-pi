@@ -211,7 +211,7 @@ describe("pi completions (integration / drift)", () => {
 		}
 		expect(stdout).toContain("{-r,--resume}");
 		// Real enum option sets flow through unchanged.
-		expect(stdout).toContain(":value:(off minimal low medium high xhigh max auto)");
+		expect(stdout).toContain(":value:(off auto minimal low medium high xhigh max ultra)");
 		expect(stdout).toContain(":value:(always-ask write yolo)");
 		// Real retained subcommands present; dynamic callbacks wired.
 		expect(stdout).toContain("_pi_cmd_plugin");

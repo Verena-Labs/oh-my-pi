@@ -2,7 +2,7 @@
 
 ## Mode
 
-Revision 2 shipped; revision 3 correction implementation complete and delivery in progress
+Revision 3 shipped; revision 4 release-evidence correction ready for delivery
 
 ## Goal
 
@@ -23,6 +23,11 @@ or complete snapshot of useful parent-chat context, the player-coach prompt
 must state a stronger delegation boundary, worker provenance and parked/cold
 resume state must be visible, and max-capable thinking controls must order
 `xhigh`, `max`, `ultra` with a dedicated Ultra symbol.
+
+Revision 4 does not change the Ultra runtime contract. It corrects stale mapped
+release tests discovered only when the immutable revision 3 source was imported
+into the consumer's complete Phase 4 acceptance suite, then republishes the
+same implementation behind a new immutable source identity.
 
 ## Non-goals
 
@@ -319,7 +324,10 @@ main model.
 10. **Complete for revision 2** — Carried the initial source through the
     protected pull request, immutable `pi-v16.5.0-r2` publication, and the
     isolated `pi-dotfiles` importer and consumer acceptance gates.
-11. **Authorized plan-only handoff** — After the immutable release and consumer
+11. **Complete for revision 3 source** — Merged the corrected runtime through
+    the protected pull request and published immutable source-only
+    `pi-v16.5.0-r3` at merge `c47af4d8f42d77bf5a139406028b07d0d492a81e`.
+12. **Authorized plan-only handoff** — After the immutable release and consumer
     mirror exist, update Science terminology and release pinning with their exact
     SHAs. Do not vendor the engine or begin Group 1 here.
 
@@ -343,12 +351,26 @@ main model.
    coding-agent build, source and built CLI smoke, portable-share server, and
    authenticated same-model Ultra journeys with Bun 1.3.14 and the pinned Rust
    nightly.
-7. **Delivery in progress** — Merge and publish immutable source-only
-   `pi-v16.5.0-r3`, then hand the exact source identity to consumers.
+7. **Complete** — Merged and published immutable source-only
+   `pi-v16.5.0-r3` at `c47af4d8f42d77bf5a139406028b07d0d492a81e`.
+8. **Ready for delivery** — Correct the stale completion and Ultra tool-activation
+   assertions plus the overly broad Eval evidence mapping found by the complete
+   consumer Phase 4 run, advance the fork-owned release provenance that r3 left
+   stale, publish immutable `pi-v16.5.0-r4`, and hand that exact source identity
+   to consumers. Revision 4 carries no runtime change.
 
 ## Validation evidence
 
 The evidence below records the completed revision 3 source implementation.
+Revision 4 retains those results and adds a clean pass of the corrected complete
+consumer-mapped evidence set before delivery.
+
+- The corrected revision 4 Journey 10 mapping passes 299 tests with 1,236
+  expectations, skips only nine explicitly dormant fallback-chain contracts,
+  and has no failures across all 27 mapped Ultra files.
+- Fork provenance verification, all 16 downstream contract tests, repository
+  type/style checks, and the focused completion, activation/restoration, and
+  Eval-description corrections pass with Bun 1.3.14.
 
 - Parser, metadata, selector, status, ACP, persistence, resume, model-change,
   capability-clamping, and ordinary-`xhigh` distinction contracts pass.
@@ -404,6 +426,6 @@ The evidence below records the completed revision 3 source implementation.
 ## Delivery boundary
 
 The authorized delivery step carries this verified fork implementation through
-its protected PR, immutable source release, `pi-dotfiles` importer and consumer
-acceptance, and a plan-only Science terminology/pin handoff. Science engine
+its protected PR, immutable revision 4 source release, `pi-dotfiles` importer
+and consumer acceptance, and a plan-only Science terminology/pin handoff. Science engine
 vendoring and all Group 1 implementation remain outside this delivery step.
