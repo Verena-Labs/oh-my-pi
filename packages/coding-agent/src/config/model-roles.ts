@@ -19,17 +19,7 @@ export function formatModelRoleAlias(role: string): string {
 	return `${MODEL_ROLE_ALIAS_PREFIX}${role}`;
 }
 
-export type ModelRole =
-	| "default"
-	| "smol"
-	| "slow"
-	| "vision"
-	| "plan"
-	| "designer"
-	| "commit"
-	| "tiny"
-	| "task"
-	| "advisor";
+export type ModelRole = "default" | "smol" | "slow" | "vision" | "plan" | "designer" | "tiny" | "task" | "advisor";
 
 export interface ModelRoleInfo {
 	tag?: string;
@@ -46,7 +36,6 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 	vision: { tag: "VISION", name: "Vision", color: "error" },
 	plan: { tag: "PLAN", name: "Architect", color: "muted" },
 	designer: { tag: "DESIGNER", name: "Designer", color: "muted" },
-	commit: { tag: "COMMIT", name: "Commit", color: "dim" },
 	tiny: { tag: "TINY", name: "Tiny", color: "dim" },
 	task: { tag: "TASK", name: "Subtask", color: "muted" },
 	advisor: { tag: "ADVISOR", name: "Advisor", color: "accent" },
@@ -59,11 +48,13 @@ export const MODEL_ROLE_IDS: ModelRole[] = [
 	"vision",
 	"plan",
 	"designer",
-	"commit",
 	"tiny",
 	"task",
 	"advisor",
 ];
+
+/** Reserved role names retained only by disabled internal implementations. */
+const NON_PUBLIC_MODEL_ROLE_IDS: ReadonlySet<string> = new Set(["commit"]);
 
 export type RoleInfo = ModelRoleInfo;
 
@@ -78,6 +69,7 @@ export function getKnownRoleIds(settings: Settings): string[] {
 	const roles = MODEL_ROLE_IDS.filter(role => !MODEL_ROLES[role as ModelRole]?.hidden) as string[];
 	const seen = new Set<string>(roles);
 	const addRole = (role: string) => {
+		if (NON_PUBLIC_MODEL_ROLE_IDS.has(role)) return;
 		if (seen.has(role)) return;
 		seen.add(role);
 		roles.push(role);

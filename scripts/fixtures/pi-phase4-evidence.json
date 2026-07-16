@@ -76,7 +76,7 @@
   ],
   "negative": [
     { "matrix": "04", "decision": "DISABLE", "tests": ["packages/coding-agent/test/phase3d-workflow-boundaries.test.ts"] },
-    { "matrix": "18", "decision": "DISABLE", "tests": ["packages/coding-agent/test/phase3a-public-package-boundary.test.ts"] },
+    { "matrix": "18", "decision": "DISABLE", "tests": ["packages/coding-agent/test/phase3a-public-package-boundary.test.ts", "packages/coding-agent/test/role-info.test.ts", "packages/coding-agent/test/model-hub.test.ts", "packages/coding-agent/test/title-generator.test.ts"] },
     { "matrix": "22", "decision": "DISABLE", "tests": ["packages/coding-agent/test/phase3a-public-package-boundary.test.ts"] },
     { "matrix": "23", "decision": "DISABLE", "tests": ["packages/coding-agent/test/phase3d-workflow-boundaries.test.ts"] },
     { "matrix": "36", "decision": "DISABLE", "tests": ["packages/coding-agent/test/phase3a-public-package-boundary.test.ts", "packages/coding-agent/test/pi-settings-policy.test.ts"] },

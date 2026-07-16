@@ -149,6 +149,26 @@ describe("ModelHub", () => {
 	});
 
 	describe("role chips and roles view", () => {
+		test("does not revive the retired commit role from stale settings", () => {
+			const model = makeModel("test", "worker-model");
+			const settings = Settings.isolated({
+				cycleOrder: ["commit", "smol", "default"],
+				modelRoles: { commit: "test/worker-model" },
+				modelTags: { commit: { name: "Legacy Commit", color: "dim" } },
+			});
+			const { hub } = createHub({ models: [model], scoped: true, settings });
+
+			const modelView = normalize(hub.render(220));
+			expect(modelView).not.toContain("COMMIT");
+			expect(modelView).not.toContain("commit");
+
+			hub.handleInput(UP);
+			const rolesView = normalize(hub.render(220));
+			expect(rolesView).toContain("Roles 0/9");
+			expect(rolesView).not.toContain("COMMIT");
+			expect(rolesView).not.toContain("Legacy Commit");
+		});
+
 		test("tags the selected model's roles in the detail line, including custom roles", () => {
 			const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 			if (!model) throw new Error("Expected bundled model anthropic/claude-sonnet-4-5");

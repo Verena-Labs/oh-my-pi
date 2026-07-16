@@ -27,6 +27,14 @@
   fork-owned release provenance contracts with Ultra's shipped exclusive
   orchestration surface.
 
+### Removed
+
+- Retired the public `commit` model role and removed it from general model
+  routing and `/models`, including when historical settings still name it.
+  Online session-title selection now falls back from `tiny` to `smol` and then
+  to the current model. The separately disabled agentic commit implementation
+  remains dormant source only.
+
 ## [16.5.0] - 2026-07-13
 
 ### Breaking Changes
