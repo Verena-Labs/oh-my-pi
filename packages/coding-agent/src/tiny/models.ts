@@ -89,7 +89,7 @@ export const TINY_TITLE_MODEL_OPTIONS = [
 		value: ONLINE_TINY_TITLE_MODEL_KEY,
 		label: "Online (TINY role, else @smol)",
 		description:
-			"Online title generation: the TINY model role (set one in /models) when assigned, otherwise the online fallback (commit role, then @smol). No local download or on-device inference.",
+			"Online title generation: the TINY model role (set one in /models) when assigned, otherwise the online @smol fallback. No local download or on-device inference.",
 	},
 	...TINY_TITLE_LOCAL_MODELS.map(model => ({
 		value: model.key,

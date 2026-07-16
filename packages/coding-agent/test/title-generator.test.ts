@@ -468,7 +468,7 @@ describe("title generator", () => {
 		expect(title).toBe("Refactor API client error handling");
 	});
 
-	it("resolves the model roles in precedence order: tiny -> commit -> smol", async () => {
+	it("resolves title models in precedence order: tiny -> smol -> current", async () => {
 		const tinyModel = getModelOrThrow("claude-haiku-4-5");
 		const commitModel = getModelOrThrow("claude-sonnet-4-5");
 		const smolModel = getModelOrThrow("claude-opus-4-8");
@@ -509,7 +509,7 @@ describe("title generator", () => {
 
 		mockComplete.mockClear();
 
-		// Case 2: 'tiny' role not configured, 'commit' and 'smol' configured. 'commit' should be used.
+		// Case 2: A stale 'commit' assignment is ignored when 'tiny' is unset.
 		currentSettings = {
 			get(path: string) {
 				if (path === "providers.tinyModel") return "online";
@@ -527,18 +527,17 @@ describe("title generator", () => {
 
 		await generateSessionTitle("Some message", registry, currentSettings);
 		expect(mockComplete).toHaveBeenCalled();
-		expect(mockComplete.mock.calls[0]?.[0]).toBe(commitModel);
+		expect(mockComplete.mock.calls[0]?.[0]).toBe(smolModel);
 
 		mockComplete.mockClear();
 
-		// Case 3: Only 'smol' role configured. 'smol' should be used.
+		// Case 3: With no title roles configured, use the current session model.
 		currentSettings = {
 			get(path: string) {
 				if (path === "providers.tinyModel") return "online";
 				return undefined;
 			},
-			getModelRole(role: string) {
-				if (role === "smol") return `${smolModel.provider}/${smolModel.id}`;
+			getModelRole() {
 				return undefined;
 			},
 			getStorage() {
@@ -546,8 +545,8 @@ describe("title generator", () => {
 			},
 		} as never;
 
-		await generateSessionTitle("Some message", registry, currentSettings);
+		await generateSessionTitle("Some message", registry, currentSettings, undefined, commitModel);
 		expect(mockComplete).toHaveBeenCalled();
-		expect(mockComplete.mock.calls[0]?.[0]).toBe(smolModel);
+		expect(mockComplete.mock.calls[0]?.[0]).toBe(commitModel);
 	});
 });

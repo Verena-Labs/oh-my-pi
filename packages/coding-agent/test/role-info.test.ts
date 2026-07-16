@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { getRoleInfo } from "@oh-my-pi/pi-coding-agent/config/model-roles";
+import {
+	getKnownRoleIds,
+	getRoleInfo,
+	MODEL_ROLE_IDS,
+	MODEL_ROLES,
+} from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 
 describe("getRoleInfo", () => {
@@ -62,5 +67,18 @@ describe("getRoleInfo", () => {
 			name: "My Smol",
 			color: "success",
 		});
+	});
+
+	test("keeps the retired commit role out of the public registry and selector roles", () => {
+		const settings = Settings.isolated({
+			cycleOrder: ["commit", "smol"],
+			modelRoles: { commit: "test/legacy-commit-model" },
+			modelTags: { commit: { name: "Legacy Commit", color: "dim" } },
+		});
+
+		expect(MODEL_ROLE_IDS).not.toContain("commit");
+		expect(Object.hasOwn(MODEL_ROLES, "commit")).toBe(false);
+		expect(getKnownRoleIds(settings)).not.toContain("commit");
+		expect(getKnownRoleIds(settings)).toContain("smol");
 	});
 });

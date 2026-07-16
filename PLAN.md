@@ -2,7 +2,7 @@
 
 ## Mode
 
-Revision 3 shipped; revision 4 release-evidence correction ready for delivery
+Revision 4 shipped; revision 5 public-role cleanup ready for delivery
 
 ## Goal
 
@@ -28,6 +28,12 @@ Revision 4 does not change the Ultra runtime contract. It corrects stale mapped
 release tests discovered only when the immutable revision 3 source was imported
 into the consumer's complete Phase 4 acceptance suite, then republishes the
 same implementation behind a new immutable source identity.
+
+Revision 5 retires the unrelated public `commit` model role that remained in
+the picker after its agentic command was disabled. General role routing and
+historical role settings cannot restore it. Online title generation now uses
+`tiny`, then `smol`, then the current model. Dormant ID 18 implementation source
+remains available for upstream maintenance without a public command or role.
 
 ## Non-goals
 
@@ -353,17 +359,39 @@ main model.
    nightly.
 7. **Complete** — Merged and published immutable source-only
    `pi-v16.5.0-r3` at `c47af4d8f42d77bf5a139406028b07d0d492a81e`.
-8. **Ready for delivery** — Correct the stale completion and Ultra tool-activation
+8. **Complete** — Corrected the stale completion and Ultra tool-activation
    assertions plus the overly broad Eval evidence mapping found by the complete
    consumer Phase 4 run, advance the fork-owned release provenance that r3 left
    stale, publish immutable `pi-v16.5.0-r4`, and hand that exact source identity
    to consumers. Revision 4 carries no runtime change.
+
+### Revision 5 follow-up status
+
+1. **Complete** — Removed `commit` from the public model-role registry and
+   general resolution, while preventing stale `modelRoles`, `cycleOrder`, and
+   `modelTags` entries from resurrecting it in `/models`.
+2. **Complete for source scope** — Changed online title selection to
+   `tiny -> smol -> current model` and updated focused runtime, picker, mapped
+   evidence, documentation, and release provenance contracts.
+3. **In delivery** — Publish immutable source-only
+   `pi-v16.5.0-r5`, import that exact source into `pi-dotfiles`, and advance the
+   current Science `feature/omp-group-1` vendor baseline and native title route.
 
 ## Validation evidence
 
 The evidence below records the completed revision 3 source implementation.
 Revision 4 retains those results and adds a clean pass of the corrected complete
 consumer-mapped evidence set before delivery.
+
+- Revision 5's focused role/title/picker suite passes 65 tests with nine
+  explicitly dormant fallback-chain skips and no failures. The retained
+  disabled commit-model test also passes, proving the cleanup did not damage
+  dormant source.
+- Revision 5's complete mapped Phase 4 run passes all 60 journey obligations,
+  34 negative obligations, 12 public-surface classes, and the startup/idle
+  instrumentation obligation with Bun 1.3.14. Full TypeScript/Rust checks,
+  native and coding-agent builds, CLI smoke, and downstream provenance/docs
+  contracts also pass.
 
 - The corrected revision 4 Journey 10 mapping passes 299 tests with 1,236
   expectations, skips only nine explicitly dormant fallback-chain contracts,
@@ -425,7 +453,7 @@ consumer-mapped evidence set before delivery.
 
 ## Delivery boundary
 
-The authorized delivery step carries this verified fork implementation through
-its protected PR, immutable revision 4 source release, `pi-dotfiles` importer
-and consumer acceptance, and a plan-only Science terminology/pin handoff. Science engine
-vendoring and all Group 1 implementation remain outside this delivery step.
+The authorized delivery step carries the revision 5 cleanup through its
+protected PR, immutable source release, `pi-dotfiles` importer and consumer
+acceptance, and exact vendoring into Science `feature/omp-group-1`. Unrelated
+Science Group 1 implementation remains outside this correction.
