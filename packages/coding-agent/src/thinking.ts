@@ -195,7 +195,7 @@ export function parseNamedAgentThinkingLevel(value: string | null | undefined): 
 	return parseThinkingLevel(value);
 }
 
-/** Returns display metadata for a configured selector, including `auto`. */
+/** Returns display metadata for a configured selector, including policy sentinels. */
 export function getConfiguredThinkingLevelMetadata(level: ConfiguredThinkingLevel): ConfiguredThinkingLevelMetadata {
 	if (level === AUTO_THINKING) return AUTO_THINKING_METADATA;
 	if (level === ULTRA_THINKING) return ULTRA_THINKING_METADATA;
@@ -211,22 +211,14 @@ export function getConfiguredThinkingLevelMetadata(level: ConfiguredThinkingLeve
 export function getAvailableConfiguredThinkingLevels(model: Model | undefined): ConfiguredThinkingLevel[] {
 	const efforts = model ? getSupportedEfforts(model) : [...THINKING_EFFORTS];
 	if (!model?.reasoning || efforts.length === 0) return [...efforts];
-	const levels: ConfiguredThinkingLevel[] = [...efforts];
-	const xhighIndex = levels.indexOf(ThinkingLevel.XHigh);
-	if (xhighIndex >= 0) {
-		levels.splice(xhighIndex + 1, 0, ULTRA_THINKING);
-		return levels;
-	}
-	const maxIndex = levels.indexOf(ThinkingLevel.Max);
-	levels.splice(maxIndex >= 0 ? maxIndex : levels.length, 0, ULTRA_THINKING);
-	return levels;
+	return [...efforts, ULTRA_THINKING];
 }
 
 /**
  * Thinking selectors accepted by the `--thinking` CLI flag, in display order:
- * `off`, every concrete effort (`minimal`..`max`), then `auto`. Single source
- * for the flag's `options` list, shell completions, and the "invalid level"
- * warning so all three stay in sync.
+ * `off`, `auto`, every concrete effort (`minimal`..`max`), then Ultra. Single
+ * source for the flag's `options` list, shell completions, and the "invalid
+ * level" warning so all three stay in sync.
  */
 export const CLI_THINKING_LEVELS: readonly string[] = [
 	ThinkingLevel.Off,

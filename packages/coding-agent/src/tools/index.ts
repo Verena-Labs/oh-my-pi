@@ -28,6 +28,7 @@ import type { AgentOutputManager } from "../task/output-manager";
 import { canSpawnAtDepth } from "../task/types";
 import { countToolsForAutoDiscovery, resolveEffectiveToolDiscoveryMode } from "../tool-discovery/mode";
 import type { DiscoverableTool, DiscoverableToolSearchIndex } from "../tool-discovery/tool-index";
+import type { UltraForkableConversationSnapshot } from "../ultra/context";
 import type { EventBus } from "../utils/event-bus";
 import { WebSearchTool } from "../web/search";
 import type { WorkspaceTree } from "../workspace-tree";
@@ -193,6 +194,21 @@ export interface ToolSession {
 	taskDepth?: number;
 	/** Internal Ultra workers recurse through `ultra_spawn`, never the named-agent `task` surface. */
 	ultraWorker?: boolean;
+	/** True while this session belongs to the exclusive Ultra orchestration policy. */
+	isUltraOrchestrationActive?: () => boolean;
+	/** Read-only snapshot of the parent's effective post-compaction conversation. */
+	getForkableConversationSnapshot?: () => UltraForkableConversationSnapshot;
+	/** Persist an owner-scoped Ultra worker lifecycle mutation in this session. */
+	recordUltraWorkerLifecycle?: (event: {
+		workerId: string;
+		action: "spawn" | "kill" | "clear";
+		workerParentId?: string;
+		sessionFile?: string;
+		modelOverride?: string;
+		createdAt?: number;
+		turns?: number;
+		reason?: string;
+	}) => void;
 	/** Get shared eval executor session ID. Subagents inherit this to share JS/Python/Ruby/Julia state. */
 	getEvalSessionId?: () => string | null;
 	/** Get session file */

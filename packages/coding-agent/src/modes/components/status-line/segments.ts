@@ -107,7 +107,6 @@ const modelSegment: StatusLineSegment = {
 		// Resolve the current thinking-level display ("◉ xhigh", "⟳ auto", …)
 		// when the model supports thinking and the segment isn't hiding it.
 		let thinkingDisplay = "";
-		let isUltraThinking = false;
 		if (opts.showThinkingLevel !== false && state.model?.thinking) {
 			if (ctx.session.isAutoThinking) {
 				// Pending (no turn classified yet / classifying) shows a symbol-theme
@@ -119,13 +118,9 @@ const modelSegment: StatusLineSegment = {
 			} else {
 				const level = ctx.session.configuredThinkingLevel?.() ?? state.thinkingLevel ?? ThinkingLevel.Off;
 				if (level !== ThinkingLevel.Off) {
-					isUltraThinking = level === ULTRA_THINKING;
-					// Ultra is an agent-local orchestration tier that resolves to xhigh
-					// provider reasoning. Reuse xhigh's theme glyph while preserving the
-					// configured Ultra identity in the visible status text.
 					thinkingDisplay =
 						level === ULTRA_THINKING
-							? `${thinkingGlyph(theme.thinking.xhigh)} ultra`
+							? theme.thinking.ultra
 							: (theme.thinking[level as keyof typeof theme.thinking] ?? "");
 				}
 			}
@@ -133,10 +128,7 @@ const modelSegment: StatusLineSegment = {
 
 		// Compact mode swaps the model icon for the thinking-level glyph and drops
 		// the " · <level>" tail, keeping the level visible as a single icon.
-		// Ultra shares xhigh's glyph, so collapsing it to an icon would make the
-		// orchestration policy indistinguishable from ordinary reasoning-only
-		// xhigh. Keep Ultra's label visible even with compact thinking enabled.
-		const compact = ctx.compactThinkingLevel && thinkingDisplay !== "" && !isUltraThinking;
+		const compact = ctx.compactThinkingLevel && thinkingDisplay !== "";
 		const modelIcon = compact ? thinkingGlyph(thinkingDisplay) : theme.icon.model;
 
 		// Fast-mode icon and thinking-level suffix trail the model name and are

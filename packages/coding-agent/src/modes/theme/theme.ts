@@ -144,6 +144,7 @@ export type SymbolKey =
 	| "thinking.high"
 	| "thinking.xhigh"
 	| "thinking.max"
+	| "thinking.ultra"
 	| "thinking.autoPending"
 	// Checkboxes
 	| "checkbox.checked"
@@ -354,6 +355,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"thinking.high": "◒ high",
 	"thinking.xhigh": "◕ xhigh",
 	"thinking.max": "◉ max",
+	"thinking.ultra": "∞ ultra",
 	"thinking.autoPending": "⟳",
 	// Checkboxes
 	"checkbox.checked": "☑",
@@ -653,6 +655,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"thinking.high": "\u{F0AA3} high",
 	"thinking.xhigh": "\u{F0AA5} xhi",
 	"thinking.max": "\u{F06D} max",
+	// fa-users represents Ultra's parallel worker team.
+	"thinking.ultra": "\u{F0C0} ult",
 	// Auto mode uses shuffle until the model resolves its thinking level.
 	"thinking.autoPending": "\u{F074}",
 	// Checkboxes
@@ -874,6 +878,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"thinking.high": "[high]",
 	"thinking.xhigh": "[xhi]",
 	"thinking.max": "[max]",
+	"thinking.ultra": "[ult]",
 	"thinking.autoPending": "[~]",
 	// Checkboxes
 	"checkbox.checked": "[x]",
@@ -1876,6 +1881,7 @@ export class Theme {
 			high: this.#symbols["thinking.high"],
 			xhigh: this.#symbols["thinking.xhigh"],
 			max: this.#symbols["thinking.max"],
+			ultra: this.#symbols["thinking.ultra"],
 			autoPending: this.#symbols["thinking.autoPending"],
 		};
 	}

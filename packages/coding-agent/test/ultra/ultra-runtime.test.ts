@@ -17,16 +17,21 @@
  * 5. `kill` cancels the in-flight turn job and releases the worker session.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { UltraWorkerLifecycleEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition, AgentProgress, SingleResult } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { UltraSessionRegistry } from "@oh-my-pi/pi-coding-agent/ultra/runtime";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 function createSession(
 	options: { manager?: AsyncJobManager; owner?: string; activeModel?: string | (() => string) } = {},
@@ -40,6 +45,11 @@ function createSession(
 		getAgentId: () => options.owner ?? "Main",
 		getActiveModelString: () =>
 			typeof options.activeModel === "function" ? options.activeModel() : (options.activeModel ?? "prov/main-model"),
+		getForkableConversationSnapshot: () => ({
+			messages: [],
+			maxContextTokens: 100_000,
+			contextWindow: 128_000,
+		}),
 		asyncJobManager: options.manager,
 	} as unknown as ToolSession;
 }
@@ -175,13 +185,71 @@ function progressSnapshot(id: string, overrides: Partial<AgentProgress> = {}): A
 	};
 }
 
+let lifecycleEntrySequence = 0;
+
+function lifecycleEntry(
+	workerId: string,
+	overrides: Partial<UltraWorkerLifecycleEntry> = {},
+): UltraWorkerLifecycleEntry {
+	lifecycleEntrySequence++;
+	return {
+		type: "ultra_worker_lifecycle",
+		id: `lifecycle-${lifecycleEntrySequence}`,
+		parentId: null,
+		timestamp: new Date().toISOString(),
+		workerId,
+		action: "spawn",
+		ownerId: "Main",
+		modelOverride: "prov/main-model",
+		...overrides,
+	};
+}
+
 describe("ultra session registry", () => {
 	const managers: AsyncJobManager[] = [];
+	const sessionManagers: SessionManager[] = [];
+	const tempDirs: TempDir[] = [];
 
 	function createManager(): AsyncJobManager {
 		const manager = new AsyncJobManager({ onJobComplete: () => {} });
 		managers.push(manager);
 		return manager;
+	}
+
+	function createTempDir(prefix: string): string {
+		const dir = TempDir.createSync(prefix);
+		tempDirs.push(dir);
+		return dir.path();
+	}
+
+	async function createPersistedWorker(options: {
+		cwd: string;
+		sessionDir: string;
+		workerKind?: "task" | "ultra";
+		agentName?: string;
+		agentId?: string;
+	}): Promise<string> {
+		const sessionManager = SessionManager.create(options.cwd, options.sessionDir);
+		sessionManagers.push(sessionManager);
+		sessionManager.appendSessionInit({
+			systemPrompt: "persisted worker",
+			task: "continue the workstream",
+			tools: ["read", "edit", "yield"],
+			spawns: "",
+			workerKind: options.workerKind,
+			agentName: options.agentName,
+			agentId: options.agentId,
+		});
+		sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "persist this worker transcript" }],
+			timestamp: Date.now(),
+		});
+		await sessionManager.ensureOnDisk();
+		await sessionManager.flush();
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected a persisted worker session file");
+		return sessionFile;
 	}
 
 	beforeEach(() => {
@@ -195,9 +263,450 @@ describe("ultra session registry", () => {
 		for (const manager of managers.splice(0)) {
 			await manager.dispose({ timeoutMs: 1000 });
 		}
+		await Promise.all(sessionManagers.splice(0).map(manager => manager.close()));
+		await Promise.all(tempDirs.splice(0).map(dir => dir.remove()));
 		UltraSessionRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
+	});
+
+	it("journals complete spawn metadata before launching the first turn", async () => {
+		const root = createTempDir("@pi-ultra-spawn-lifecycle-");
+		const ownerSessionFile = path.join(root, "owner.jsonl");
+		const events: Array<Parameters<NonNullable<ToolSession["recordUltraWorkerLifecycle"]>>[0]> = [];
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			AgentRegistry.global().register({
+				id: options.id,
+				displayName: options.id,
+				kind: "sub",
+				workerKind: "ultra",
+				parentId: "Main",
+				session: createFakeWorkerSession().session,
+				status: "running",
+			});
+			AgentRegistry.global().setStatus(options.id, "idle");
+			return makeResult(options.id);
+		});
+
+		const manager = createManager();
+		const session = createSession({ manager });
+		session.getSessionFile = () => ownerSessionFile;
+		session.recordUltraWorkerLifecycle = event => events.push(event);
+		const spawn = await UltraSessionRegistry.global().spawn(session, {
+			name: "MetadataWorker",
+			prompt: "Inspect metadata.",
+		});
+
+		expect(events[0]).toMatchObject({
+			workerId: "MetadataWorker",
+			action: "spawn",
+			workerParentId: "Main",
+			sessionFile: path.join(root, "owner", "MetadataWorker.jsonl"),
+			modelOverride: "prov/main-model",
+			turns: 0,
+		});
+		expect(events[0]?.createdAt).toEqual(expect.any(Number));
+		await manager.getJob(spawn.jobId)!.promise;
+	});
+
+	it("derives parked screen state from the AgentRegistry", async () => {
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			AgentRegistry.global().register({
+				id: options.id,
+				displayName: options.id,
+				kind: "sub",
+				workerKind: "ultra",
+				parentId: "Main",
+				session: createFakeWorkerSession().session,
+				status: "idle",
+			});
+			return makeResult(options.id);
+		});
+
+		const manager = createManager();
+		const registry = UltraSessionRegistry.global();
+		const spawn = await registry.spawn(createSession({ manager }), { name: "Parkable", prompt: "Finish once." });
+		await manager.getJob(spawn.jobId)!.promise;
+		expect(registry.screens("Main")[0]?.state).toBe("idle");
+
+		AgentRegistry.global().setStatus("Parkable", "parked");
+		expect(registry.screens("Main")[0]?.state).toBe("parked");
+	});
+
+	it("restores a validated Ultra child session as a parked worker", async () => {
+		const cwd = createTempDir("@pi-ultra-restore-workspace-");
+		const ownerSessionFile = path.join(cwd, "owner.jsonl");
+		const sessionFile = await createPersistedWorker({
+			cwd,
+			sessionDir: ownerSessionFile.slice(0, -6),
+			workerKind: "ultra",
+			agentName: "ultra",
+			agentId: "Restored",
+		});
+		const registry = UltraSessionRegistry.global();
+		const outcome = await registry.restorePersistedRoster(
+			"Main",
+			cwd,
+			[
+				lifecycleEntry("Restored", {
+					workerParentId: "Main",
+					sessionFile,
+					createdAt: 123,
+					turns: 4,
+				}),
+			],
+			undefined,
+			ownerSessionFile,
+		);
+
+		expect(outcome).toEqual({ restored: ["Restored"], skipped: [] });
+		expect(AgentRegistry.global().get("Restored")).toMatchObject({
+			id: "Restored",
+			displayName: "ultra",
+			kind: "sub",
+			workerKind: "ultra",
+			parentId: "Main",
+			session: null,
+			sessionFile,
+			status: "parked",
+		});
+		expect(registry.screens("Main")).toEqual([
+			expect.objectContaining({ id: "Restored", state: "parked", model: "prov/main-model", turns: 4 }),
+		]);
+	});
+
+	it("revives the same cold-restored worker session when ultra_send starts its next explicit turn", async () => {
+		const cwd = createTempDir("@pi-ultra-cold-send-");
+		const ownerSessionFile = path.join(cwd, "owner.jsonl");
+		const sessionFile = await createPersistedWorker({
+			cwd,
+			sessionDir: ownerSessionFile.slice(0, -6),
+			workerKind: "ultra",
+			agentName: "ultra",
+			agentId: "ColdWorker",
+		});
+		const registry = UltraSessionRegistry.global();
+		await registry.restorePersistedRoster(
+			"Main",
+			cwd,
+			[lifecycleEntry("ColdWorker", { workerParentId: "Main", sessionFile, turns: 1 })],
+			undefined,
+			ownerSessionFile,
+		);
+
+		const fake = createFakeWorkerSession();
+		fake.setScript({ events: yieldTurnEvents({ report: "continued after restart" }), responseText: "resumed" });
+		let factoryCalls = 0;
+		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(async ref => {
+			factoryCalls++;
+			expect(ref.sessionFile).toBe(sessionFile);
+			return async () => fake.session;
+		}, 0);
+
+		const manager = createManager();
+		const outcome = await registry.send(createSession({ manager }), {
+			session: "ColdWorker",
+			message: "Continue explicitly; do not replay the interrupted turn.",
+		});
+		expect(outcome.mode).toBe("turn");
+		await manager.getJob(outcome.jobId!)!.promise;
+
+		expect(factoryCalls).toBe(1);
+		expect(fake.prompts).toEqual(["Continue explicitly; do not replay the interrupted turn."]);
+		expect(AgentRegistry.global().get("ColdWorker")?.sessionFile).toBe(sessionFile);
+		expect(registry.screens("Main")[0]).toMatchObject({ id: "ColdWorker", state: "idle", turns: 2 });
+	});
+
+	it("skips invalid, missing, non-Ultra, cross-workspace, and out-of-artifact roster files", async () => {
+		const cwd = createTempDir("@pi-ultra-restore-validation-");
+		const otherCwd = createTempDir("@pi-ultra-restore-other-workspace-");
+		const ownerSessionFile = path.join(cwd, "owner.jsonl");
+		const artifactDir = ownerSessionFile.slice(0, -6);
+		const nonUltraFile = await createPersistedWorker({
+			cwd,
+			sessionDir: artifactDir,
+			workerKind: "task",
+			agentName: "sonic",
+			agentId: "TaskFile",
+		});
+		const crossWorkspaceFile = await createPersistedWorker({
+			cwd: otherCwd,
+			sessionDir: artifactDir,
+			workerKind: "ultra",
+			agentName: "ultra",
+			agentId: "OtherWorkspace",
+		});
+		const outsideFile = await createPersistedWorker({
+			cwd,
+			sessionDir: path.join(cwd, "unrelated-artifacts"),
+			workerKind: "ultra",
+			agentName: "ultra",
+			agentId: "OutsideArtifacts",
+		});
+		const substitutedFile = await createPersistedWorker({
+			cwd,
+			sessionDir: artifactDir,
+			workerKind: "ultra",
+			agentName: "ultra",
+			agentId: "ActualWorker",
+		});
+		const symlinkFile = path.join(artifactDir, "SymlinkEscape.jsonl");
+		await fs.symlink(outsideFile, symlinkFile);
+		const invalidFile = path.join(artifactDir, "invalid.jsonl");
+		await Bun.write(invalidFile, "{not-valid-jsonl\n");
+		const entries = [
+			lifecycleEntry("Incomplete", { sessionFile: undefined }),
+			lifecycleEntry("Missing", { sessionFile: path.join(artifactDir, "missing.jsonl") }),
+			lifecycleEntry("InvalidFile", { sessionFile: invalidFile }),
+			lifecycleEntry("TaskFile", { sessionFile: nonUltraFile }),
+			lifecycleEntry("OtherWorkspace", { sessionFile: crossWorkspaceFile }),
+			lifecycleEntry("OutsideArtifacts", { sessionFile: outsideFile }),
+			lifecycleEntry("Substituted", { sessionFile: substitutedFile }),
+			lifecycleEntry("SymlinkEscape", { sessionFile: symlinkFile }),
+		];
+
+		const outcome = await UltraSessionRegistry.global().restorePersistedRoster(
+			"Main",
+			cwd,
+			entries,
+			undefined,
+			ownerSessionFile,
+		);
+
+		expect(outcome.restored).toEqual([]);
+		expect(outcome.skipped.map(issue => issue.workerId)).toEqual([
+			"Incomplete",
+			"Missing",
+			"InvalidFile",
+			"TaskFile",
+			"OtherWorkspace",
+			"OutsideArtifacts",
+			"Substituted",
+			"SymlinkEscape",
+		]);
+		expect(outcome.skipped.map(issue => issue.reason).join("\n")).toContain("metadata is incomplete");
+		expect(outcome.skipped.map(issue => issue.reason).join("\n")).toContain("unavailable");
+		expect(outcome.skipped.map(issue => issue.reason).join("\n")).toContain("session-init contract");
+		expect(outcome.skipped.map(issue => issue.reason).join("\n")).toContain("different workspace");
+		expect(outcome.skipped.map(issue => issue.reason).join("\n")).toContain("outside the owning transcript");
+		expect(outcome.skipped.map(issue => issue.reason).join("\n")).toContain("different worker id");
+		expect(AgentRegistry.global().list()).toEqual([]);
+	});
+
+	it("rejects malformed and forward lifecycle records without invoking path or string operations on them", async () => {
+		const cwd = createTempDir("@pi-ultra-restore-malformed-");
+		const ownerSessionFile = path.join(cwd, "owner.jsonl");
+		const entries = [
+			lifecycleEntry("FutureAction", {
+				action: "hibernate" as never,
+				sessionFile: path.join(ownerSessionFile.slice(0, -6), "FutureAction.jsonl"),
+			}),
+			lifecycleEntry("BadPath", { sessionFile: 42 as never }),
+			lifecycleEntry(42 as never, {
+				sessionFile: path.join(ownerSessionFile.slice(0, -6), "NumberId.jsonl"),
+			}),
+			null as unknown as UltraWorkerLifecycleEntry,
+		];
+
+		const outcome = await UltraSessionRegistry.global().restorePersistedRoster(
+			"Main",
+			cwd,
+			entries,
+			undefined,
+			ownerSessionFile,
+		);
+
+		expect(outcome).toEqual({
+			restored: [],
+			skipped: [
+				{ workerId: "FutureAction", reason: "persisted roster metadata is incomplete" },
+				{ workerId: "BadPath", reason: "persisted roster metadata is incomplete" },
+				{ workerId: "<invalid>", reason: "persisted roster metadata is incomplete" },
+				{ workerId: "<invalid>", reason: "persisted roster metadata is incomplete" },
+			],
+		});
+		expect(AgentRegistry.global().list()).toEqual([]);
+	});
+
+	it("does not overwrite an active Task worker whose id collides with a persisted Ultra worker", async () => {
+		const cwd = createTempDir("@pi-ultra-restore-collision-");
+		const ownerSessionFile = path.join(cwd, "owner.jsonl");
+		const sessionFile = await createPersistedWorker({
+			cwd,
+			sessionDir: ownerSessionFile.slice(0, -6),
+			workerKind: "ultra",
+			agentName: "ultra",
+			agentId: "Collision",
+		});
+		const taskSession = createFakeWorkerSession().session;
+		const existing = AgentRegistry.global().register({
+			id: "Collision",
+			displayName: "sonic",
+			kind: "sub",
+			workerKind: "task",
+			parentId: "Main",
+			session: taskSession,
+			sessionFile: path.join(cwd, "task-collision.jsonl"),
+			status: "running",
+		});
+
+		const outcome = await UltraSessionRegistry.global().restorePersistedRoster(
+			"Main",
+			cwd,
+			[lifecycleEntry("Collision", { workerParentId: "Main", sessionFile })],
+			undefined,
+			ownerSessionFile,
+		);
+
+		expect(outcome.restored).toEqual([]);
+		expect(outcome.skipped).toEqual([
+			{ workerId: "Collision", reason: "worker id conflicts with an existing agent registration" },
+		]);
+		expect(AgentRegistry.global().get("Collision")).toBe(existing);
+		expect(AgentRegistry.global().get("Collision")).toMatchObject({
+			displayName: "sonic",
+			workerKind: "task",
+			status: "running",
+			session: taskSession,
+		});
+		expect(UltraSessionRegistry.global().listIds("Main")).toEqual([]);
+	});
+
+	it("records an explicit kill before cancelling its in-flight job", async () => {
+		const gate = deferred();
+		const order: string[] = [];
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			AgentRegistry.global().register({
+				id: options.id,
+				displayName: options.id,
+				kind: "sub",
+				workerKind: "ultra",
+				parentId: "Main",
+				session: createFakeWorkerSession().session,
+				status: "running",
+			});
+			await gate.promise;
+			return makeResult(options.id);
+		});
+		const manager = createManager();
+		const originalCancel = manager.cancel.bind(manager);
+		vi.spyOn(manager, "cancel").mockImplementation((jobId, options) => {
+			order.push("cancel");
+			return originalCancel(jobId, options);
+		});
+		const session = createSession({ manager });
+		session.recordUltraWorkerLifecycle = event => {
+			if (event.action === "kill") order.push("kill-marker");
+		};
+		const registry = UltraSessionRegistry.global();
+		await registry.spawn(session, { name: "KilledInFlight", prompt: "Wait." });
+		await pollUntil(() => AgentRegistry.global().get("KilledInFlight") !== undefined);
+
+		await registry.kill(session, "KilledInFlight");
+		expect(order.slice(0, 2)).toEqual(["kill-marker", "cancel"]);
+		gate.resolve();
+	});
+
+	it("cannot re-journal a killed parent while descendant teardown is pending", async () => {
+		const parentGate = deferred();
+		const childGate = deferred();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			AgentRegistry.global().register({
+				id: options.id,
+				displayName: options.id,
+				kind: "sub",
+				workerKind: "ultra",
+				parentId: options.parentAgentId,
+				session: createFakeWorkerSession().session,
+				status: "running",
+			});
+			await (options.id === "Parent" ? parentGate.promise : childGate.promise);
+			AgentRegistry.global().setStatus(options.id, "idle");
+			return makeResult(options.id);
+		});
+
+		const manager = createManager();
+		const lifecycle = SessionManager.inMemory(createTempDir("@pi-ultra-descendant-kill-journal-"));
+		const parentSession = createSession({ manager, owner: "Main" });
+		parentSession.recordUltraWorkerLifecycle = event =>
+			lifecycle.appendUltraWorkerLifecycle({ ...event, ownerId: "Main" });
+		const childSession = createSession({ manager, owner: "Parent" });
+		childSession.recordUltraWorkerLifecycle = event =>
+			lifecycle.appendUltraWorkerLifecycle({ ...event, ownerId: "Parent" });
+
+		const registry = UltraSessionRegistry.global();
+		const parent = await registry.spawn(parentSession, { name: "Parent", prompt: "Coordinate." });
+		const child = await registry.spawn(childSession, { name: "Child", prompt: "Work." });
+		await pollUntil(
+			() => AgentRegistry.global().get("Parent") !== undefined && AgentRegistry.global().get("Child") !== undefined,
+		);
+
+		const childReleaseStarted = deferred();
+		const continueChildRelease = deferred();
+		const lifecycleManager = AgentLifecycleManager.global();
+		const originalRelease = lifecycleManager.release.bind(lifecycleManager);
+		vi.spyOn(lifecycleManager, "release").mockImplementation(async (id, options) => {
+			if (id === "Child") {
+				childReleaseStarted.resolve();
+				await continueChildRelease.promise;
+			}
+			await originalRelease(id, options);
+		});
+
+		const killPromise = registry.kill(parentSession, "Parent");
+		await childReleaseStarted.promise;
+
+		// A cancelled callback can still return while kill awaits the child. The
+		// parent's terminal fence must make #finishTurn a no-op for the journal.
+		parentGate.resolve();
+		await manager.getJob(parent.jobId)!.promise;
+		const parentRosterDuringDescendantTeardown = lifecycle
+			.getActiveUltraWorkerRoster("Main")
+			.map(entry => entry.workerId);
+
+		continueChildRelease.resolve();
+		await killPromise;
+		childGate.resolve();
+		await manager.getJob(child.jobId)!.promise;
+
+		expect(parentRosterDuringDescendantTeardown).toEqual([]);
+		expect(lifecycle.getActiveUltraWorkerRoster("Main")).toEqual([]);
+	});
+
+	it("preserves the active lifecycle journal while forgetting all live runtime state", async () => {
+		const gate = deferred();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			AgentRegistry.global().register({
+				id: options.id,
+				displayName: options.id,
+				kind: "sub",
+				workerKind: "ultra",
+				parentId: "Main",
+				session: createFakeWorkerSession().session,
+				status: "running",
+			});
+			await gate.promise;
+			return makeResult(options.id);
+		});
+		const manager = createManager();
+		const lifecycle = SessionManager.inMemory(createTempDir("@pi-ultra-preserve-journal-"));
+		const session = createSession({ manager });
+		session.recordUltraWorkerLifecycle = event => lifecycle.appendUltraWorkerLifecycle({ ...event, ownerId: "Main" });
+		const registry = UltraSessionRegistry.global();
+		const spawn = await registry.spawn(session, { name: "Preserved", prompt: "Keep this roster." });
+		await pollUntil(() => AgentRegistry.global().get("Preserved") !== undefined);
+
+		const preserved = await registry.preserveAll("Main", manager, "shutdown");
+		expect(preserved).toBe(1);
+		expect(lifecycle.getActiveUltraWorkerRoster("Main").map(entry => entry.workerId)).toEqual(["Preserved"]);
+		expect(registry.listIds("Main")).toEqual([]);
+		expect(registry.screens("Main")).toEqual([]);
+		expect(AgentRegistry.global().get("Preserved")).toBeUndefined();
+		expect(manager.getJob(spawn.jobId)?.status).toBe("cancelled");
+
+		gate.resolve();
+		await manager.getJob(spawn.jobId)?.promise;
+		expect(lifecycle.getActiveUltraWorkerRoster("Main").map(entry => entry.workerId)).toEqual(["Preserved"]);
 	});
 
 	it("spawn returns immediately and self-delivers a turn result with activity trace + response", async () => {
@@ -211,6 +720,7 @@ describe("ultra session registry", () => {
 			expect(options.parentActiveModelPattern).toBe("prov/main-model");
 			expect(options.thinkingLevel).toBe(ThinkingLevel.XHigh);
 			expect(options.ultraWorker).toBe(true);
+			expect(options.context).toContain("parent request for the widget");
 			AgentRegistry.global().register({
 				id: options.id,
 				displayName: options.id,
@@ -237,6 +747,17 @@ describe("ultra session registry", () => {
 
 		const manager = createManager();
 		const session = createSession({ manager });
+		session.getForkableConversationSnapshot = () => ({
+			messages: [
+				{
+					role: "user",
+					content: [{ type: "text", text: "parent request for the widget" }],
+					timestamp: Date.now(),
+				},
+			],
+			maxContextTokens: 100_000,
+			contextWindow: 128_000,
+		});
 		const registry = UltraSessionRegistry.global();
 
 		const { id, jobId } = await registry.spawn(session, { name: "Builder", prompt: "Build the widget." });

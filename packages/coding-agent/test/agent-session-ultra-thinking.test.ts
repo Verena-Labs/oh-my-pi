@@ -56,6 +56,9 @@ describe("AgentSession Ultra thinking policy", () => {
 		model: Model,
 		thinkingLevel: ThinkingLevel | typeof ULTRA_THINKING,
 		options: {
+			activeExtraToolNames?: string[];
+			builtInExtraToolNames?: string[];
+			failUltraActivation?: boolean;
 			failUltraDeactivation?: boolean;
 			registryExtras?: AgentTool[];
 			scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
@@ -68,11 +71,12 @@ describe("AgentSession Ultra thinking policy", () => {
 	} {
 		const baseTool = makeTool("base_tool");
 		const registryTools = [baseTool, ...(options.registryExtras ?? [])];
+		const activeExtraTools = registryTools.filter(tool => options.activeExtraToolNames?.includes(tool.name));
 		const agent = new Agent({
 			initialState: {
 				model,
 				systemPrompt: ["Test"],
-				tools: [baseTool],
+				tools: [baseTool, ...activeExtraTools],
 				messages: [],
 				thinkingLevel: ThinkingLevel.High,
 			},
@@ -88,9 +92,12 @@ describe("AgentSession Ultra thinking policy", () => {
 			ultraWorker: options.ultraWorker,
 			scopedModels: options.scopedModels,
 			toolRegistry: new Map(registryTools.map(tool => [tool.name, tool] as const)),
-			builtInToolNames: [baseTool.name],
+			builtInToolNames: [baseTool.name, ...(options.builtInExtraToolNames ?? [])],
 			createUltraTools: () => ULTRA_TOOL_NAMES.map(makeTool),
 			rebuildSystemPrompt: async toolNames => {
+				if (options.failUltraActivation && toolNames.includes("ultra_spawn")) {
+					throw new Error("synthetic Ultra activation rebuild failure");
+				}
 				if (options.failUltraDeactivation && !toolNames.includes("ultra_spawn")) {
 					throw new Error("synthetic Ultra deactivation rebuild failure");
 				}
@@ -114,6 +121,91 @@ describe("AgentSession Ultra thinking policy", () => {
 		for (const name of ULTRA_TOOL_NAMES) expect(session.getActiveToolNames()).toContain(name);
 	});
 
+	it("exclusively suppresses Task from active tools and discovery, then restores it exactly", async () => {
+		const model = bundledModel("openai", "gpt-5.5");
+		const task = makeTool("task");
+		const { session } = createSession(model, ThinkingLevel.High, {
+			registryExtras: [task],
+			activeExtraToolNames: ["task"],
+			builtInExtraToolNames: ["task"],
+		});
+
+		session.setThinkingLevel(ULTRA_THINKING);
+		await session.syncUltraPolicy();
+		expect(session.getActiveToolNames()).not.toContain("task");
+		expect(session.getAllToolNames()).not.toContain("task");
+		expect(session.getToolByName("task")).toBeUndefined();
+
+		session.setThinkingLevel(ThinkingLevel.XHigh);
+		await session.syncUltraPolicy();
+		expect(session.getActiveToolNames()).toEqual(["base_tool", "task"]);
+		expect(session.getToolByName("task")).toBe(task);
+		expect(session.hasBuiltInTool("task")).toBe(true);
+	});
+
+	it("restores an initially inactive Task without activating it", async () => {
+		const model = bundledModel("openai", "gpt-5.5");
+		const task = makeTool("task");
+		const { session } = createSession(model, ULTRA_THINKING, {
+			registryExtras: [task],
+		});
+
+		await session.syncUltraPolicy();
+		expect(session.getAllToolNames()).not.toContain("task");
+		session.setThinkingLevel(ThinkingLevel.XHigh);
+		await session.syncUltraPolicy();
+
+		expect(session.getToolByName("task")).toBe(task);
+		expect(session.getActiveToolNames()).toEqual(["base_tool"]);
+	});
+
+	it("restores an initially active Task without reverting unrelated Ultra-era tool changes", async () => {
+		const model = bundledModel("openai", "gpt-5.5");
+		const retained = makeTool("retained_tool");
+		const task = makeTool("task");
+		const newlyActive = makeTool("newly_active_tool");
+		const { session } = createSession(model, ThinkingLevel.High, {
+			registryExtras: [retained, task, newlyActive],
+			activeExtraToolNames: ["retained_tool", "task"],
+			builtInExtraToolNames: ["task"],
+		});
+
+		session.setThinkingLevel(ULTRA_THINKING);
+		await session.syncUltraPolicy();
+		await session.setActiveToolsByName(["base_tool", "newly_active_tool", ...ULTRA_TOOL_NAMES]);
+
+		session.setThinkingLevel(ThinkingLevel.XHigh);
+		await session.syncUltraPolicy();
+
+		expect(session.getActiveToolNames()).toEqual(["base_tool", "newly_active_tool", "task"]);
+		expect(session.getActiveToolNames()).not.toContain("retained_tool");
+		expect(session.getToolByName("task")).toBe(task);
+		expect(session.hasBuiltInTool("task")).toBe(true);
+	});
+
+	it("keeps an initially inactive Task inactive while preserving unrelated Ultra-era tool changes", async () => {
+		const model = bundledModel("openai", "gpt-5.5");
+		const retained = makeTool("retained_tool");
+		const task = makeTool("task");
+		const newlyActive = makeTool("newly_active_tool");
+		const { session } = createSession(model, ULTRA_THINKING, {
+			registryExtras: [retained, task, newlyActive],
+			activeExtraToolNames: ["retained_tool"],
+			builtInExtraToolNames: ["task"],
+		});
+
+		await session.syncUltraPolicy();
+		await session.setActiveToolsByName(["base_tool", "newly_active_tool", ...ULTRA_TOOL_NAMES]);
+
+		session.setThinkingLevel(ThinkingLevel.XHigh);
+		await session.syncUltraPolicy();
+
+		expect(session.getActiveToolNames()).toEqual(["base_tool", "newly_active_tool"]);
+		expect(session.getActiveToolNames()).not.toContain("retained_tool");
+		expect(session.getToolByName("task")).toBe(task);
+		expect(session.hasBuiltInTool("task")).toBe(true);
+	});
+
 	it("injects the player-coach contract together with the Ultra tools", async () => {
 		const model = bundledModel("openai", "gpt-5.5");
 		const { session } = createSession(model, ULTRA_THINKING);
@@ -126,9 +218,13 @@ describe("AgentSession Ultra thinking policy", () => {
 			customType?: string;
 		}>;
 		const ultraContext = promptMessages.find(message => message.customType === "ultra-thinking-context");
-		expect(ultraContext?.content).toContain("continue useful work yourself");
+		expect(ultraContext?.content).toContain("exclusive parallel-agent surface");
+		expect(ultraContext?.content).toContain("Choose `fork_turns` deliberately");
+		expect(ultraContext?.content).toContain("Continue editing, investigating, testing, or integrating");
+		expect(ultraContext?.content).toContain("Call `ultra_wait` only when no useful independent work remains");
 		expect(ultraContext?.content).toContain("resolve shared-workspace conflicts");
-		expect(ultraContext?.content).toContain("run final verification");
+		expect(ultraContext?.content).toContain("run the final verification yourself");
+		expect(ultraContext?.content).toContain("Reuse the same persistent session");
 		for (const name of ULTRA_TOOL_NAMES) {
 			expect(session.getActiveToolNames()).toContain(name);
 			expect(ultraContext?.content).toContain(`\`${name}\``);
@@ -211,20 +307,52 @@ describe("AgentSession Ultra thinking policy", () => {
 		}
 	});
 
-	it("keeps Ultra coherent when orchestration deactivation fails", async () => {
+	it("restores Task when Ultra activation fails after Task suppression", async () => {
 		const model = bundledModel("openai", "gpt-5.5");
+		const task = makeTool("task");
 		const { session, settings } = createSession(model, ThinkingLevel.High, {
+			registryExtras: [task],
+			activeExtraToolNames: ["task"],
+			builtInExtraToolNames: ["task"],
+			failUltraActivation: true,
+		});
+
+		session.setThinkingLevel(ULTRA_THINKING, true);
+		await expect(session.syncUltraPolicy()).rejects.toThrow("synthetic Ultra activation rebuild failure");
+
+		expect(session.configuredThinkingLevel()).toBe(ThinkingLevel.High);
+		expect(settings.get("defaultThinkingLevel")).toBe(ThinkingLevel.High);
+		expect(session.getActiveToolNames()).toEqual(["base_tool", "task"]);
+		expect(session.getToolByName("task")).toBe(task);
+		expect(session.hasBuiltInTool("task")).toBe(true);
+		for (const name of ULTRA_TOOL_NAMES) expect(session.getToolByName(name)).toBeUndefined();
+	});
+
+	it("keeps Ultra coherent without terminal roster cleanup when orchestration deactivation fails", async () => {
+		const model = bundledModel("openai", "gpt-5.5");
+		const { session, sessionManager, settings } = createSession(model, ThinkingLevel.High, {
 			failUltraDeactivation: true,
 		});
 		session.setThinkingLevel(ULTRA_THINKING, true);
 		await session.syncUltraPolicy();
 
-		session.setThinkingLevel(ThinkingLevel.XHigh, true);
-		await expect(session.syncUltraPolicy()).rejects.toThrow("synthetic Ultra deactivation rebuild failure");
+		const killAllSpy = vi.spyOn(UltraSessionRegistry.global(), "killAll");
+		try {
+			session.setThinkingLevel(ThinkingLevel.XHigh, true);
+			await expect(session.syncUltraPolicy()).rejects.toThrow("synthetic Ultra deactivation rebuild failure");
+			expect(killAllSpy).not.toHaveBeenCalled();
+		} finally {
+			killAllSpy.mockRestore();
+		}
 
 		expect(session.configuredThinkingLevel()).toBe(ULTRA_THINKING);
 		expect(settings.get("defaultThinkingLevel")).toBe(ULTRA_THINKING);
 		for (const name of ULTRA_TOOL_NAMES) expect(session.getActiveToolNames()).toContain(name);
+		expect(
+			sessionManager
+				.getBranch()
+				.filter(entry => entry.type === "ultra_worker_lifecycle" && entry.action === "clear"),
+		).toHaveLength(0);
 	});
 
 	it("preserves Ultra across scoped and role model changes", async () => {

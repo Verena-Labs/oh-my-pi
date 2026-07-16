@@ -20,7 +20,7 @@ const oracleAgent = {
 	source: "bundled",
 } satisfies AgentDefinition;
 
-function makeSession(spawns: string): ToolSession {
+function makeSession(spawns: string, ultra = false): ToolSession {
 	const settings = Settings.isolated({
 		"async.enabled": false,
 		"task.batch": true,
@@ -32,6 +32,7 @@ function makeSession(spawns: string): ToolSession {
 		settings,
 		getSessionFile: () => null,
 		getSessionSpawns: () => spawns,
+		isUltraOrchestrationActive: () => ultra,
 	};
 }
 
@@ -59,5 +60,17 @@ describe("task spawn policy surfaces", () => {
 		expect(description).toContain("the general-purpose worker (`fact-finder`)");
 		expect(description).toContain("Current spawn policy allows: `fact-finder`, `oracle`.");
 		expect(description).not.toContain("(`task`)");
+	});
+
+	it("rejects a stale TaskTool handle while Ultra is active", async () => {
+		vi.spyOn(taskDiscovery, "discoverAgents").mockResolvedValue({
+			agents: [factFinderAgent],
+			projectAgentsDir: null,
+		});
+		const tool = await TaskTool.create(makeSession("fact-finder", true));
+
+		await expect(tool.execute("stale-call", { task: "check" })).rejects.toThrow(
+			"task is unavailable while Ultra is active",
+		);
 	});
 });

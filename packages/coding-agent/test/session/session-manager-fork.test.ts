@@ -5,6 +5,7 @@ import {
 	CURRENT_SESSION_VERSION,
 	type SessionHeader,
 	type SessionMessageEntry,
+	type UltraWorkerLifecycleEntry,
 } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { loadEntriesFromFile } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -86,5 +87,100 @@ describe("SessionManager.forkFrom", () => {
 			}
 			setAgentDir(previousAgentDir);
 		}
+	});
+
+	it("preserves copied lifecycle history but neutralizes every active Ultra owner roster", async () => {
+		using tempDir = TempDir.createSync("@omp-session-fork-ultra-");
+		const cwd = path.join(tempDir.path(), "project");
+		const sessionDir = path.join(tempDir.path(), "sessions");
+		await fs.mkdir(cwd, { recursive: true });
+		await fs.mkdir(sessionDir, { recursive: true });
+		const sourceFile = path.join(sessionDir, "source.jsonl");
+		const timestamp = new Date().toISOString();
+		const sourceHeader: SessionHeader = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id: "source-session",
+			timestamp,
+			cwd,
+		};
+		const sourceMessage: JsonlMessageEntry = {
+			type: "message",
+			id: "message-1",
+			parentId: null,
+			timestamp,
+			message: { role: "user", content: "hello", timestamp: Date.now() },
+		};
+		const lifecycleEntries: UltraWorkerLifecycleEntry[] = [
+			{
+				type: "ultra_worker_lifecycle",
+				id: "main-spawn",
+				parentId: sourceMessage.id,
+				timestamp,
+				workerId: "MainWorker",
+				action: "spawn",
+				ownerId: "Main",
+				sessionFile: path.join(sessionDir, "source", "MainWorker.jsonl"),
+				modelOverride: "openai/gpt-test",
+			},
+			{
+				type: "ultra_worker_lifecycle",
+				id: "nested-spawn",
+				parentId: "main-spawn",
+				timestamp,
+				workerId: "NestedWorker",
+				action: "spawn",
+				ownerId: "Nested",
+				sessionFile: path.join(sessionDir, "source", "NestedWorker.jsonl"),
+				modelOverride: "openai/gpt-test",
+			},
+			{
+				type: "ultra_worker_lifecycle",
+				id: "ended-spawn",
+				parentId: "nested-spawn",
+				timestamp,
+				workerId: "EndedWorker",
+				action: "spawn",
+				ownerId: "Ended",
+				sessionFile: path.join(sessionDir, "source", "EndedWorker.jsonl"),
+				modelOverride: "openai/gpt-test",
+			},
+			{
+				type: "ultra_worker_lifecycle",
+				id: "ended-clear",
+				parentId: "ended-spawn",
+				timestamp,
+				workerId: "*",
+				action: "clear",
+				ownerId: "Ended",
+			},
+		];
+		const sourceText = `${[sourceHeader, sourceMessage, ...lifecycleEntries].map(entry => JSON.stringify(entry)).join("\n")}\n`;
+		await Bun.write(sourceFile, sourceText);
+
+		const forked = await SessionManager.forkFrom(sourceFile, cwd, sessionDir, undefined, {
+			suppressBreadcrumb: true,
+		});
+		try {
+			expect(forked.getActiveUltraWorkerRoster("Main")).toEqual([]);
+			expect(forked.getActiveUltraWorkerRoster("Nested")).toEqual([]);
+			expect(forked.getActiveUltraWorkerRoster("Ended")).toEqual([]);
+
+			await forked.flush();
+			const cloneFile = forked.getSessionFile();
+			if (!cloneFile) throw new Error("expected forked session file");
+			const cloneEntries = await loadEntriesFromFile(cloneFile);
+			const neutralizers = cloneEntries.filter(
+				(entry): entry is UltraWorkerLifecycleEntry =>
+					entry.type === "ultra_worker_lifecycle" &&
+					entry.action === "clear" &&
+					entry.reason === "forked session starts with a neutral Ultra roster",
+			);
+			expect(neutralizers.map(entry => entry.ownerId)).toEqual(["Main", "Nested"]);
+		} finally {
+			await forked.close();
+		}
+
+		expect(await Bun.file(sourceFile).text()).toBe(sourceText);
 	});
 });

@@ -299,7 +299,9 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	get description(): string {
 		if (!this.session) return getEvalToolDescription();
 		const backends = resolveEvalBackends(this.session);
-		const sessionSpawns = this.session.getSessionSpawns?.() ?? "*";
+		const sessionSpawns = this.session.isUltraOrchestrationActive?.()
+			? ""
+			: (this.session.getSessionSpawns?.() ?? "*");
 		return getEvalToolDescription({
 			py: backends.python,
 			js: backends.js,

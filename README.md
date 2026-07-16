@@ -59,20 +59,25 @@ available.
 
 Ultra is a composite thinking tier, not a slash-command mode or a model role.
 Selecting it keeps the main agent on its current model, requests `xhigh`
-reasoning clamped to the highest effort that model supports, preserves
-the main agent's complete active toolset, and adds `ultra_spawn`, `ultra_send`,
-`ultra_wait`, `ultra_kill`, and `ultra_list`. Ultra is offered only when the
-current model exposes controllable reasoning effort. Each direct Ultra worker
+reasoning clamped to the highest effort that model supports, preserves the
+main agent's normal implementation tools, suspends the competing named-agent
+`task` and Eval `agent()` spawn paths, and adds `ultra_spawn`, `ultra_send`,
+`ultra_wait`, `ultra_kill`, and `ultra_list` as its exclusive orchestration
+surface. Ultra is offered only when the current model exposes controllable
+reasoning effort. Each direct Ultra worker
 snapshots the main agent's current model and clamped effort when spawned through
 one generic full-capability worker definition outside the ordinary named
 task-agent catalog; every descendant inherits that root snapshot. Existing
 worker trees remain pinned to their spawn-time model and effort, while later
-direct spawns use the main agent's newly selected model. There is no worker-model
-or worker-tier selector. Ordinary `xhigh`
-remains a separate reasoning-only selection. The existing Agent Hub,
-persistent-session lifecycle, and live multi-worker wall remain the inspection
-and control surfaces. `/ultra`, `/delegate`, `/vibe`, `delegate_*`, and
-`vibe_*` are not public or compatibility surfaces.
+direct spawns use the main agent's newly selected model. Spawns may inherit
+none, the latest N user-led turns, or all of the main conversation's effective
+post-compaction context. There is no worker-model or worker-tier selector.
+Ordinary `xhigh` remains reasoning-only; max-capable selectors order `xhigh`,
+`max`, then `ultra`, whose dedicated symbol distinguishes orchestration from
+reasoning effort. The existing Agent Hub, persistent-session lifecycle, and
+live multi-worker wall remain the inspection and control surfaces, including
+worker provenance, parking, and owner-session resume. `/ultra`, `/delegate`,
+`/vibe`, `delegate_*`, and `vibe_*` are not public or compatibility surfaces.
 
 ## Narrowed resources and web search
 

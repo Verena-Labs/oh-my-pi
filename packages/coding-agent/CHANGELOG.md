@@ -7,16 +7,19 @@
 - Replaced the public Delegate/Vibe workflow with the `ultra` composite
   thinking tier for models with controllable reasoning effort. Ultra keeps the
   main agent on its current model, requests `xhigh` clamped to that model's
-  highest supported effort, preserves all active tools, and adds
+  highest supported effort, preserves its normal implementation tools, and
+  replaces ordinary Task/named-agent spawning with
   `ultra_spawn`, `ultra_send`, `ultra_wait`, `ultra_kill`, and `ultra_list`.
-  Each direct Ultra worker snapshots the main model and resolved effort at spawn
-  time through one generic full-capability worker definition with no worker
-  tier/model selector; every descendant inherits that root snapshot. Existing
-  worker trees remain pinned, while later direct spawns use the main agent's
-  newly selected model.
-  Ordinary `xhigh` remains separately selectable without orchestration. There
-  is no `/ultra` slash command and no `/delegate`, `/vibe`, `delegate_*`, or
-  `vibe_*` compatibility surface.
+  Each generic full-capability worker snapshots the main model at spawn time,
+  receives a deliberate `fork_turns` selection of the effective parent chat,
+  and retains a persistent conversation for steering and follow-up. Worker
+  provenance and owner-scoped roster state keep Ultra sessions distinguishable,
+  parked, and addressable after resume. Existing worker trees remain pinned,
+  while later direct spawns use the main agent's newly selected model. Ordinary
+  `xhigh` and `max` remain separately selectable without orchestration, ordered
+  before Ultra; Ultra has its own themeable `thinking.ultra` symbol. There is no
+  `/ultra` slash command and no `/delegate`, `/vibe`, `delegate_*`, or `vibe_*`
+  compatibility surface.
 
 ## [16.5.0] - 2026-07-13
 

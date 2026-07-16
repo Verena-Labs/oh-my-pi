@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { CollabSessionEntryProjector } from "@oh-my-pi/pi-coding-agent/collab/host";
 import { isBlobRef } from "@oh-my-pi/pi-coding-agent/session/blob-store";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -22,6 +23,42 @@ afterEach(async () => {
 const BIG_IMAGE_B64 = Buffer.alloc(4096, 7).toString("base64");
 
 describe("SessionManager collab replication", () => {
+	it("reparents snapshot and live transcript entries across private lifecycle rows", () => {
+		const root: SessionEntry = {
+			type: "message",
+			id: "root",
+			parentId: null,
+			timestamp: "2026-07-16T00:00:00.000Z",
+			message: { role: "user", content: "before Ultra", timestamp: 0 },
+		};
+		const lifecycle: SessionEntry = {
+			type: "ultra_worker_lifecycle",
+			id: "private-roster",
+			parentId: root.id,
+			timestamp: "2026-07-16T00:00:01.000Z",
+			workerId: "Worker",
+			action: "spawn",
+			ownerId: "Main",
+		};
+		const child: SessionEntry = {
+			type: "message",
+			id: "child",
+			parentId: lifecycle.id,
+			timestamp: "2026-07-16T00:00:02.000Z",
+			message: { role: "user", content: "after Ultra", timestamp: 0 },
+		};
+
+		const snapshotProjector = new CollabSessionEntryProjector();
+		const snapshot = snapshotProjector.reset([root, lifecycle, child]);
+		expect(snapshot.map(entry => entry.id)).toEqual(["root", "child"]);
+		expect(snapshot[1]?.parentId).toBe("root");
+
+		const liveProjector = new CollabSessionEntryProjector();
+		liveProjector.reset([root]);
+		expect(liveProjector.append(lifecycle)).toBeUndefined();
+		expect(liveProjector.append(child)?.parentId).toBe("root");
+	});
+
 	it("onEntryAppended receives the in-memory entry with inline image data while the persisted line externalizes it", async () => {
 		const { manager } = makeManager();
 		const captured: SessionEntry[] = [];

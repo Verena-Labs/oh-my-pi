@@ -5,7 +5,11 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { EvalTool, getEvalToolDescription } from "../../src/tools/eval";
 
-function makeSession(opts: { spawns?: string | null; backends?: Record<string, boolean> }): ToolSession {
+function makeSession(opts: {
+	spawns?: string | null;
+	backends?: Record<string, boolean>;
+	ultra?: boolean;
+}): ToolSession {
 	const settings = Settings.isolated();
 	for (const [key, value] of Object.entries(opts.backends ?? {})) settings.set(key as never, value);
 	return {
@@ -13,6 +17,7 @@ function makeSession(opts: { spawns?: string | null; backends?: Record<string, b
 		hasUI: false,
 		getSessionFile: () => null,
 		getSessionSpawns: () => opts.spawns ?? "*",
+		isUltraOrchestrationActive: () => opts.ultra === true,
 		settings,
 	} as unknown as ToolSession;
 }
@@ -57,6 +62,11 @@ describe("eval tool description", () => {
 		const denied = new EvalTool(makeSession({ spawns: "" })).description;
 		expect(wildcard).toContain("agent(prompt");
 		expect(denied).not.toContain("agent(prompt");
+	});
+
+	it("omits agent() dynamically while Ultra is active", () => {
+		const text = new EvalTool(makeSession({ spawns: "*", ultra: true })).description;
+		expect(text).not.toContain("agent(prompt");
 	});
 });
 

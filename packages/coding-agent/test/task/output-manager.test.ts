@@ -1,12 +1,14 @@
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { AgentOutputManager } from "@oh-my-pi/pi-coding-agent/task/output-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 // Contract: subagent output ids are the requested name, used verbatim the first
 // time and suffixed (`-2`, `-3`, …) only when the same name recurs. A parent
-// prefix nests ids under it. On resume the manager scans existing `.md` outputs
-// so it never reuses a name that would clobber a previously written output.
+// prefix nests ids under it. On resume the manager scans existing `.md` and
+// `.jsonl` worker outputs so it never reuses a name that would clobber a
+// previously written output or transcript.
 
 describe("AgentOutputManager", () => {
 	it("uses the requested name verbatim and suffixes only on repeat", async () => {
@@ -42,12 +44,15 @@ describe("AgentOutputManager", () => {
 		const dir = tmp.path();
 		await Bun.write(path.join(dir, "Anna.md"), "prior");
 		await Bun.write(path.join(dir, "Anna-2.md"), "prior");
+		// A worker can crash after JSONL creation but before its first markdown output.
+		await Bun.write(path.join(dir, "Interrupted.jsonl"), "{}\n");
 		// Unrelated tool artifacts (numeric `.log` ids) must not be mistaken for names.
 		await Bun.write(path.join(dir, "7.bash.log"), "noise");
 
 		const mgr = new AgentOutputManager(() => dir);
 
 		expect(await mgr.allocate("Anna")).toBe("Anna-3");
+		expect(await mgr.allocate("Interrupted")).toBe("Interrupted-2");
 		// A name with no file on disk is still pristine.
 		expect(await mgr.allocate("Bob")).toBe("Bob");
 	});
@@ -55,8 +60,9 @@ describe("AgentOutputManager", () => {
 	it("only counts files within its own prefix scope on resume", async () => {
 		using tmp = TempDir.createSync("@omp-output-manager-");
 		const dir = tmp.path();
-		await Bun.write(path.join(dir, "Anna.Bob.md"), "child");
-		await Bun.write(path.join(dir, "Anna.Bob.Carol.md"), "grandchild");
+		await fs.mkdir(path.join(dir, "Anna"));
+		await Bun.write(path.join(dir, "Anna", "Anna.Bob.jsonl"), "interrupted child");
+		await Bun.write(path.join(dir, "Anna", "Anna.Bob.Carol.jsonl"), "interrupted grandchild");
 		// A different parent's child must be ignored by Anna's manager.
 		await Bun.write(path.join(dir, "Other.Bob.md"), "elsewhere");
 
@@ -64,6 +70,18 @@ describe("AgentOutputManager", () => {
 
 		expect(await mgr.allocate("Bob")).toBe("Anna.Bob-2");
 		expect(await mgr.allocate("Dave")).toBe("Anna.Dave");
+	});
+
+	it("coalesces concurrent first allocations behind the persisted-id scan", async () => {
+		using tmp = TempDir.createSync("@omp-output-manager-");
+		const dir = tmp.path();
+		await Bun.write(path.join(dir, "Interrupted.jsonl"), "{}\n");
+		const mgr = new AgentOutputManager(() => dir);
+
+		expect(await Promise.all([mgr.allocate("Interrupted"), mgr.allocate("Interrupted")])).toEqual([
+			"Interrupted-2",
+			"Interrupted-3",
+		]);
 	});
 
 	it("reserves the advisor transcript stem so a task can't clobber __advisor.jsonl", async () => {

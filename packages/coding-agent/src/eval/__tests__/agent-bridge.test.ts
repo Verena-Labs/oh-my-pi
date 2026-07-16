@@ -51,6 +51,7 @@ interface SessionOptions {
 	settings?: Settings;
 	outputManager?: AgentOutputManager;
 	planMode?: boolean;
+	ultra?: boolean;
 }
 
 function makeSession(options: SessionOptions = {}): ToolSession {
@@ -71,6 +72,7 @@ function makeSession(options: SessionOptions = {}): ToolSession {
 		agentOutputManager: options.outputManager,
 		getSessionFile: () => options.sessionFile ?? null,
 		getSessionSpawns: () => options.spawns ?? "*",
+		isUltraOrchestrationActive: () => options.ultra === true,
 		getActiveModelString: () => options.activeModel ?? "p/active",
 		getModelString: () => options.modelString ?? "p/fallback",
 		getArtifactsDir: () => artifactsDir,
@@ -203,6 +205,14 @@ describe("runEvalAgent", () => {
 			runEvalAgent({ prompt: "hello" }, { session: makeSession({ depth: EVAL_AGENT_MAX_DEPTH }) }),
 		).rejects.toThrow("maximum depth");
 		expect(runSpy).not.toHaveBeenCalled();
+	});
+
+	it("rejects stale agent() calls host-side while Ultra is active", async () => {
+		const discoverySpy = vi.spyOn(taskDiscovery, "discoverAgents");
+		await expect(runEvalAgent({ prompt: "hello" }, { session: makeSession({ ultra: true }) })).rejects.toThrow(
+			"agent() is unavailable while Ultra is active",
+		);
+		expect(discoverySpy).not.toHaveBeenCalled();
 	});
 
 	it("defaults to the first allowed spawn under restricted eval policies", async () => {

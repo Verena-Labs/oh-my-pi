@@ -300,7 +300,7 @@ describe("AgentSession role model thinking behavior", () => {
 		expect(session.thinkingLevel).toBe(Effort.Minimal);
 	});
 
-	it("cycles through max as the final tier on a max-capable model", async () => {
+	it("cycles xhigh to max to Ultra on a max-capable model", async () => {
 		const model = getAnthropicModelOrThrow("claude-opus-4-7");
 		const agent = new Agent({
 			initialState: {
@@ -328,10 +328,11 @@ describe("AgentSession role model thinking behavior", () => {
 		expect(available.at(-1)).toBe(Effort.Max);
 
 		session.setThinkingLevel(Effort.XHigh);
-		expect(session.cycleThinkingLevel()).toBe(ULTRA_THINKING);
 		expect(session.cycleThinkingLevel()).toBe(Effort.Max);
 		expect(session.thinkingLevel).toBe(Effort.Max);
-		// max is the last tier: the wheel wraps back to off.
+		expect(session.cycleThinkingLevel()).toBe(ULTRA_THINKING);
+		expect(session.configuredThinkingLevel()).toBe(ULTRA_THINKING);
+		// Ultra is the final tier: the wheel wraps back to off.
 		expect(session.cycleThinkingLevel()).toBe("off");
 	});
 

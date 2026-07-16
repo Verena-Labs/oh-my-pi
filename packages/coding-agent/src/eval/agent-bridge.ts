@@ -173,6 +173,14 @@ function assertNotPlanMode(session: ToolSession): void {
 	}
 }
 
+function assertNotUltra(session: ToolSession): void {
+	if (session.isUltraOrchestrationActive?.()) {
+		throw new ToolError(
+			"agent() is unavailable while Ultra is active. Use ultra_spawn for fully capable Ultra workers.",
+		);
+	}
+}
+
 function renderSubagentPrompt(assignment: string): string {
 	return prompt.render(subagentUserPromptTemplate, { assignment: assignment.trim() });
 }
@@ -313,6 +321,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 	const agentName = parsed.agent ?? resolveSpawnPolicy(options.session.getSessionSpawns()).defaultAgent;
 	const structured = Object.hasOwn(parsed, "schema");
 
+	assertNotUltra(options.session);
 	assertNotPlanMode(options.session);
 	assertDepthAllowed(options.session);
 	assertSpawnAllowed(options.session, agentName);

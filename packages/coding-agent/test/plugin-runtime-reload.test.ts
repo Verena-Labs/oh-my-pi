@@ -2,6 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import {
 	getCapabilityInfo,
@@ -127,6 +128,21 @@ export default function(pi) {
 		description: "plugin collision for ultra_list",
 		parameters: Type.Object({}),
 		async execute() { return { content: [{ type: "text", text: "plugin collision" }] }; },
+	});
+}
+`;
+}
+
+function taskReplacementExtensionSource(version: string): string {
+	return `
+export default function(pi) {
+	const { Type } = pi.typebox;
+	pi.registerTool({
+		name: "task",
+		label: "Replacement Task",
+		description: "replacement task ${version}",
+		parameters: Type.Object({}),
+		async execute() { return { content: [{ type: "text", text: "${version}" }] }; },
 	});
 }
 `;
@@ -399,9 +415,79 @@ describe("runtime plugin reload", () => {
 			const result = await session.getToolByName("ultra_list")!.execute("call-ultra-list", {});
 			expect(result.content).toContainEqual({
 				type: "text",
-				text: "No ultra sessions. Spawn one with ultra_spawn.",
+				text: "No Ultra sessions. Spawn one with ultra_spawn. Ordinary Task workers are separate and remain visible in Agent Hub.",
 			});
 			expect(result.details).toEqual({ op: "list", screens: [] });
+		} finally {
+			await session.dispose();
+			authStorage.close();
+		}
+	});
+
+	test("keeps a hot-reloaded Task replacement suppressed until Ultra exits", async () => {
+		const tempDir = path.join(os.tmpdir(), `pi-plugin-reload-ultra-task-${Snowflake.next()}`);
+		tempDirs.push(tempDir);
+		const extensionPath = path.join(tempDir, "task-replacement-extension.ts");
+		fs.mkdirSync(tempDir, { recursive: true });
+		fs.writeFileSync(extensionPath, taskReplacementExtensionSource("one"));
+
+		const model = getBundledModel("openai", "gpt-5.5");
+		if (!model) throw new Error("Expected bundled OpenAI reasoning model");
+		const authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
+		const settings = await Settings.loadIsolated({ cwd: tempDir, agentDir: tempDir });
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			authStorage,
+			modelRegistry,
+			settings,
+			model,
+			sessionManager: SessionManager.inMemory(tempDir),
+			additionalExtensionPaths: [extensionPath],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+		});
+		await initializeExtensions(session, {
+			reportSendError: () => {},
+			reportRuntimeError: error => {
+				throw new Error(error.error);
+			},
+		});
+
+		try {
+			const originalTask = session.getToolByName("task");
+			expect(originalTask?.description).toBe("replacement task one");
+			await session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "task"])]);
+			expect(session.getActiveToolNames()).toContain("task");
+
+			session.setThinkingLevel(ULTRA_THINKING);
+			await session.syncUltraPolicy();
+			expect(session.getToolByName("task")).toBeUndefined();
+			expect(session.getActiveToolNames()).not.toContain("task");
+
+			fs.writeFileSync(extensionPath, taskReplacementExtensionSource("two"));
+			await session.reloadPlugins();
+
+			expect(
+				session.extensionRunner?.getAllRegisteredTools().find(tool => tool.definition.name === "task")?.definition
+					.description,
+			).toBe("replacement task two");
+			expect(session.getToolByName("task")).toBeUndefined();
+			expect(session.getActiveToolNames()).not.toContain("task");
+
+			session.setThinkingLevel(ThinkingLevel.XHigh);
+			await session.syncUltraPolicy();
+
+			const restoredTask = session.getToolByName("task");
+			expect(restoredTask?.description).toBe("replacement task two");
+			expect(restoredTask).not.toBe(originalTask);
+			expect(session.getActiveToolNames()).toContain("task");
+			expect(session.hasBuiltInTool("task")).toBe(false);
 		} finally {
 			await session.dispose();
 			authStorage.close();

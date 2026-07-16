@@ -2,7 +2,7 @@
 
 ## Mode
 
-Source implementation complete; protected delivery in progress
+Revision 2 shipped; revision 3 correction implementation complete and delivery in progress
 
 ## Goal
 
@@ -16,6 +16,13 @@ session model change.
 
 Ultra should feel like the ordinary Pi agent operating at maximum effort with
 parallel help, not like a separate director-only product mode.
+
+Revision 3 closes the mismatches found after live use: ordinary named Task
+agents must be unavailable while Ultra is active, workers may inherit a bounded
+or complete snapshot of useful parent-chat context, the player-coach prompt
+must state a stronger delegation boundary, worker provenance and parked/cold
+resume state must be visible, and max-capable thinking controls must order
+`xhigh`, `max`, `ultra` with a dedicated Ultra symbol.
 
 ## Non-goals
 
@@ -91,9 +98,11 @@ parallel help, not like a separate director-only product mode.
 
 ### Primary agent
 
-- The primary agent retains every tool that was active before Ultra was
-  selected.
-- Ultra adds the orchestration tools to that toolset instead of replacing it.
+- The primary agent retains every non-orchestration implementation tool that
+  was active before Ultra was selected.
+- Ultra temporarily suspends the ordinary named-agent `task` surface and Eval
+  `agent()`, then restores their exact prior state on exit.
+- Ultra adds its five orchestration tools to the remaining toolset.
 - The primary agent continues to inspect, edit, execute, test, integrate,
   commit, and otherwise work normally while workers run.
 - The injected prompt encourages proactive delegation only for concrete,
@@ -106,8 +115,10 @@ parallel help, not like a separate director-only product mode.
 
 - The only public orchestration tools are `ultra_spawn`, `ultra_send`,
   `ultra_wait`, `ultra_kill`, and `ultra_list`.
-- `ultra_spawn` accepts a self-contained task and optional session name. It does
-  not accept a model tier or thinking level.
+- `ultra_spawn` accepts a task, optional session name, and `fork_turns` choice
+  for no parent chat, the latest N user-led turns, or all effective
+  post-compaction parent chat. It does not accept a model tier or thinking
+  level.
 - Every direct Ultra worker uses the primary agent's exact model selector and
   effective `xhigh` reasoning.
 - The `fast`/`good` capability split is removed. Every Ultra spawn creates the
@@ -121,7 +132,10 @@ parallel help, not like a separate director-only product mode.
   policy, regardless of their ordinary agent definition's model role.
 - Spawn, send, live steering, queued follow-up, wait, cancellation, persistent
   conversation, parking, revival, result delivery, transcript, trace, TV wall,
-  Agent Hub, and job behavior remain otherwise unchanged.
+  Agent Hub, and job behavior remain otherwise unchanged. Worker provenance is
+  explicit, and addressable Ultra rosters cold-resume only with the same owning
+  conversation; explicit kill, Ultra exit, and transcript changes remain
+  terminal.
 
 ### Removal
 
@@ -139,9 +153,11 @@ parallel help, not like a separate director-only product mode.
   agent rather than a separate director persona.
   **Status**: confirmed
 
-- **Decision**: The primary agent retains its full active toolset.
+- **Decision**: The primary agent retains its full implementation toolset while
+  Ultra replaces competing ordinary named-agent spawn paths.
   **Why**: Ultra is a player-coach workflow; the primary agent remains the most
-  informed integrator and verifier.
+  informed integrator and verifier, but two overlapping orchestration systems
+  make worker identity, context, and model invariants ambiguous.
   **Status**: confirmed
 
 - **Decision**: Ultra uses the existing worker runtime and UI without a new
@@ -169,6 +185,20 @@ parallel help, not like a separate director-only product mode.
   Ordinary OMP agents remain available unchanged through `task` outside Ultra.
   **Status**: confirmed
 
+- **Decision**: Ultra workers can inherit `none`, the latest positive number of
+  user-led turns, or `all` effective parent-chat context; omitted
+  `fork_turns` defaults to `all`.
+  **Why**: General same-model workers need the option to share current decisions
+  without forcing every assignment to copy the entire conversation or start
+  blank.
+  **Status**: confirmed
+
+- **Decision**: Ultra worker provenance and owner-scoped roster lifecycle are
+  persisted explicitly.
+  **Why**: Transcript files alone cannot distinguish Task from Ultra or tell an
+  addressable parked worker from an explicitly terminated historical session.
+  **Status**: confirmed
+
 - **Decision**: Delegate and Vibe receive no backward compatibility.
   **Why**: They were never used in this downstream distribution, so compatibility
   would preserve complexity without preserving user data.
@@ -179,10 +209,11 @@ parallel help, not like a separate director-only product mode.
   the existing `auto` selector demonstrates the same separation.
   **Status**: confirmed
 
-- **Decision**: Keep ordinary visible `xhigh` and Ultra as adjacent, distinct
-  choices.
-  **Why**: `xhigh` is reasoning-only, while Ultra adds the orchestration policy;
-  keeping both lets the user request maximum individual effort without workers.
+- **Decision**: Keep ordinary visible `xhigh`, `max`, and Ultra as distinct
+  choices, ordered `xhigh`, `max`, `ultra` when all are supported.
+  **Why**: Concrete provider efforts remain ordered before the composite
+  orchestration policy; Ultra receives its own symbol so it cannot be mistaken
+  for reasoning-only xhigh.
   **Status**: confirmed
 
 - **Decision**: Persistent workers remain pinned to their spawn-time model;
@@ -231,6 +262,28 @@ main model.
   and the wall continues to display it; later direct spawns snapshot the new
   main model.
 
+- Scenario: Ultra activates while `task` was enabled, disabled, or already has
+  an ordinary worker running.
+  Expected behavior: no new ordinary named-agent spawn path remains callable;
+  an existing worker may finish, and exit restores exactly the prior Task
+  availability.
+
+- Scenario: A spawn requests `fork_turns` as `none`, a positive integer, or
+  `all`.
+  Expected behavior: the worker receives exactly the selected effective
+  parent-chat range as read-only context, excluding thinking, in-progress spawn
+  machinery, and malformed tool protocol. Oversized inheritance fails clearly.
+
+- Scenario: Pi closes while an Ultra worker is idle, parked, or running, then
+  resumes the same owning conversation.
+  Expected behavior: addressable workers return parked with their Ultra
+  provenance and exact model contract; an interrupted turn is not replayed.
+  Explicitly killed or cleared workers remain historical and cannot revive.
+
+- Scenario: A max-capable model cycles beyond xhigh.
+  Expected behavior: the visible order is xhigh, max, Ultra, and Ultra's symbol
+  remains distinct from both reasoning efforts in normal and compact status.
+
 ## Implementation status
 
 1. **Complete** — Added the `ultra` configured-thinking sentinel and metadata at
@@ -263,35 +316,77 @@ main model.
    source and built-binary CLI smoke, and legacy-surface searches. The broad
    coding-agent suite still contains unrelated Pi-disabled, environment, and
    existing baseline failures; no Ultra-focused assertion failed.
-10. **Delivery authorized and in progress** — Carry the completed source through
-    the protected pull request, immutable `pi-v16.5.0-r2` publication, and the
+10. **Complete for revision 2** — Carried the initial source through the
+    protected pull request, immutable `pi-v16.5.0-r2` publication, and the
     isolated `pi-dotfiles` importer and consumer acceptance gates.
 11. **Authorized plan-only handoff** — After the immutable release and consumer
     mirror exist, update Science terminology and release pinning with their exact
     SHAs. Do not vendor the engine or begin Group 1 here.
 
+### Revision 3 correction status
+
+1. **Complete** — Suspend `task` from the active and discoverable tool
+   surfaces during Ultra and deny Eval's named-agent `agent()` helper, with
+   exact state restoration and transition rollback.
+2. **Complete** — Add strict `fork_turns` context inheritance for none,
+   recent N, and all effective post-compaction parent-chat context.
+3. **Complete** — Strengthen the main and recursive worker prompts around
+   bounded independent workstreams, deliberate context selection, continued
+   main-agent work, shared-workspace ownership, result verification, and
+   wait/kill discipline.
+4. **Complete** — Persist Task/Ultra worker provenance, derive parked state
+   from the shared registry, and reconstruct only explicitly addressable Ultra
+   rosters when the same owning conversation resumes.
+5. **Complete** — Reorder max-capable thinking surfaces to
+   `xhigh -> max -> ultra` and add a first-class `thinking.ultra` theme symbol.
+6. **Complete** — Ran the focused, downstream, full type/style, native build,
+   coding-agent build, source and built CLI smoke, portable-share server, and
+   authenticated same-model Ultra journeys with Bun 1.3.14 and the pinned Rust
+   nightly.
+7. **Delivery in progress** — Merge and publish immutable source-only
+   `pi-v16.5.0-r3`, then hand the exact source identity to consumers.
+
 ## Validation evidence
+
+The evidence below records the completed revision 3 source implementation.
 
 - Parser, metadata, selector, status, ACP, persistence, resume, model-change,
   capability-clamping, and ordinary-`xhigh` distinction contracts pass.
-- AgentSession contracts prove the primary tool union, player-coach prompt,
-  private worker prompt boundary, serialized transitions, rollback behavior,
-  transcript cleanup, and `killAll` on exit.
+- AgentSession contracts prove exact suspension and restoration of ordinary
+  Task and Eval spawning, the primary tool union, player-coach prompt, private
+  worker prompt boundary, serialized transitions, rollback behavior,
+  transcript cleanup, and terminal cleanup on Ultra exit.
 - Runtime and executor contracts prove the single private worker definition,
-  direct spawn-time model pinning, descendant root-snapshot inheritance,
-  recursive Ultra/xhigh propagation, continued turns, steering, queues, wait,
+  strict `fork_turns` context snapshots, direct spawn-time model pinning,
+  descendant root-snapshot inheritance, recursive Ultra/xhigh propagation,
+  recursion-ceiling Task exclusion, continued turns, steering, queues, wait,
   owner isolation, cancellation, and result delivery.
+- Lifecycle, fork, SDK, export, collaboration, and output-allocation contracts
+  prove owner-scoped cold roster restoration, terminal kill/exit behavior,
+  revival fencing, early Ultra provenance, safe transcript forks, portable
+  exports without local paths, projected collaboration ancestry, and collision-
+  free session identifiers across nested and concurrent allocation.
+- Selector, browser, status, and theme contracts prove the visible
+  `xhigh -> max -> ultra` order and a dedicated Ultra glyph in Unicode, Nerd
+  Font, ASCII, compact status, model-browser, and Poimandres surfaces.
 - Tool contracts prove exactly five public `ultra_*` tools and strict
   `ultra_spawn` rejection of model, thinking, tier, and named-agent selectors.
 - Negative contracts and source searches prove `/delegate`, `delegate_*`,
   `/vibe`, and `vibe_*` are absent from the callable/public compatibility
   surface; historical changelog records and unrelated English remain intact.
-- `bun check`, coding-agent typecheck, downstream contracts (89 matrix
-  decisions and 60 journeys), downstream tests, native build, coding-agent
-  build, CLI help/version, and source plus built-binary smoke all pass with Bun
-  1.3.14 and the repository's nightly Rust toolchain.
-- An authenticated paid-provider end-to-end session was not run during source
-  validation. Its manual journey remains part of protected delivery acceptance.
+- The focused revision 3 matrix passes 82 tests with no failures; the complete
+  share/export file passes 9 tests with its local upload server enabled.
+- Repository type/style checks, downstream contracts (89 matrix decisions and
+  60 journeys), all 16 downstream tests, native build, coding-agent build, CLI
+  help/version, and source plus built-binary smoke all pass with Bun 1.3.14 and
+  the repository's pinned nightly Rust toolchain.
+- The broad upstream-heavy coding-agent sweep was also run. Its existing
+  Pi-disabled and environment-dependent failures remain outside the focused
+  release surface; no revision 3 focused assertion failed.
+- An authenticated no-session journey on `openai-codex/gpt-5.6-luna` proved the
+  main agent retained `read`, spawned exactly one same-model Ultra worker with
+  `fork_turns: "none"`, continued its own read while the worker ran, waited for
+  the result, and returned both synthetic fixture tokens correctly.
 
 ## Resolved implementation notes
 
