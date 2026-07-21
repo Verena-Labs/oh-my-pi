@@ -128,12 +128,22 @@ function resolveGitCommit(repositoryRoot, ref) {
 	}).trim();
 }
 
+function isResolvedPendingMergeParent(repositoryRoot, commit) {
+	const mergeHead = runGit(repositoryRoot, ["rev-parse", "--verify", "MERGE_HEAD"]);
+	if (mergeHead.status !== 0 || mergeHead.stdout.trim() !== commit) return false;
+	const unresolved = runGit(repositoryRoot, ["diff", "--name-only", "--diff-filter=U"]);
+	return unresolved.status === 0 && unresolved.stdout.trim() === "";
+}
+
 export function verifyRecordedHistory(repositoryRoot, config) {
 	validateConfig(config);
 	const objectCheck = runGit(repositoryRoot, ["cat-file", "-e", `${config.upstream.commit}^{commit}`]);
 	invariant(objectCheck.status === 0, `Recorded upstream commit is not present locally: ${config.upstream.commit}`);
 	const ancestryCheck = runGit(repositoryRoot, ["merge-base", "--is-ancestor", config.upstream.commit, "HEAD"]);
-	invariant(ancestryCheck.status === 0, `Recorded upstream commit is not an ancestor of HEAD: ${config.upstream.commit}`);
+	invariant(
+		ancestryCheck.status === 0 || isResolvedPendingMergeParent(repositoryRoot, config.upstream.commit),
+		`Recorded upstream commit is not an ancestor of HEAD or the resolved MERGE_HEAD: ${config.upstream.commit}`,
+	);
 
 	const upstreamRef = `refs/tags/${config.upstream.tag}`;
 	const upstreamTagCheck = runGit(repositoryRoot, ["show-ref", "--verify", "--quiet", upstreamRef]);

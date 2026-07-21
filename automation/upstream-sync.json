@@ -5,8 +5,8 @@
 	"upstream": {
 		"repository": "can1357/oh-my-pi",
 		"url": "https://github.com/can1357/oh-my-pi.git",
-		"tag": "v16.5.0",
-		"commit": "3047c27c332c5629c8e063283d349384c10c9a56"
+		"tag": "v17.0.6",
+		"commit": "89d6a8f6d14286f32f09ec9c8aa8af7b3451d2d6"
 	},
 	"sync": {
 		"branchPrefix": "sync/upstream-v",
@@ -14,8 +14,8 @@
 		"history": "merge-commit"
 	},
 	"release": {
-		"tag": "pi-v16.5.0-r5",
-		"revision": 5,
+		"tag": "pi-v17.0.6-r1",
+		"revision": 1,
 		"tagPattern": "pi-v<upstream>-r<revision>",
 		"sourceOnly": true,
 		"mutable": false,

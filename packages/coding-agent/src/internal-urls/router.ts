@@ -1,5 +1,5 @@
 /**
- * Internal URL router for Pi's selected protocols (`agent://`, `artifact://`, `history://`, `local://`, `mcp://`, `memory://`, `pi://`, `skill://`, `ssh://`, and `vault://`).
+ * Internal URL router for Pi's selected protocols (`agent://`, `artifact://`, `history://`, `local://`, `mcp://`, `memory://`, `pi://`, `skill://`, `ssh://`, `vault://`, and `xd://`).
  *
  * One process-global router with one handler per scheme. Access via
  * `InternalUrlRouter.instance()`. Handlers are stateless; per-session and
@@ -23,8 +23,10 @@ import {
 	type ProtocolHandler,
 	type ResolveContext,
 	type UrlCompletion,
+	type WriteContext,
 } from "./types";
 import { VaultProtocolHandler } from "./vault-protocol";
+import { XdProtocolHandler } from "./xd-protocol";
 
 const PI_INTERNAL_PROTOCOL_SCHEME_SET: ReadonlySet<string> = new Set(PI_INTERNAL_PROTOCOL_SCHEMES);
 
@@ -44,6 +46,7 @@ export class InternalUrlRouter {
 		this.#registerBuiltin(new McpProtocolHandler());
 		this.#registerBuiltin(new HistoryProtocolHandler());
 		this.#registerBuiltin(new SshProtocolHandler());
+		this.#registerBuiltin(new XdProtocolHandler());
 	}
 
 	/** Process-global router instance. */
@@ -114,19 +117,33 @@ export class InternalUrlRouter {
 		return handler.complete(query, context);
 	}
 
-	async resolve(input: string, context?: ResolveContext): Promise<InternalResource> {
+	#route(input: string): { parsed: InternalUrl; handler: ProtocolHandler } {
 		const parsed = parseInternalUrl(input);
 		const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
 		const handler = this.#handlers.get(scheme);
-
 		if (!handler) {
 			const available = Array.from(this.#handlers.keys())
-				.map(s => `${s}://`)
+				.map(candidate => `${candidate}://`)
 				.join(", ");
 			throw new Error(`Unknown protocol: ${scheme}://\nSupported: ${available || "none"}`);
 		}
+		return { parsed, handler };
+	}
 
-		const resource = await handler.resolve(parsed as InternalUrl, context);
+	/** Resolve an internal URL through its registered protocol handler. */
+	async resolve(input: string, context?: ResolveContext): Promise<InternalResource> {
+		const { parsed, handler } = this.#route(input);
+		const resource = await handler.resolve(parsed, context);
 		return { ...resource, immutable: resource.immutable ?? handler.immutable };
+	}
+
+	/** Write an internal URL through its registered protocol handler. */
+	async write(input: string, content: string, context?: WriteContext): Promise<void> {
+		const { parsed, handler } = this.#route(input);
+		if (!handler.write) {
+			const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
+			throw new Error(`${scheme}:// URLs are read-only for write; use the protocol-specific tool for mutations.`);
+		}
+		await handler.write(parsed, content, context);
 	}
 }

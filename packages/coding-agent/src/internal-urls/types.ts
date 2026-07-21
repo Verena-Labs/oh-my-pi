@@ -1,7 +1,7 @@
 /**
  * Types for the internal URL routing system.
  *
- * Internal URLs (`agent://`, `artifact://`, `history://`, `local://`, `mcp://`, `memory://`, `pi://`, `skill://`, `ssh://`, and `vault://`) are resolved by tools like read,
+ * Internal URLs (`agent://`, `artifact://`, `history://`, `issue://`, `local://`, `mcp://`, `memory://`, `omp://`, `pr://`, `rule://`, `skill://`, `ssh://`, `vault://`, and `xd://`) are resolved by tools like read,
  * providing access to agent outputs and server resources without exposing filesystem paths.
  */
 
@@ -20,6 +20,7 @@ export const PI_INTERNAL_PROTOCOL_SCHEMES = [
 	"mcp",
 	"history",
 	"ssh",
+	"xd",
 ] as const;
 
 export type PiInternalProtocolScheme = (typeof PI_INTERNAL_PROTOCOL_SCHEMES)[number];
@@ -116,6 +117,10 @@ export interface ResolveContext {
 	localProtocolOptions?: LocalProtocolOptions;
 	/** Calling session's loaded skills. Prefer this over process-global skill state. */
 	skills?: readonly Skill[];
+	/** Session-bound `xd://` documentation resolver. */
+	xd?: {
+		read(name: string | null): Promise<string>;
+	};
 	/**
 	 * When set, handlers that would otherwise materialize an expensive directory
 	 * listing (e.g. the ssh:// handler draining a full remote `ls`) instead return
@@ -147,10 +152,14 @@ export interface WriteContext {
 	signal?: AbortSignal;
 	/** Calling session's `local://` root mapping — see {@link ResolveContext.localProtocolOptions}. */
 	localProtocolOptions?: LocalProtocolOptions;
+	/** Session-bound `xd://` device dispatcher. */
+	xd?: {
+		write(name: string | null, content: string): Promise<void>;
+	};
 }
 
 /**
- * Handler for a specific internal URL scheme (e.g., agent://, memory://, skill://, mcp://).
+ * Handler for a specific internal URL scheme (e.g., agent://, memory://, skill://, xd://).
  */
 export interface ProtocolHandler {
 	/** The scheme this handler processes (without trailing ://) */

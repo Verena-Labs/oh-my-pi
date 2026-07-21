@@ -4,8 +4,9 @@
 
 import { APP_NAME } from "@oh-my-pi/pi-utils";
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
-import { parseArgs } from "../cli/args";
+import { type Args as ParsedArgs, parseArgs, reportCliUsageError } from "../cli/args";
 import { runRootCommand } from "../main";
+import { prepareAcpTerminalAuthArgs } from "../modes/acp/terminal-auth";
 import { CLI_THINKING_LEVELS } from "../thinking";
 
 export default class Index extends Command {
@@ -147,7 +148,7 @@ export default class Index extends Command {
 			description: "Include thinking blocks in print mode text output",
 		}),
 		"max-time": Flags.string({
-			description: "Stop the session after this many seconds",
+			description: "Stop the session after this duration (e.g., 600, 10m, 1h)",
 		}),
 		// `--auto-approve` / `--yolo`: declared here so oclif's auto-generated `--help` lists it.
 		// Runtime parsing happens in `cli/args.ts parseArgs` (line 176 in that file) — `runRootCommand`
@@ -181,7 +182,17 @@ export default class Index extends Command {
 	static strict = false;
 
 	async run(): Promise<void> {
-		const parsed = parseArgs(this.argv);
-		await runRootCommand(parsed, this.argv);
+		const { args } = prepareAcpTerminalAuthArgs(this.argv);
+		let parsed: ParsedArgs;
+		try {
+			parsed = parseArgs(args);
+		} catch (error) {
+			if (reportCliUsageError(error)) {
+				process.exitCode = 2;
+				return;
+			}
+			throw error;
+		}
+		await runRootCommand(parsed, args);
 	}
 }

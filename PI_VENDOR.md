@@ -5,9 +5,9 @@ This file is generated from `automation/upstream-sync.json` by `scripts/upstream
 - Downstream repository: `Verena-Labs/oh-my-pi`
 - Released integration branch: `main`
 - Current upstream repository: `can1357/oh-my-pi`
-- Current upstream release: `v16.5.0`
-- Exact upstream commit: `3047c27c332c5629c8e063283d349384c10c9a56`
-- Current downstream source tag: `pi-v16.5.0-r5`
+- Current upstream release: `v17.0.6`
+- Exact upstream commit: `89d6a8f6d14286f32f09ec9c8aa8af7b3451d2d6`
+- Current downstream source tag: `pi-v17.0.6-r1`
 - Publication boundary: immutable source tag only; no packages or binary artifacts
 
 ## Initial baseline evidence

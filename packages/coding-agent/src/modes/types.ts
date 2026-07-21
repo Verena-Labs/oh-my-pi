@@ -158,6 +158,7 @@ export interface InteractiveModeContext {
 	goalModeEnabled: boolean;
 	goalModePaused: boolean;
 	loopModeEnabled: boolean;
+	loopModePaused: boolean;
 	loopPrompt?: string;
 	loopLimit?: LoopLimitRuntime;
 	planModePlanFilePath?: string;
@@ -236,6 +237,14 @@ export interface InteractiveModeContext {
 	 * runs) so their timers/subscriptions start.
 	 */
 	present(content: Component | readonly Component[]): void;
+	/**
+	 * Mount command output immediately while idle, or defer it until the active
+	 * agent turn ends so a growing live block cannot push duplicate rows into
+	 * native scrollback.
+	 */
+	presentCommandOutput(content: Component | readonly Component[]): void;
+	/** Mount command output deferred by {@link presentCommandOutput}. */
+	flushPendingCommandOutput(): void;
 	/**
 	 * Dispose every live block in the transcript (stopping timers/subscriptions)
 	 * and clear it. Used before a full rebuild so animated/streaming blocks do not
@@ -345,6 +354,8 @@ export interface InteractiveModeContext {
 	): Promise<CompactionOutcome>;
 	openInBrowser(urlOrPath: string): void;
 	refreshSlashCommandState(cwd?: string): Promise<void>;
+	/** Reload session skills and derived `/skill:<name>` commands. */
+	refreshSkillState(): Promise<void>;
 	applyCwdChange(newCwd: string): Promise<void>;
 
 	// Selector handling
@@ -366,7 +377,7 @@ export interface InteractiveModeContext {
 	showProviderSetup(): Promise<void>;
 	showHookConfirm(title: string, message: string): Promise<boolean>;
 	showDebugSelector(): Promise<void>;
-	showAgentHub(options?: { requireContent?: boolean }): void;
+	showAgentHub(options?: { requireContent?: boolean; armCloseTap?: boolean }): void;
 	resetObserverRegistry(): void;
 
 	// Input handling
@@ -400,6 +411,7 @@ export interface InteractiveModeContext {
 	handleGoalModeCommand(rest?: string): Promise<void>;
 	handleGuidedGoalCommand(rest?: string): Promise<void>;
 	handleLoopCommand(args?: string): Promise<string | undefined>;
+	setLoopPrompt(prompt: string): void;
 	disableLoopMode(): void;
 	pauseLoop(): void;
 	handlePlanApproval(details: PlanApprovalDetails): Promise<void>;

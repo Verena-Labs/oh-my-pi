@@ -56,7 +56,6 @@ describe("Pi disabled setting policy", () => {
 		for (const path of [
 			"memory.backend",
 			"tools.approvalMode",
-			"tools.essentialOverride",
 			"task.isolation.mode",
 			"providers.webSearch",
 		] satisfies SettingPath[]) {

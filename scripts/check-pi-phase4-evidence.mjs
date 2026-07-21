@@ -96,9 +96,17 @@ export function validatePhase4Evidence({
   );
 
   const journeys = Array.isArray(manifest?.journeys) ? manifest.journeys : [];
-  if (journeys.length !== 60) diagnostics.push(`phase4 evidence must contain 60 journeys; got ${journeys.length}`);
+  const expectedJourneyCount = acceptance.records.length;
+  if (journeys.length !== expectedJourneyCount) {
+    diagnostics.push(`phase4 evidence must contain ${expectedJourneyCount} journeys; got ${journeys.length}`);
+  }
   const journeyNumbers = journeys.map((entry) => entry.journey);
-  compareExact(journeyNumbers, Array.from({ length: 60 }, (_, index) => index + 1), "journey numbers", diagnostics);
+  compareExact(
+    journeyNumbers,
+    Array.from({ length: expectedJourneyCount }, (_, index) => index + 1),
+    "journey numbers",
+    diagnostics,
+  );
   if (new Set(journeyNumbers).size !== journeyNumbers.length) diagnostics.push("phase4 evidence repeats a journey number");
 
   const acceptanceByJourney = new Map(acceptance.records.map((record) => [record.journey, record.id]));
@@ -119,7 +127,9 @@ export function validatePhase4Evidence({
 
   const negatives = Array.isArray(manifest?.negative) ? manifest.negative : [];
   const expectedNegative = matrix.records.filter(({ decision }) => decision === "DISABLE" || decision === "ENABLE NARROWED");
-  if (negatives.length !== 34) diagnostics.push(`phase4 evidence must contain 29 disabled and 5 narrowed negatives; got ${negatives.length}`);
+  if (negatives.length !== expectedNegative.length) {
+    diagnostics.push(`phase4 evidence must contain ${expectedNegative.length} negative obligations; got ${negatives.length}`);
+  }
   compareExact(
     negatives.map(({ matrix: id, decision }) => `${id}:${decision}`),
     expectedNegative.map(({ id, decision }) => `${id}:${decision}`),

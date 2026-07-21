@@ -46,10 +46,11 @@ export class ManageSkillTool implements AgentTool<typeof manageSkillSchema> {
 	readonly loadMode = "essential" as const;
 	readonly summary = "Create, update, or delete an isolated managed skill";
 
-	// No session state needed: createIf reads settings; writes target the
-	// home-based managed-skills dir directly.
-	static createIf(_session: ToolSession): ManageSkillTool | null {
-		return null;
+	constructor(private readonly refreshSkills?: () => Promise<void>) {}
+
+	static createIf(session: ToolSession): ManageSkillTool | null {
+		if (!session.settings.get("autolearn.enabled")) return null;
+		return new ManageSkillTool(session.refreshSkills);
 	}
 
 	async execute(_id: string, params: ManageSkillParams): Promise<AgentToolResult> {
@@ -61,6 +62,7 @@ export class ManageSkillTool implements AgentTool<typeof manageSkillSchema> {
 
 		if (params.action === "delete") {
 			await deleteManagedSkill(params.name);
+			await this.refreshSkills?.();
 			return {
 				content: [{ type: "text", text: `Deleted managed skill "${params.name}".` }],
 				details: { action: "delete", name: params.name },
@@ -96,6 +98,7 @@ export class ManageSkillTool implements AgentTool<typeof manageSkillSchema> {
 			description: params.description,
 			body: params.body,
 		});
+		await this.refreshSkills?.();
 		const relativePath = path.relative(getManagedSkillsDir(), skillPath);
 		const verb = params.action === "create" ? "Created" : "Updated";
 		return {

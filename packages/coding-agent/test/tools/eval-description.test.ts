@@ -41,7 +41,11 @@ function wireCellFields(tool: EvalTool): {
 		: typeof language?.const === "string"
 			? [language.const]
 			: [];
-	return { languages, languageDescription: language?.description, codeDescription: props?.code?.description };
+	return {
+		languages,
+		languageDescription: language?.description,
+		codeDescription: props?.code?.description,
+	};
 }
 
 describe("eval tool description", () => {

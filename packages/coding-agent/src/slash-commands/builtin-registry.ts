@@ -4,11 +4,16 @@ import * as path from "node:path";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
+import { reset as resetCapabilities } from "../capability";
 import { expandRoleAlias, getModelMatchPreferences, resolveCliModel } from "../config/model-resolver";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
-import { clearPluginRootsAndCaches, resolveOrDefaultProjectRegistryPath } from "../discovery/helpers.js";
+import {
+	clearPluginRootsAndCaches,
+	resolveActiveProjectRegistryPath,
+	resolveOrDefaultProjectRegistryPath,
+} from "../discovery/helpers.js";
 import { PluginManager } from "../extensibility/plugins";
 import {
 	getInstalledPluginsRegistryPath,
@@ -255,6 +260,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
 			if (!runtime.ctx.loopModeEnabled) return "Loop: off";
+			if (runtime.ctx.loopModePaused) return "Loop: paused";
 			if (runtime.ctx.loopLimit) return `Loop: on (${describeLoopLimitRuntime(runtime.ctx.loopLimit)})`;
 			if (runtime.ctx.loopPrompt) return "Loop: on (repeating prompt)";
 			return "Loop: on (waiting for next prompt)";
@@ -932,7 +938,11 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				await runtime.output("No tools are available.");
 				return commandConsumed();
 			}
-			await runtime.output(all.map(name => `${active.includes(name) ? "*" : "-"} ${name}`).join("\n"));
+			const lines = all.map(name => `${active.includes(name) ? "*" : "-"} ${name}`);
+			for (const mounted of runtime.session.getXdevToolEntries()) {
+				lines.push(`~ xd://${mounted.name}`);
+			}
+			await runtime.output(lines.join("\n"));
 			return commandConsumed();
 		},
 		handleTui: (_command, runtime) => {
@@ -1140,6 +1150,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "new",
+		aliases: ["clear"],
 		description: "Start a new session",
 		handleTui: async (_command, runtime) => {
 			runtime.ctx.editor.setText("");
@@ -1454,6 +1465,11 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				}
 			} catch {
 				return usage(`Directory does not exist: ${resolvedPath}`, runtime);
+			}
+			try {
+				await runtime.settings.flush();
+			} catch (err) {
+				return usage(`Failed to save pending settings: ${errorMessage(err)}`, runtime);
 			}
 			try {
 				await runtime.sessionManager.moveTo(resolvedPath);
@@ -2001,9 +2017,13 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			return commandConsumed();
 		},
 		handleTui: async (_command, runtime) => {
-			await runtime.ctx.session.reloadPlugins();
+			// Invalidate registry fs caches and the plugin roots cache so
+			// listClaudePluginRoots re-reads from disk on next access.
+			const projectPath = await resolveActiveProjectRegistryPath(runtime.ctx.sessionManager.getCwd());
+			clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
+			await runtime.ctx.refreshSkillState();
 			await runtime.ctx.refreshSlashCommandState();
-			runtime.ctx.registerExtensionShortcuts();
+			resetCapabilities();
 			runtime.ctx.showStatus("Plugins reloaded.");
 			runtime.ctx.editor.setText("");
 		},
@@ -2067,6 +2087,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "quit",
+		aliases: ["q"],
 		description: "Quit the application",
 		handleTui: shutdownHandlerTui,
 	},
@@ -2352,9 +2373,11 @@ export async function executeBuiltinSlashCommand(
 			},
 			refreshCommands: () => ctx.refreshSlashCommandState(),
 			reloadPlugins: async () => {
-				await ctx.session.reloadPlugins();
+				const projectPath = await resolveActiveProjectRegistryPath(ctx.sessionManager.getCwd());
+				clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
+				await ctx.refreshSkillState();
 				await ctx.refreshSlashCommandState();
-				ctx.registerExtensionShortcuts();
+				resetCapabilities();
 			},
 		};
 		const result = await command.handle(parsed, adapted);
