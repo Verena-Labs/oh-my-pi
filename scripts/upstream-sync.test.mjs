@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,6 +52,10 @@ function fixtureRepository(config = initialConfig()) {
 	writeFileSync(join(repositoryRoot, "automation/upstream-sync.json"), `${JSON.stringify(config, null, "\t")}\n`);
 	writeFileSync(join(repositoryRoot, "PI_VENDOR.md"), renderProvenance(config));
 	return repositoryRoot;
+}
+
+function git(repositoryRoot, ...args) {
+	return execFileSync("git", args, { cwd: repositoryRoot, encoding: "utf8" }).trim();
 }
 
 test("derives the immutable source tag convention", () => {
@@ -117,6 +122,27 @@ test("record writes canonical JSON and provenance", () => {
 	assert.equal(next.release.tag, "pi-v16.6.0-r1");
 	assert.deepEqual(JSON.parse(readFileSync(join(repositoryRoot, "automation/upstream-sync.json"), "utf8")), next);
 	assert.equal(readFileSync(join(repositoryRoot, "PI_VENDOR.md"), "utf8"), renderProvenance(next));
+});
+
+test("record accepts the exact resolved MERGE_HEAD before the merge commit", () => {
+	const repositoryRoot = fixtureRepository();
+	git(repositoryRoot, "init", "-b", "main");
+	git(repositoryRoot, "config", "user.name", "Upstream Sync Test");
+	git(repositoryRoot, "config", "user.email", "upstream-sync@example.invalid");
+	writeFileSync(join(repositoryRoot, "base.txt"), "base\n");
+	git(repositoryRoot, "add", ".");
+	git(repositoryRoot, "commit", "-m", "base");
+	git(repositoryRoot, "checkout", "-b", "upstream");
+	writeFileSync(join(repositoryRoot, "upstream.txt"), "upstream\n");
+	git(repositoryRoot, "add", "upstream.txt");
+	git(repositoryRoot, "commit", "-m", "upstream");
+	const upstreamCommit = git(repositoryRoot, "rev-parse", "HEAD");
+	git(repositoryRoot, "checkout", "main");
+	git(repositoryRoot, "merge", "--no-ff", "--no-commit", "upstream");
+
+	const next = recordRepository({ repositoryRoot, upstreamTag: "v16.6.0", upstreamCommit });
+	assert.equal(next.upstream.commit, upstreamCommit);
+	assert.equal(checkRepository({ repositoryRoot }).upstream.commit, upstreamCommit);
 });
 
 test("dry-run does not write files", () => {

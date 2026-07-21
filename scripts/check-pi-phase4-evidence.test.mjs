@@ -19,9 +19,9 @@ test("Phase 4 manifest proves every selected, disabled, narrowed, and surface ob
   assert.deepEqual(result.diagnostics, []);
   assert.deepEqual(result.counts, {
     matrix: 89,
-    journeys: 60,
-    disabled: 29,
-    narrowed: 5,
+    journeys: 61,
+    disabled: 28,
+    narrowed: 8,
     surfaces: 12,
     instrumentation: 1,
   });

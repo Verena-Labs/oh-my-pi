@@ -149,9 +149,7 @@ describe("createAgentSession disabled tool boundary", () => {
 		await session.reloadPlugins();
 		expect(session.getToolByName("learn")).toBe(retained);
 
-		await session.refreshMCPTools([{ ...replacement, mcpServerName: "host", mcpToolName: "learn" }] as never, {
-			activateAll: true,
-		});
+		await session.refreshMCPTools([{ ...replacement, mcpServerName: "host", mcpToolName: "learn" }] as never);
 		expect(session.getToolByName("learn")).toBe(retained);
 
 		await expect(session.refreshRpcHostTools([replacement as AgentTool])).rejects.toThrow(

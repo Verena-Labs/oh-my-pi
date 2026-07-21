@@ -98,7 +98,6 @@ describe("Pi disabled direct command boundary", () => {
 		expect(moveTo).not.toHaveBeenCalled();
 		expect(session.newSession).not.toHaveBeenCalled();
 		expect(session.runEphemeralTurn).not.toHaveBeenCalled();
-		expect(session.refreshSshTool).not.toHaveBeenCalled();
 		expect(session.sendCustomMessage).not.toHaveBeenCalled();
 		expect(session.asyncJobManager?.register).not.toHaveBeenCalled();
 		expect(showError).not.toHaveBeenCalled();

@@ -232,6 +232,8 @@ export interface ParsedAgentFields {
 	autoloadSkills?: string[];
 	readSummarize?: boolean;
 	blocking?: boolean;
+	/** `true` = prewalk into the default target; string = prewalk into that model pattern. */
+	prewalk?: boolean | string;
 }
 
 /**
@@ -286,10 +288,28 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	const model = parseModelList(frontmatter.model);
 	const blocking = parseBoolean(frontmatter.blocking);
 	const readSummarize = parseBoolean(frontmatter.readSummarize);
+	// prewalk: true → hand off to the default prewalk target; "<pattern>" → custom target.
+	let prewalk: boolean | string | undefined = parseBoolean(frontmatter.prewalk);
+	if (prewalk === undefined && typeof frontmatter.prewalk === "string") {
+		const trimmed = frontmatter.prewalk.trim();
+		if (trimmed) prewalk = trimmed;
+	}
 	const autoloadSkills = parseArrayOrCSV(frontmatter.autoloadSkills)
 		?.map(s => s.trim())
 		.filter(Boolean);
-	return { name, description, tools, spawns, model, output, thinkingLevel, blocking, autoloadSkills, readSummarize };
+	return {
+		name,
+		description,
+		tools,
+		spawns,
+		model,
+		output,
+		thinkingLevel,
+		blocking,
+		autoloadSkills,
+		readSummarize,
+		prewalk,
+	};
 }
 
 async function globIf(
@@ -721,13 +741,16 @@ export function buildExtensionModuleItems(
  * Entry for an installed Claude Code plugin.
  */
 export interface ClaudePluginEntry {
-	scope: "user" | "project";
+	/** Claude registry scope; local entries are restricted to their project path. */
+	scope?: "user" | "project" | "local";
 	installPath: string;
 	version: string;
 	installedAt: string;
 	lastUpdated: string;
 	gitCommitSha?: string;
 	enabled?: boolean;
+	/** Project root recorded by Claude for a local installation. */
+	projectPath?: string;
 }
 
 /**
@@ -842,6 +865,14 @@ export async function resolveOrDefaultProjectRegistryPath(cwd: string): Promise<
 	return path.join(cwd, getConfigDirName(), "plugins", "installed_plugins.json");
 }
 
+async function canonicalClaudeProjectPath(projectPath: string): Promise<string | null> {
+	try {
+		return await fs.promises.realpath(path.resolve(projectPath));
+	} catch {
+		return null;
+	}
+}
+
 const pluginRootsCache = new Map<string, { roots: ClaudePluginRoot[]; warnings: string[] }>();
 
 const pluginCacheInvalidators = new Set<() => void>();
@@ -857,22 +888,79 @@ export function registerPluginCacheInvalidator(invalidator: () => void): void {
  * deliberately ignored. Pi reads its user registry and, when present, the
  * nearest project-scoped registry resolved from `cwd`.
  *
- * Results are cached per `home:resolvedProjectPath` key to avoid repeated parsing.
+ * Results are cached per home, project registry, and canonical active project.
  */
 export async function listClaudePluginRoots(
 	home: string,
 	cwd?: string,
 ): Promise<{ roots: ClaudePluginRoot[]; warnings: string[] }> {
 	const resolvedProjectPath = cwd ? await resolveActiveProjectRegistryPath(cwd) : null;
-	const cacheKey = `${home}:${resolvedProjectPath ?? ""}`;
+	const projectRoot = resolvedProjectPath ? path.dirname(path.dirname(path.dirname(resolvedProjectPath))) : cwd;
+	const activeClaudeProjectPath = projectRoot ? await canonicalClaudeProjectPath(projectRoot) : null;
+	const cacheKey = `${home}:${resolvedProjectPath ?? ""}:${activeClaudeProjectPath ?? ""}`;
 	const cached = pluginRootsCache.get(cacheKey);
 	if (cached) return cached;
 
 	const roots: ClaudePluginRoot[] = [];
 	const warnings: string[] = [];
 	const projectRoots: ClaudePluginRoot[] = [];
+	const canonicalClaudeProjectPaths = new Map<string, string | null>();
 
-	// ── Pi installed plugins registry ────────────────────────────────────────
+	// ── Claude Code registry ──────────────────────────────────────────────────
+	const registryPath = path.join(home, ".claude", "plugins", "installed_plugins.json");
+	const content = await readFile(registryPath);
+
+	if (content) {
+		const registry = parseClaudePluginsRegistry(content);
+		if (!registry) {
+			warnings.push(`Failed to parse Claude Code plugin registry: ${registryPath}`);
+		} else {
+			for (const [pluginId, entries] of Object.entries(registry.plugins)) {
+				if (!Array.isArray(entries) || entries.length === 0) continue;
+
+				// Parse plugin ID format: "plugin-name@marketplace"
+				const atIndex = pluginId.lastIndexOf("@");
+				if (atIndex === -1) {
+					warnings.push(`Invalid plugin ID format (missing @marketplace): ${pluginId}`);
+					continue;
+				}
+
+				const pluginName = pluginId.slice(0, atIndex);
+				const marketplace = pluginId.slice(atIndex + 1);
+
+				// Process all valid entries, not just the first one.
+				// This handles plugins with multiple installs (different scopes/versions).
+				for (const entry of entries) {
+					if (!entry.installPath || typeof entry.installPath !== "string") {
+						warnings.push(`Plugin ${pluginId} entry has no installPath`);
+						continue;
+					}
+					if (entry.enabled === false) continue;
+					if (entry.scope === "local") {
+						if (!entry.projectPath || !activeClaudeProjectPath) continue;
+						let entryProjectPath = canonicalClaudeProjectPaths.get(entry.projectPath);
+						if (entryProjectPath === undefined) {
+							entryProjectPath = await canonicalClaudeProjectPath(entry.projectPath);
+							canonicalClaudeProjectPaths.set(entry.projectPath, entryProjectPath);
+						}
+						if (entryProjectPath !== activeClaudeProjectPath) continue;
+					}
+
+					roots.push({
+						id: pluginId,
+						marketplace,
+						plugin: pluginName,
+						version: entry.version || "unknown",
+						path: entry.installPath,
+						scope: entry.scope === "local" ? "project" : entry.scope || "user",
+					});
+				}
+			}
+		}
+	}
+
+	// ── OMP installed plugins registry ───────────────────────────────────────
+	// OMP registry is authoritative: its entries replace Claude's entries for the same plugin ID.
 	// In production `home` is `os.homedir()`, so `getPluginsDir(home)` resolves to the
 	// same XDG-aware path the marketplace writer uses (reads and writes always agree).
 	// Tests pass a temp dir, which short-circuits the resolver for deterministic isolation.
@@ -908,7 +996,7 @@ export async function listClaudePluginRoots(
 						plugin: pluginName,
 						version: entry.version || "unknown",
 						path: entry.installPath,
-						scope: entry.scope || "user",
+						scope: entry.scope === "local" ? "project" : entry.scope || "user",
 					});
 				}
 			}

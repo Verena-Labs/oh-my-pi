@@ -60,7 +60,10 @@ const UNAVAILABLE_AMBIENT_GLOBALS = [
 ] as const;
 
 type HostFunction = (...args: unknown[]) => unknown;
-type Invocation = { receiver?: object; key?: PropertyKey };
+type HostConstructor = new (...args: never[]) => object;
+type Invocation = { receiver?: object; key?: PropertyKey; constructable?: boolean };
+
+function constructableCapabilityTarget(): void {}
 
 export interface BrowserRealmHost {
 	log(level: string, ...args: unknown[]): void;
@@ -87,6 +90,10 @@ class BrowserCapabilityMembrane {
 
 	constructor(makeSandboxError: (name: string, message: string, stack?: string) => object) {
 		this.#makeSandboxError = makeSandboxError;
+	}
+
+	wrapConstructor(value: HostConstructor): unknown {
+		return this.#wrapObject(value, { constructable: true });
 	}
 
 	wrap(value: unknown, invocation?: Invocation): unknown {
@@ -118,7 +125,9 @@ class BrowserCapabilityMembrane {
 	#wrapObject(hostValue: object, invocation?: Invocation): object {
 		const callable = typeof hostValue === "function";
 		const target: object = callable
-			? (..._args: unknown[]): unknown => undefined
+			? invocation?.constructable
+				? constructableCapabilityTarget.bind(undefined)
+				: (..._args: unknown[]): unknown => undefined
 			: Array.isArray(hostValue)
 				? []
 				: Object.create(null);
@@ -187,8 +196,8 @@ class BrowserCapabilityMembrane {
 			},
 		};
 		if (callable) {
+			const hostFunction = hostValue as HostFunction;
 			handler.apply = (_target, thisArg, args) => {
-				const hostFunction = hostValue as HostFunction;
 				const receiver = invocation?.receiver ?? this.#unwrapReceiver(thisArg);
 				const unwrappedArgs = args.map(arg => this.#unwrapArgument(arg, invocation?.key));
 				try {
@@ -197,9 +206,18 @@ class BrowserCapabilityMembrane {
 					throw this.#toSandboxError(error);
 				}
 			};
-			handler.construct = () => {
-				throw this.#toSandboxError(new TypeError("Host constructors are unavailable in browser.run"));
-			};
+			handler.construct = invocation?.constructable
+				? (_target, args) => {
+						try {
+							const unwrappedArgs = args.map(arg => this.#unwrapArgument(arg));
+							return this.wrap(Reflect.construct(hostFunction, unwrappedArgs)) as object;
+						} catch (error) {
+							throw this.#toSandboxError(error);
+						}
+					}
+				: () => {
+						throw this.#toSandboxError(new TypeError("Host constructors are unavailable in browser.run"));
+					};
 		}
 
 		const proxy = new Proxy(target, handler);
@@ -316,6 +334,7 @@ export class BrowserRealm {
 			this.#context,
 		) as (name: string, message: string, stack?: string) => object;
 		this.#membrane = new BrowserCapabilityMembrane(makeSandboxError);
+		sandbox.URL = this.#membrane.wrapConstructor(URL);
 		sandbox.__omp_log__ = this.#membrane.wrap(host.log);
 		sandbox.__omp_table__ = this.#membrane.wrap(host.table);
 		sandbox.__omp_display__ = this.#membrane.wrap(host.display);

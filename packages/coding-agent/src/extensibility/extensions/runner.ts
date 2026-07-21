@@ -7,10 +7,12 @@ import type { KeyId } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
+import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { SessionManager } from "../../session/session-manager";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
+import { ManagedTimers } from "./managed-timers";
 import { createExtensionModelQuery } from "./model-api";
 import type {
 	AfterProviderResponseEvent,
@@ -249,6 +251,18 @@ export class ExtensionRunner {
 	 */
 	#pendingCredentialDisabled: CredentialDisabledEvent[] = [];
 
+	/**
+	 * Timers scheduled by extensions through the sanctioned `ctx.setInterval` /
+	 * `ctx.setTimeout` helpers. Callbacks run with the same isolation as handler
+	 * dispatch — a throw is logged and routed through {@link onError} instead of
+	 * escaping to the process `uncaughtException` handler and tearing down the
+	 * whole session (issue #5664). Handles are `unref`'d and every outstanding
+	 * timer is cleared on session teardown via {@link clearManagedTimers}.
+	 */
+	#managedTimers = new ManagedTimers((event, error, stack) =>
+		this.emitError({ extensionPath: "<timer>", event, error, stack }),
+	);
+
 	constructor(
 		private extensions: Extension[],
 		private runtime: ExtensionRuntime,
@@ -257,6 +271,7 @@ export class ExtensionRunner {
 		private readonly modelRegistry: ModelRegistry,
 		getMemory?: () => MemoryRuntimeContext | undefined,
 		private readonly settings?: Settings,
+		private readonly localProtocolOptions?: LocalProtocolOptions,
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
@@ -552,8 +567,9 @@ export class ExtensionRunner {
 		return undefined;
 	}
 
-	createContext(): ExtensionContext {
-		const getModel = this.#getModel;
+	/** Creates an extension context, optionally scoped to a provider request model. */
+	createContext(model?: Model): ExtensionContext {
+		const getModel = model ? () => model : this.#getModel;
 		return {
 			ui: this.#uiContext,
 			getContextUsage: () => this.#getContextUsageFn(),
@@ -571,7 +587,11 @@ export class ExtensionRunner {
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
 			shutdown: () => this.#shutdownHandler(),
 			getSystemPrompt: () => this.#getSystemPromptFn(),
+			localProtocolOptions: this.localProtocolOptions,
 			memory: this.#getMemoryFn?.(),
+			setInterval: (callback, ms, ...args) => this.#managedTimers.setInterval(callback, ms, ...args),
+			setTimeout: (callback, ms, ...args) => this.#managedTimers.setTimeout(callback, ms, ...args),
+			clearTimer: timer => this.#managedTimers.clear(timer),
 		};
 	}
 
@@ -580,6 +600,16 @@ export class ExtensionRunner {
 	 */
 	shutdown(): void {
 		this.#shutdownHandler();
+	}
+
+	/**
+	 * Clear every timer scheduled through `ctx.setInterval` / `ctx.setTimeout`.
+	 * Called during session teardown so extension background work does not
+	 * outlive the session (a self-scheduling interval would otherwise keep
+	 * firing against a disposed session).
+	 */
+	clearManagedTimers(): void {
+		this.#managedTimers.clearAll();
 	}
 
 	createCommandContext(): ExtensionCommandContext {
@@ -969,8 +999,9 @@ export class ExtensionRunner {
 		return currentMessages;
 	}
 
-	async emitBeforeProviderRequest(payload: unknown): Promise<BeforeProviderRequestEventResult> {
-		const ctx = this.createContext();
+	/** Runs request payload hooks with the model used for that provider request. */
+	async emitBeforeProviderRequest(payload: unknown, model?: Model): Promise<BeforeProviderRequestEventResult> {
+		const ctx = this.createContext(model);
 		let currentPayload = payload;
 
 		for (const ext of this.extensions) {

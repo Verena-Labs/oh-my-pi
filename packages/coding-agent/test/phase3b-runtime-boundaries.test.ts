@@ -240,13 +240,10 @@ describe("Pi Phase 3B runtime boundaries", () => {
 				strict: true,
 				execute: async () => ({ content: [{ type: "text", text: name }] }),
 			});
-			await session.refreshMCPTools(
-				[
-					{ ...tool("eval"), mcpServerName: "server", mcpToolName: "eval" },
-					{ ...tool("mcp__server_allowed"), mcpServerName: "server", mcpToolName: "allowed" },
-				] as never,
-				{ activateAll: true },
-			);
+			await session.refreshMCPTools([
+				{ ...tool("eval"), mcpServerName: "server", mcpToolName: "eval" },
+				{ ...tool("mcp__server_allowed"), mcpServerName: "server", mcpToolName: "allowed" },
+			] as never);
 			expect(session.getToolByName("eval")).toBeUndefined();
 			expect(session.getToolByName("mcp__server_allowed")).toBeDefined();
 

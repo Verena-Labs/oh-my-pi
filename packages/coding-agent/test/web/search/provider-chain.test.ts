@@ -8,7 +8,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/web/search/provider";
 import { SEARCH_PROVIDER_ORDER } from "@oh-my-pi/pi-coding-agent/web/search/types";
 
-const authStorage = { hasOAuth: () => false } as unknown as AuthStorage;
+const authStorage = { hasAuth: () => false, hasOAuth: () => false } as unknown as AuthStorage;
 
 afterEach(() => {
 	setPreferredSearchProvider("auto");

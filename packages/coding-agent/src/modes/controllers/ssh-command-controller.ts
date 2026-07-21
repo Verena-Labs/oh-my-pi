@@ -4,6 +4,7 @@
  * Handles /ssh subcommands for managing SSH host configurations.
  */
 import { getProjectDir, getSSHConfigPath } from "@oh-my-pi/pi-utils";
+import { reset as resetCapabilities } from "../../capability";
 import { type SSHHost, sshCapability } from "../../capability/ssh";
 import { loadCapability } from "../../discovery";
 import { isPiDisabledSlashCommandName } from "../../slash-commands/pi-policy";
@@ -206,7 +207,7 @@ export class SSHCommandController {
 			if (compat) hostConfig.compat = true;
 
 			await addSSHHost(filePath, name, hostConfig);
-			await this.ctx.session.refreshSshTool({ activateIfAvailable: true });
+			resetCapabilities();
 
 			const scopeLabel = scope === "user" ? "user" : "project";
 			const lines = [
@@ -367,7 +368,7 @@ export class SSHCommandController {
 			}
 
 			await removeSSHHost(filePath, name);
-			await this.ctx.session.refreshSshTool();
+			resetCapabilities();
 
 			this.#showMessage(
 				["", theme.fg("success", `- Removed SSH host "${name}" from ${scope} config`), ""].join("\n"),
